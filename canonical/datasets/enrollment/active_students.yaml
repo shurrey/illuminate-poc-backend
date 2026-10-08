@@ -1,0 +1,67 @@
+id: dataset.active_students.v1
+display_name: Active student enrollments
+description: >
+  Student enrollments with course activity inside the course window (course start week through
+  one week after the end week), in courses that have at least one instructor-role enrollment.
+  `active` is 1 when the enrollment is available, enabled and not deleted.
+grain: one row per student enrollment (person_course)
+domain: enrollment
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__HLP_PROCESS_ACTIVE_STUDENTS.sql
+depends_on: [dataset.course_filters.v1]
+base_sql: |
+  WITH students_in_courses AS (
+      SELECT pc.COURSE_ID, pc.PERSON_ID, pc.ID AS PERSON_COURSE_ID, c.TERM_ID,
+             COALESCE(pe.STAGE:student_id, pe.STAGE:user_id, pe.STAGE:batch_uid, pe.SOURCE_ID)::STRING AS ALTERNATIVE_SOURCE_ID,
+             pc.COURSE_ROLE, pe.FIRST_NAME, pe.LAST_NAME, pe.EMAIL AS STUDENT_EMAIL,
+             c.COURSE_NUMBER, c.NAME AS COURSE_NAME,
+             IFF(pc.AVAILABLE_IND AND pc.ENABLED_IND AND pc.ROW_DELETED_TIME IS NULL, 1, 0) AS ACTIVE,
+             c.ROW_DELETED_TIME IS NOT NULL AS COURSE_DELETED_IND
+      FROM {{ database }}.CDM_LMS.PERSON_COURSE pc
+      JOIN {{ database }}.CDM_LMS.PERSON pe ON pe.ID = pc.PERSON_ID
+      JOIN {{ database }}.CDM_LMS.COURSE c ON c.ID = pc.COURSE_ID
+      WHERE pc.STUDENT_IND
+        AND EXISTS (
+            SELECT 1 FROM {{ database }}.CDM_LMS.PERSON_COURSE i
+            WHERE i.ACT_AS_INSTRUCTOR_IND AND i.COURSE_ID = pc.COURSE_ID
+        )
+  ),
+  activity_intervals AS (
+      SELECT DISTINCT START_WEEK AS INTERVAL_START, END_WEEK + 7 AS INTERVAL_END,
+             COURSE_ID, END_WEEK, COURSE_WEEKS, COURSE_CREATION_DATE, COURSE_DURATION
+      FROM {{ ref('dataset.course_filters.v1') }}
+      WHERE COURSE_ROLE = 'S'
+  )
+  SELECT DISTINCT
+      sc.COURSE_ID, sc.PERSON_ID, sc.PERSON_COURSE_ID, sc.TERM_ID,
+      sc.ALTERNATIVE_SOURCE_ID, sc.COURSE_ROLE, sc.FIRST_NAME, sc.LAST_NAME, sc.STUDENT_EMAIL,
+      sc.COURSE_NUMBER, sc.COURSE_NAME, sc.ACTIVE, sc.COURSE_DELETED_IND,
+      ai.INTERVAL_START AS START_WEEK, ai.END_WEEK, ai.COURSE_WEEKS, ai.COURSE_CREATION_DATE, ai.COURSE_DURATION
+  FROM {{ database }}.CDM_LMS.COURSE_ACTIVITY ca
+  JOIN students_in_courses sc ON ca.PERSON_COURSE_ID = sc.PERSON_COURSE_ID
+  JOIN activity_intervals ai
+    ON ai.COURSE_ID = sc.COURSE_ID
+   AND ca.FIRST_ACCESSED_TIME BETWEEN ai.INTERVAL_START AND ai.INTERVAL_END
+entities:
+  - {name: person_course, column: PERSON_COURSE_ID, type: primary}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: course_name, column: COURSE_NAME, type: categorical, synonyms: [course, class]}
+  - {name: course_number, column: COURSE_NUMBER, type: categorical, synonyms: [course code]}
+  - {name: course_duration, column: COURSE_DURATION, type: categorical}
+  - {name: active, column: ACTIVE, type: numeric, description: "1 when the enrollment is available, enabled and not deleted"}
+  - {name: course_deleted, column: COURSE_DELETED_IND, type: boolean}
+  - {name: course_weeks, column: COURSE_WEEKS, type: numeric}
+  - {name: course_start_week, column: START_WEEK, type: time, grains: [week, month, quarter, year], synonyms: [course start]}
+  - {name: course_creation_date, column: COURSE_CREATION_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: student_email, column: STUDENT_EMAIL, type: categorical, description: "Filter only; never selectable"}
+measures:
+  - {name: active_students, agg: count_distinct, expr: "IFF(ACTIVE = 1, PERSON_ID, NULL)", unit: students, synonyms: [active learners, engaged students]}
+  - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students, synonyms: [students with activity]}
+  - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
+  - {name: active_enrollments, agg: count_distinct, expr: "IFF(ACTIVE = 1, PERSON_COURSE_ID, NULL)", unit: enrollments}
+  - {name: share_active, agg: ratio, numerator: active_enrollments, denominator: enrollments, unit: ratio}
+filters:
+  - {name: active_only, sql: "ACTIVE = 1"}
+  - {name: live_courses, sql: "NOT COURSE_DELETED_IND"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID, ALTERNATIVE_SOURCE_ID, FIRST_NAME, LAST_NAME, STUDENT_EMAIL]
