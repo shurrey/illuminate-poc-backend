@@ -8,7 +8,7 @@ class FakeWarehouse:
     def __init__(self, rows=None, error=None):
         self.rows, self.error, self.sql = rows if rows is not None else [{"N": 1}], error, []
 
-    def __call__(self, sql, params=None):
+    def __call__(self, sql, params=None, compiled=False):
         self.sql.append(sql)
         if self.error:
             return {"error": self.error}
@@ -139,3 +139,11 @@ def test_describe_unknown_table_is_an_error():
 def test_specs_include_the_fallback_tools():
     names = {s["name"] for s in _fallback().specs}
     assert {"execute_sql", "describe_cdm_table"} <= names
+
+
+def test_only_governed_queries_run_with_the_compiled_guard():
+    modes = []
+    tools = ChatTools(CATALOG, "DB", execute=lambda sql, params=None, compiled=False: modes.append(compiled) or {"columns": ["N"], "rows": [{"N": 1}]})
+    tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
+    tools.dispatch("execute_sql", {"sql": "SELECT COUNT(*) AS N FROM CDM_LMS.COURSE", "reason": "no governed metric counts all course rows"})
+    assert modes == [True, False]

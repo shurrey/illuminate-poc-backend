@@ -84,7 +84,7 @@ def query_preview(schema: str, table: str, limit: int = 20) -> dict:
     so only schema and table are needed.
 
     Returns:
-        {"columns": ["COL1", ...], "rows": [{"COL1": val, ...}, ...]}
+        {"columns": ["COL1", ...], "rows": [{"COL1": val, ...}, ...], "truncated": bool}, at most MAX_ROWS rows
     """
     conn = get_connection()
     cursor = conn.cursor()
@@ -93,18 +93,20 @@ def query_preview(schema: str, table: str, limit: int = 20) -> dict:
         # Callers must validate schema/table before calling this function.
         cursor.execute(f'SELECT * FROM "{schema}"."{table}" LIMIT {limit}')
         columns = [desc[0] for desc in cursor.description]
-        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        return {"columns": columns, "rows": rows}
+        fetched = cursor.fetchmany(MAX_ROWS + 1)
+        rows = [dict(zip(columns, row)) for row in fetched[:MAX_ROWS]]
+        return {"columns": columns, "rows": rows, "truncated": len(fetched) > MAX_ROWS}
     finally:
         cursor.close()
 
 
-def validate_and_execute(sql: str, params: dict | None = None) -> dict:
+def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool = False) -> dict:
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
     Allowed statement types: SELECT, WITH (CTE), SHOW, DESCRIBE.
-    Blocked: DML/DDL in any subquery, non-CDM/INFORMATION_SCHEMA references,
-    PII columns in outermost SELECT without aggregation or GROUP BY, LIMIT > 1000.
+    Blocked: DML/DDL in any subquery, non-CDM/INFORMATION_SCHEMA references, LIMIT > 1000, and
+    PII columns outside counting aggregates: in every projection and with no star projections, or
+    with compiled=True (semantic-layer SQL, PII-checked at definition time) the outermost only.
 
     Returns:
         {"columns": [...], "rows": [...]} on success
@@ -188,9 +190,13 @@ def validate_and_execute(sql: str, params: dict | None = None) -> dict:
     # PII columns in the outermost SELECT must sit inside a counting aggregate. Value-returning
     # aggregates (MIN, ARRAY_AGG, LISTAGG, ANY_VALUE, MEDIAN...) and window functions return raw
     # values, and GROUP BY on a PII column returns one row per value, so neither unlocks PII.
-    outer_select = stmt.find(exp.Select)
-    if outer_select is not None:
-        for sel in outer_select.expressions:
+    if not compiled:
+        for star in stmt.find_all(exp.Star):
+            if not isinstance(star.parent, exp.Count):
+                return {"error": "Star projections are not allowed in freehand SQL; name the columns you need."}
+    selects = [stmt.find(exp.Select)] if compiled else list(stmt.find_all(exp.Select))
+    for select in filter(None, selects):
+        for sel in select.expressions:
             for col_node in sel.find_all(exp.Column):
                 col_name = col_node.name.upper().strip('"').strip("'")
                 if col_name in PII_COLUMN_NAMES and not inside_counting_aggregate(col_node, sel):
@@ -227,6 +233,9 @@ def validate_and_execute(sql: str, params: dict | None = None) -> dict:
         return {"error": str(exc), "warehouse_error": True}
 
 
+MAX_ROWS = 1000
+
+
 def query_sql(sql: str, params: dict | None = None) -> dict:
     """Execute a read-only SQL statement and return columns + rows.
 
@@ -235,7 +244,7 @@ def query_sql(sql: str, params: dict | None = None) -> dict:
     and pass `{"name": "value"}` as params.
 
     Returns:
-        {"columns": ["COL1", ...], "rows": [{"COL1": val, ...}, ...]}
+        {"columns": ["COL1", ...], "rows": [{"COL1": val, ...}, ...], "truncated": bool}, at most MAX_ROWS rows
 
     Raises:
         ValueError: If the SQL is not a SELECT/WITH statement.
@@ -256,7 +265,8 @@ def query_sql(sql: str, params: dict | None = None) -> dict:
         else:
             cursor.execute(sql)
         columns = [desc[0] for desc in cursor.description]
-        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
-        return {"columns": columns, "rows": rows}
+        fetched = cursor.fetchmany(MAX_ROWS + 1)
+        rows = [dict(zip(columns, row)) for row in fetched[:MAX_ROWS]]
+        return {"columns": columns, "rows": rows, "truncated": len(fetched) > MAX_ROWS}
     finally:
         cursor.close()

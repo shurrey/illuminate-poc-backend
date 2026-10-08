@@ -116,10 +116,10 @@ class ToolResult:
     artifacts: list[dict] = field(default_factory=list)
 
 
-def _default_execute(sql: str, params: Optional[dict] = None) -> dict:
+def _default_execute(sql: str, params: Optional[dict] = None, compiled: bool = False) -> dict:
     from snowflake_client import validate_and_execute
 
-    return validate_and_execute(sql, params)
+    return validate_and_execute(sql, params, compiled=compiled)
 
 
 def _artifact(kind: str, title: str, data, **extra) -> dict:
@@ -128,7 +128,7 @@ def _artifact(kind: str, title: str, data, **extra) -> dict:
 
 class ChatTools:
     def __init__(self, catalog: Catalog, database: str,
-                 execute: Callable[[str, Optional[dict]], dict] = _default_execute,
+                 execute: Callable[..., dict] = _default_execute,
                  describe: Callable[[str, str], Optional[list[dict]]] = describe_table):
         self.catalog, self.database, self.execute, self.describe = catalog, database, execute, describe
 
@@ -152,7 +152,7 @@ class ChatTools:
         except (ValidationError, CompileError) as e:
             return ToolResult({"error": str(e)})
 
-        result = self.execute(compiled.sql, None)
+        result = self.execute(compiled.sql, None, compiled=True)
         if "error" in result:
             return ToolResult({"error": result["error"], "sql": compiled.sql})
 

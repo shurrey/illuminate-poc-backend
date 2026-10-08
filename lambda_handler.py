@@ -10,6 +10,7 @@ Request flow:
 """
 import os
 import json
+import math
 import logging
 import re
 import uuid
@@ -49,6 +50,20 @@ _PII_PATTERNS = [
     (re.compile(r'\b\d{3}-\d{3}-\d{4}\b'), '[PHONE REDACTED]'),                       # Phone xxx-xxx-xxxx
     (re.compile(r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b'), '[CARD REDACTED]'),   # Credit card
 ]
+
+
+def _json_safe(value):
+    """jsonable_encoder output that json.dumps and browsers accept: bytes as hex, NaN and infinities as null."""
+    def finite(v):
+        if isinstance(v, float) and not math.isfinite(v):
+            return None
+        if isinstance(v, dict):
+            return {k: finite(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [finite(x) for x in v]
+        return v
+
+    return finite(jsonable_encoder(value, custom_encoder={bytes: bytes.hex}))
 
 
 def _scrub_pii(text: str) -> str:
@@ -390,7 +405,7 @@ async def chat(
 
         return ChatResponse(
             text=_scrub_pii(result.get("text", "")),
-            artifacts=jsonable_encoder(result["artifacts"]),
+            artifacts=_json_safe(result["artifacts"]),
             context_id=result.get("contextId", context_id),
         )
 
@@ -448,8 +463,8 @@ async def chat_stream(
                     _cancelled_requests.discard(request_id)
                     break
 
-                # Tool artifacts carry Snowflake Decimal/date values that plain json.dumps rejects.
-                event_data = json.dumps(jsonable_encoder(event))
+                # Tool artifacts carry Snowflake Decimal/date/binary values that plain json.dumps rejects.
+                event_data = json.dumps(_json_safe(event))
                 yield f"data: {event_data}\n\n"
 
         except Exception as e:
@@ -829,7 +844,7 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
     from snowflake_client import validate_and_execute
 
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, lambda: validate_and_execute(compiled.sql))
+    result = await loop.run_in_executor(None, lambda: validate_and_execute(compiled.sql, compiled=True))
     if "error" in result:
         logger.error("Semantic query failed: %s", result["error"])
         message = "The warehouse could not run this query." if result.get("warehouse_error") else result["error"]
@@ -837,12 +852,12 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
     from fastapi.responses import JSONResponse
 
     # jsonable_encoder turns Snowflake's Decimal into numbers; response-model serialisation makes them strings.
-    return JSONResponse(jsonable_encoder({
+    return JSONResponse(_json_safe({
         "columns": result["columns"],
         "rows": result["rows"],
         "sql": compiled.sql,
         "provenance": compiled.provenance,
-    }, custom_encoder={bytes: bytes.hex}))
+    }))
 
 
 # =============================================================================
