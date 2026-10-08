@@ -19,7 +19,7 @@ from sqlglot.optimizer.qualify import qualify
 from sqlglot.schema import MappingSchema
 
 from .compiler import CompileError, build_ctes
-from .pii import PII_COLUMN_NAMES
+from .pii import PII_COLUMN_NAMES, inside_counting_aggregate
 from .schema import Catalog, Dataset, SemanticMetric
 
 _FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
@@ -85,18 +85,21 @@ def _dimension_type_errors(ds: Dataset, catalog: Catalog, snapshot: dict) -> lis
 
 
 def _traced_pii(ds: Dataset, catalog: Catalog, snapshot: dict, outputs: set[str], pii: frozenset[str]) -> set[str]:
-    """Outputs whose lineage reaches a PII-flagged source column."""
+    """Outputs whose lineage reaches a PII-flagged source column other than through a count."""
     sql = _dataset_sql(ds, catalog)
-    found = set()
-    for col in outputs:
-        for node in lineage(col, sql, schema=snapshot, dialect="snowflake").walk():
-            if node.downstream or not isinstance(node.source, exp.Table):
-                continue
-            source = f"{node.source.db}.{node.source.name}.{node.name.split('.')[-1]}".upper()
-            if source in pii:
-                found.add(col)
-                break
-    return found
+
+    def reaches_pii(node) -> bool:
+        expr = node.expression
+        columns = list(expr.find_all(exp.Column))
+        if columns and all(inside_counting_aggregate(c, expr) for c in columns):
+            return False
+        if not node.downstream:
+            if not isinstance(node.source, exp.Table):
+                return False
+            return f"{node.source.db}.{node.source.name}.{node.name.split('.')[-1]}".upper() in pii
+        return any(reaches_pii(d) for d in node.downstream)
+
+    return {col for col in outputs if reaches_pii(lineage(col, sql, schema=snapshot, dialect="snowflake"))}
 
 
 def validate_dataset(ds: Dataset, catalog: Catalog, snapshot: dict, pii: frozenset[str]) -> list[str]:
