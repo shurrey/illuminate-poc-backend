@@ -12,6 +12,7 @@ import os
 import json
 import logging
 import re
+import uuid
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Header, Request
@@ -226,6 +227,38 @@ class HealthResponse(BaseModel):
 # Chat Engine Wrappers
 # =============================================================================
 
+
+def _conversation_id(requested: Optional[str], owner: str) -> str:
+    """The caller's conversation id: theirs if they own it or it is unused, otherwise a new one."""
+    from conversation_store import exists, owns
+
+    if requested and (owns(requested, owner) or not exists(requested)):
+        return requested
+    return uuid.uuid4().hex
+
+
+def _queries_from(artifacts: list[dict]) -> list[dict]:
+    """What each answer ran, kept with the turn so follow-ups can modify it."""
+    out = []
+    for a in artifacts:
+        if a.get("type") != "sql":
+            continue
+        governed = a.get("provenance", {}).get("governed", False)
+        entry = {"title": a.get("title"), "governed": governed}
+        entry["query" if governed else "sql"] = a.get("query") if governed else a.get("data")
+        out.append(entry)
+    return out
+
+
+def _model_history(history: list[dict]) -> list[dict]:
+    messages = []
+    for msg in history:
+        text = msg["content"]
+        if msg.get("queries"):
+            text += "\n\nQueries behind this answer (modify these for follow-up questions):\n" + json.dumps(msg["queries"])
+        messages.append({"role": msg["role"], "content": [{"text": text}]})
+    return messages
+
 async def send_message(
     message_text: str,
     owner: str,
@@ -236,21 +269,15 @@ async def send_message(
     from chat_engine import send_message as engine_send
     from conversation_store import load_history, save_turn
 
-    history = load_history(context_id, owner) if context_id else []
-    bedrock_history = []
-    for msg in history:
-        bedrock_history.append({
-            "role": msg["role"],
-            "content": [{"text": msg["content"]}],
-        })
+    context_id = _conversation_id(context_id, owner)
+    bedrock_history = _model_history(load_history(context_id, owner))
 
     loop = asyncio.get_event_loop()
     response_text, _, artifacts = await loop.run_in_executor(
         None, lambda: engine_send(message_text, bedrock_history)
     )
 
-    if context_id:
-        save_turn(context_id, owner, message_text, response_text)
+    save_turn(context_id, owner, message_text, response_text, _queries_from(artifacts))
 
     return {"text": response_text, "artifacts": artifacts, "contextId": context_id}
 
@@ -266,13 +293,8 @@ async def send_message_streaming(
 
     yield {"type": "status", "message": "Processing your question..."}
 
-    history = load_history(context_id, owner) if context_id else []
-    bedrock_history = []
-    for msg in history:
-        bedrock_history.append({
-            "role": msg["role"],
-            "content": [{"text": msg["content"]}],
-        })
+    context_id = _conversation_id(context_id, owner)
+    bedrock_history = _model_history(load_history(context_id, owner))
 
     full_text, artifacts = "", []
     try:
@@ -281,8 +303,7 @@ async def send_message_streaming(
                 yield event
             elif event["type"] == "raw_complete":
                 full_text, artifacts = event["text"], event["artifacts"]
-                if context_id:
-                    save_turn(context_id, owner, message_text, full_text)
+                save_turn(context_id, owner, message_text, full_text, _queries_from(artifacts))
 
         if not full_text:
             yield {"type": "error", "message": "Empty response"}

@@ -36,6 +36,14 @@ def _item(context_id: str) -> Optional[dict]:
     return _get_table().get_item(Key={"context_id": context_id}).get("Item")
 
 
+def exists(context_id: str) -> bool:
+    try:
+        return bool(_item(context_id))
+    except Exception as e:
+        logger.warning(f"Failed to read conversation: {e}")
+        return False
+
+
 def owns(context_id: str, owner: str) -> bool:
     """True when the conversation exists and was created by owner (a Cognito sub)."""
     try:
@@ -64,8 +72,12 @@ def load_history(context_id: str, owner: str) -> list[dict]:
         return []
 
 
-def save_turn(context_id: str, owner: str, user_message: str, assistant_message: str):
+def save_turn(context_id: str, owner: str, user_message: str, assistant_message: str,
+              queries: Optional[list[dict]] = None):
     """Append a turn; never writes over a conversation that belongs to someone else.
+
+    `queries` (title, query contract or SQL, governed) are kept on the assistant message so
+    follow-up questions can build on them.
 
     Items without an owner predate ownership tracking; the first writer claims them.
     """
@@ -74,7 +86,10 @@ def save_turn(context_id: str, owner: str, user_message: str, assistant_message:
     try:
         history = load_history(context_id, owner)
         history.append({"role": "user", "content": user_message})
-        history.append({"role": "assistant", "content": assistant_message})
+        assistant = {"role": "assistant", "content": assistant_message}
+        if queries:
+            assistant["queries"] = queries
+        history.append(assistant)
         history = history[-_MAX_MESSAGES:]
 
         _get_table().put_item(
