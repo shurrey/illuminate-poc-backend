@@ -1,18 +1,19 @@
-"""Build tests/fixtures/cdm_dictionary.json from an Illuminate data-dictionary catalog export.
+"""Build the CDM dictionary test fixtures from Illuminate data-dictionary exports.
 
-Usage: python scripts/build_dictionary_snapshot.py <catalog.json>
-The input is the `catalog` shape served by /api/v1/dictionary (schema -> tables -> columns).
+Usage: python scripts/build_dictionary_snapshot.py <catalog.json> <definitions.json>
+<catalog.json> is the `catalog` export (schema -> tables -> columns); <definitions.json> is
+the response of https://us.data.api.blackboard.com/api/v1/data/dictionary/definitions.
 """
 
 import json
 import sys
 from pathlib import Path
 
-OUT = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "cdm_dictionary.json"
+FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
 
-def main(src: str) -> None:
-    raw = json.loads(Path(src).read_text())
+def main(catalog_src: str, definitions_src: str) -> None:
+    raw = json.loads(Path(catalog_src).read_text())
     catalog = raw.get("catalog", raw)
     snapshot = {
         schema: {
@@ -22,9 +23,17 @@ def main(src: str) -> None:
         for schema, body in sorted(catalog.items())
         if schema.startswith("CDM_")
     }
-    OUT.write_text(json.dumps(snapshot, indent=1, sort_keys=True) + "\n")
-    print(f"wrote {OUT} ({sum(len(t) for t in snapshot.values())} tables)")
+    (FIXTURES / "cdm_dictionary.json").write_text(json.dumps(snapshot, indent=1, sort_keys=True) + "\n")
+
+    definitions = json.loads(Path(definitions_src).read_text())
+    pii = sorted({
+        d["name"].upper() for d in definitions
+        if d.get("name", "").upper().startswith("CDM_")
+        and any(s.get("isPii") for s in d.get("technicalSpecifications") or [])
+    })
+    (FIXTURES / "cdm_pii_columns.json").write_text(json.dumps(pii, indent=1) + "\n")
+    print(f"wrote {sum(len(t) for t in snapshot.values())} tables and {len(pii)} PII columns to {FIXTURES}")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2])

@@ -3,7 +3,8 @@ import pytest
 
 from semantic_layer.compiler import CompileError, build_ctes, compile_query
 from semantic_layer.contract import QueryContract
-from tests.semantic_fixtures import ENROLLMENTS, catalog, dataset
+from semantic_layer.schema import SemanticMetric
+from tests.semantic_fixtures import ENROLLMENTS, STUDENT_ENROLLMENTS, catalog, dataset
 
 
 def _compile(cat=None, **contract):
@@ -126,7 +127,7 @@ def test_internal_datasets_cannot_be_queried():
 
 def test_non_cdm_tables_are_rejected():
     bad = dataset(base_sql="SELECT ID, PERSON_ID, COURSE_ID, COURSE_ROLE, ENROLLMENT_TIME, EMAIL FROM OTHER.SECRETS")
-    with pytest.raises(CompileError, match="outside the CDM"):
+    with pytest.raises(CompileError, match="outside this database"):
         _compile(catalog(bad), measures=["dataset.enrollments.v1:enrollments"])
 
 
@@ -176,9 +177,43 @@ def test_time_dimension_filters_compare_whole_days():
 
 
 def test_metric_and_measure_with_the_same_output_name_collide():
+    same_name = SemanticMetric(**(STUDENT_ENROLLMENTS.model_dump() | {"id": "metric.enrollments.v1"}))
     with pytest.raises(CompileError, match="collide"):
-        _compile(metrics=["metric.student_enrollments.v1"],
-                 measures=["dataset.enrollments.v1:enrollments", "dataset.enrollments.v1:enrollments"])
+        _compile(catalog(metrics=(same_name,)),
+                 metrics=["metric.enrollments.v1"], measures=["dataset.enrollments.v1:enrollments"])
+
+
+@pytest.mark.parametrize("declared", [["email"], ["Email"]])
+def test_pii_check_ignores_case(declared):
+    with pytest.raises(CompileError, match="personally identifiable"):
+        _compile(catalog(dataset(pii_columns=declared)),
+                 measures=["dataset.enrollments.v1:enrollments"], dimensions=["email"])
+
+
+def test_known_pii_column_names_cannot_be_selected_even_if_undeclared():
+    with pytest.raises(CompileError, match="personally identifiable"):
+        _compile(catalog(dataset(pii_columns=[])),
+                 measures=["dataset.enrollments.v1:enrollments"], dimensions=["email"])
+
+
+@pytest.mark.parametrize("table", [
+    "OTHERDB.CDM_LMS.PERSON",
+    'DB."cdm_lms".PERSON',
+    '"OTHERDB".CDM_LMS.PERSON',
+    "CDM_LMS.PERSON",
+])
+def test_tables_must_be_in_this_database_and_a_cdm_schema(table):
+    bad = dataset(base_sql=f"SELECT ID, PERSON_ID, COURSE_ID, COURSE_ROLE, ENROLLMENT_TIME, EMAIL FROM {table}")
+    with pytest.raises(CompileError, match="outside"):
+        _compile(catalog(bad), measures=["dataset.enrollments.v1:enrollments"])
+
+
+def test_scoped_count_star_counts_matching_rows():
+    star = dataset(measures=[{"name": "rows", "agg": "count", "expr": "*"}])
+    metric = SemanticMetric(**(STUDENT_ENROLLMENTS.model_dump() | {"id": "metric.student_rows.v1",
+                                                                     "measure": "dataset.enrollments.v1:rows"}))
+    q = _compile(catalog(star, metrics=(metric,)), metrics=["metric.student_rows.v1"])
+    assert "COUNT(CASE WHEN COURSE_ROLE = 'S' THEN 1 END) AS student_rows" in q.sql
 
 
 def test_grain_suffix_is_not_a_filter_dimension():

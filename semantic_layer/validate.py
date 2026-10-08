@@ -1,7 +1,8 @@
 """Offline validation of catalog definitions against a CDM dictionary snapshot.
 
-Every column a dataset reads must exist in the snapshot, and every column a
-dimension, measure, filter or entity names must be one the dataset outputs.
+Every column a dataset reads must exist in the snapshot, every column a
+dimension, measure, filter or entity names must be one the dataset outputs, and
+every output traced to a dictionary-flagged PII column must be declared.
 """
 
 from __future__ import annotations
@@ -12,13 +13,18 @@ from pathlib import Path
 import sqlglot
 import sqlglot.expressions as exp
 from sqlglot.errors import OptimizeError, ParseError
+from sqlglot.lineage import lineage
+from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.qualify import qualify
+from sqlglot.schema import MappingSchema
 
 from .compiler import CompileError, build_ctes
 from .pii import PII_COLUMN_NAMES
 from .schema import Catalog, Dataset, SemanticMetric
 
-DICTIONARY_SNAPSHOT = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "cdm_dictionary.json"
+_FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
+DICTIONARY_SNAPSHOT = _FIXTURES / "cdm_dictionary.json"
+PII_SNAPSHOT = _FIXTURES / "cdm_pii_columns.json"
 _DB = "VALIDATION_DB"
 
 
@@ -27,25 +33,73 @@ def load_snapshot(path: Path = DICTIONARY_SNAPSHOT) -> dict:
     return {_DB: json.loads(path.read_text())}
 
 
+def load_pii_columns(path: Path = PII_SNAPSHOT) -> frozenset[str]:
+    """Dictionary-flagged PII columns as SCHEMA.TABLE.COLUMN."""
+    return frozenset(json.loads(path.read_text()))
+
+
 def _columns_in(sql: str) -> set[str]:
     return {c.name.upper() for c in sqlglot.parse_one(sql, read="snowflake").find_all(exp.Column)}
 
 
-def output_columns(ds: Dataset, catalog: Catalog, snapshot: dict) -> list[str]:
-    """Qualify the dataset's SQL against the snapshot and return its output column names."""
+def _dataset_sql(ds: Dataset, catalog: Catalog) -> str:
     ctes = build_ctes(catalog, [ds.id], _DB)
     *deps, own = ctes.items()
-    sql = own[1]
-    if deps:
-        sql = "WITH " + ",\n".join(f"{n} AS (\n{s}\n)" for n, s in deps) + f"\nSELECT * FROM ({sql})"
-    tree = qualify(
-        sqlglot.parse_one(sql, read="snowflake"),
+    if not deps:
+        return own[1]
+    return "WITH " + ",\n".join(f"{n} AS (\n{s}\n)" for n, s in deps) + f"\nSELECT * FROM ({own[1]})"
+
+
+def _qualified(ds: Dataset, catalog: Catalog, snapshot: dict) -> exp.Expression:
+    return qualify(
+        sqlglot.parse_one(_dataset_sql(ds, catalog), read="snowflake"),
         schema=snapshot, dialect="snowflake", validate_qualify_columns=True,
     )
-    return [c.upper() for c in tree.named_selects]
 
 
-def validate_dataset(ds: Dataset, catalog: Catalog, snapshot: dict) -> list[str]:
+def output_columns(ds: Dataset, catalog: Catalog, snapshot: dict) -> list[str]:
+    """Qualify the dataset's SQL against the snapshot and return its output column names."""
+    return [c.upper() for c in _qualified(ds, catalog, snapshot).named_selects]
+
+
+_TYPE_CHECKS = {
+    "boolean": lambda t: t.this == exp.DataType.Type.BOOLEAN,
+    "time": lambda t: t.this in exp.DataType.TEMPORAL_TYPES,
+    "numeric": lambda t: t.this in exp.DataType.NUMERIC_TYPES,
+}
+
+
+def _dimension_type_errors(ds: Dataset, catalog: Catalog, snapshot: dict) -> list[str]:
+    """Columns whose type sqlglot cannot infer (UNKNOWN) are not checked."""
+    # A MappingSchema normalizes the quoted identifiers qualify emits; the raw dict does not.
+    schema = MappingSchema(snapshot, dialect="snowflake")
+    tree = annotate_types(_qualified(ds, catalog, snapshot), schema=schema, dialect="snowflake")
+    types = {s.alias_or_name.upper(): s.type for s in tree.selects}
+    errors = []
+    for d in ds.dimensions:
+        t = types.get(d.column.upper())
+        check = _TYPE_CHECKS.get(d.type)
+        if check and t is not None and t.this != exp.DataType.Type.UNKNOWN and not check(t):
+            errors.append(f"{ds.id}: dimension {d.name} is typed {d.type} but column {d.column} is {t.sql()}")
+    return errors
+
+
+def _traced_pii(ds: Dataset, catalog: Catalog, snapshot: dict, outputs: set[str], pii: frozenset[str]) -> set[str]:
+    """Outputs whose lineage reaches a PII-flagged source column."""
+    sql = _dataset_sql(ds, catalog)
+    found = set()
+    for col in outputs:
+        for node in lineage(col, sql, schema=snapshot, dialect="snowflake").walk():
+            if node.downstream or not isinstance(node.source, exp.Table):
+                continue
+            source = f"{node.source.db}.{node.source.name}.{node.name.split('.')[-1]}".upper()
+            if source in pii:
+                found.add(col)
+                break
+    return found
+
+
+def validate_dataset(ds: Dataset, catalog: Catalog, snapshot: dict, pii: frozenset[str]) -> list[str]:
     try:
         outputs = set(output_columns(ds, catalog, snapshot))
     except (CompileError, OptimizeError, ParseError) as e:
@@ -68,10 +122,11 @@ def validate_dataset(ds: Dataset, catalog: Catalog, snapshot: dict) -> list[str]
     for f in ds.filters:
         need(_columns_in(f.sql), f"filter {f.name}")
     need({c.upper() for c in ds.pii_columns}, "pii_columns")
-    undeclared = sorted((outputs & PII_COLUMN_NAMES) - {c.upper() for c in ds.pii_columns})
+    flagged = (outputs & PII_COLUMN_NAMES) | _traced_pii(ds, catalog, snapshot, outputs, pii)
+    undeclared = sorted(flagged - {c.upper() for c in ds.pii_columns})
     if undeclared:
         errors.append(f"{ds.id}: outputs PII columns not listed in pii_columns: {undeclared}")
-    return errors
+    return errors + _dimension_type_errors(ds, catalog, snapshot)
 
 
 def validate_metric(m: SemanticMetric, catalog: Catalog) -> list[str]:

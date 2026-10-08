@@ -84,7 +84,7 @@ dimensions:
   - {name: ih_node_name, column: IH_NODE_NAME, type: categorical, description: "Institutional hierarchy node path names; 'All' when the course has no node", synonyms: [department, college, hierarchy]}
   - {name: course_role, column: COURSE_ROLE, type: categorical, description: "Role code of an enrollment in the course (S = student, P = instructor, ...)", synonyms: [role]}
   - {name: course_duration, column: COURSE_DURATION, type: categorical, description: "'Fixed' when the course or its term has an end date, else 'Continuous'"}
-  - {name: course_ended, column: COURSE_ENDED, type: boolean, description: "1 when the course or term end date has passed"}
+  - {name: course_ended, column: COURSE_ENDED, type: numeric, description: "1 when the course or term end date has passed, else 0"}
   - {name: course_creation_date, column: COURSE_CREATION_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: start_date, column: START_DATE, type: time, grains: [day, week, month, quarter, year], synonyms: [course start]}
   - {name: end_date, column: END_DATE, type: time, grains: [day, week, month, quarter, year], synonyms: [course end]}

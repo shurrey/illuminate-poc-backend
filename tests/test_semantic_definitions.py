@@ -5,16 +5,17 @@ import pytest
 from semantic_layer.catalog import load_catalog
 from semantic_layer.compiler import compile_query
 from semantic_layer.contract import QueryContract
-from semantic_layer.validate import load_snapshot, validate_dataset, validate_metric
+from semantic_layer.validate import load_pii_columns, load_snapshot, validate_dataset, validate_metric
 
 CATALOG = load_catalog()
 SNAPSHOT = load_snapshot()
+PII = load_pii_columns()
 PUBLIC = [d for d in CATALOG.datasets.values() if d.visibility == "public"]
 
 
 @pytest.mark.parametrize("ds", CATALOG.datasets.values(), ids=lambda d: d.id)
 def test_dataset_is_valid(ds):
-    assert validate_dataset(ds, CATALOG, SNAPSHOT) == []
+    assert validate_dataset(ds, CATALOG, SNAPSHOT, PII) == []
 
 
 @pytest.mark.parametrize("ds", PUBLIC, ids=lambda d: d.id)

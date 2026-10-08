@@ -23,7 +23,7 @@ ENROLLMENTS = Dataset(
         {"name": "per_person", "agg": "ratio", "numerator": "enrollments", "denominator": "people"},
     ],
     filters=[{"name": "students", "sql": "COURSE_ROLE = 'S'"}],
-    pii_columns=["EMAIL"],
+    pii_columns=["EMAIL", "ID", "PERSON_ID"],
 )
 
 STUDENT_ENROLLMENTS = SemanticMetric(

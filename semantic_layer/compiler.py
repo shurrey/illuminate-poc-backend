@@ -13,6 +13,7 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from .contract import CompiledQuery, ContractFilter, Provenance, QueryContract
+from .pii import PII_COLUMN_NAMES
 from .render import TemplateError, cte_name, render
 from .schema import Catalog, Dataset, DatasetDimension, Measure, SemanticMetric
 
@@ -102,7 +103,9 @@ def _aggregate(ds: Dataset, m: Measure, scope: Optional[exp.Expression]) -> exp.
         return exp.Div(this=num, expression=exp.Anonymous(this="NULLIF", expressions=[den, exp.Literal.number(0)]))
     arg = _parse(m.expr, f"{ds.id}:{m.name} expr")
     if scope is not None:
-        arg = exp.Case(ifs=[exp.If(this=scope.copy(), true=arg)])
+        # COUNT(*) under a scope counts matching rows: CASE ... THEN * is not valid SQL.
+        then = exp.Literal.number(1) if isinstance(arg, exp.Star) else arg
+        arg = exp.Case(ifs=[exp.If(this=scope.copy(), true=then)])
     if m.agg == "count_distinct":
         return exp.Count(this=exp.Distinct(expressions=[arg]))
     return exp.Anonymous(this=m.agg.upper(), expressions=[arg])
@@ -118,15 +121,26 @@ def _resolve_dimension(ds: Dataset, ref: str) -> tuple[DatasetDimension, Optiona
     return dim, grain or None
 
 
-def _check_tables(sql: str) -> None:
+def _unquoted_upper(ident: Optional[exp.Identifier]) -> str:
+    """The identifier as Snowflake resolves it; '' when absent."""
+    if ident is None:
+        return ""
+    return ident.name if ident.quoted else ident.name.upper()
+
+
+def _check_tables(sql: str, database: str) -> None:
+    """Every real table must be <database>.CDM_*.<table>; unqualified names must be CTEs."""
     tree = _parse(sql, "compiled query")
     local = {cte.alias_or_name.upper() for cte in tree.find_all(exp.CTE)}
     for table in tree.find_all(exp.Table):
-        schema = table.db.upper()
-        if not schema and table.name.upper() in local:
+        schema = _unquoted_upper(table.args.get("db"))
+        catalog = _unquoted_upper(table.args.get("catalog"))
+        if not schema and not catalog and table.name.upper() in local:
             continue
-        if not schema.startswith("CDM_"):
-            raise CompileError(f"table {table.sql(dialect='snowflake')} is outside the CDM_* schemas")
+        if catalog != database.upper() or not schema.startswith("CDM_"):
+            raise CompileError(
+                f"table {table.sql(dialect='snowflake')} is outside this database's CDM_* schemas"
+            )
 
 
 def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> CompiledQuery:
@@ -159,7 +173,7 @@ def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> C
     aliases: list[str] = []
     for ref in contract.dimensions:
         dim, grain = _resolve_dimension(ds, ref)
-        if dim.column in ds.pii_columns:
+        if dim.column.upper() in {c.upper() for c in ds.pii_columns} | PII_COLUMN_NAMES:
             raise CompileError(f"dimension {dim.name!r} is personally identifiable and cannot be selected")
         col = exp.column(dim.column)
         node = exp.Anonymous(this="DATE_TRUNC", expressions=[exp.Literal.string(grain), col]) if grain else col
@@ -215,7 +229,7 @@ def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> C
     ctes = build_ctes(catalog, [ds.id], database)
     with_clause = ",\n".join(f"{name} AS (\n{sql}\n)" for name, sql in ctes.items())
     sql = f"WITH {with_clause}\n{query.sql(dialect='snowflake', pretty=True)}"
-    _check_tables(sql)
+    _check_tables(sql, database)
 
     return CompiledQuery(
         sql=sql,
