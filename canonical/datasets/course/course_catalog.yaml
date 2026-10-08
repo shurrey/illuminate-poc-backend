@@ -1,0 +1,180 @@
+id: dataset.course_catalog.v1
+display_name: Course catalog with status flags
+description: >
+  Every course, including child courses and courses not yet started, with its hierarchy levels,
+  dates (creation, start, end, real end, first and last student activity), roles enrolled (preview
+  and bbsupport users excluded), design mode, and status flags. Deviations: course_weeks uses the
+  week-truncated definition shared with course_filters; design mode is looked up by the course's
+  canonical code rather than its source code.
+grain: one row per course x institutional hierarchy node x course role
+domain: course
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_COURSE_FILTER.sql
+base_sql: |
+  WITH course_roles AS (
+      SELECT DISTINCT pc.COURSE_ID, pc.COURSE_ROLE, pc.COURSE_ROLE_SOURCE_DESC
+      FROM {{ database }}.CDM_LMS.PERSON_COURSE pc
+      JOIN {{ database }}.CDM_LMS.PERSON pe ON pe.ID = pc.PERSON_ID
+      WHERE pe.LAST_NAME NOT LIKE '%PreviewUser'
+        AND pe.LAST_NAME NOT LIKE 'bbsupport%'
+  ),
+  student_activity AS (
+      SELECT pc.COURSE_ID,
+             MIN(ca.FIRST_ACCESSED_TIME) AS FIRST_COURSE_DAY,
+             MAX(ca.FIRST_ACCESSED_TIME) AS LAST_COURSE_DAY
+      FROM {{ database }}.CDM_LMS.PERSON_COURSE pc
+      JOIN {{ database }}.CDM_LMS.COURSE_ACTIVITY ca
+        ON pc.COURSE_ID = ca.COURSE_ID AND pc.PERSON_ID = ca.PERSON_ID
+      WHERE pc.STUDENT_IND = TRUE
+      GROUP BY pc.COURSE_ID
+  ),
+  act_as_instructor AS (
+      SELECT DISTINCT COURSE_ID FROM {{ database }}.CDM_LMS.PERSON_COURSE WHERE ACT_AS_INSTRUCTOR_IND
+  ),
+  parent_course AS (
+      SELECT DISTINCT COURSE_PARENT_ID AS COURSE_ID
+      FROM {{ database }}.CDM_LMS.COURSE
+      WHERE COURSE_PARENT_ID IS NOT NULL
+  ),
+  course_start_end AS (
+      SELECT co.INSTANCE_ID, co.ID AS COURSE_ID, co.NAME AS COURSE_NAME, co.COURSE_NUMBER,
+             co.CREATED_TIME AS COURSE_CREATION_DATE,
+             te.NAME AS TERM_NAME,
+             COALESCE(co.START_TIME, te.START_TIME) AS START_DAY,
+             CASE WHEN co.END_TIME > CURRENT_TIMESTAMP() THEN CURRENT_TIMESTAMP()
+                  WHEN te.END_TIME > CURRENT_TIMESTAMP() THEN CURRENT_TIMESTAMP()
+                  WHEN co.END_TIME <= CURRENT_TIMESTAMP() THEN co.END_TIME
+                  WHEN te.END_TIME <= CURRENT_TIMESTAMP() THEN te.END_TIME
+             END AS END_DAY,
+             COALESCE(co.END_TIME, te.END_TIME) AS END_REAL_DAY,
+             IFF(COALESCE(co.END_DATE, te.END_DATE) IS NOT NULL, 'Fixed', 'Continuous') AS COURSE_DURATION,
+             IFF(COALESCE(co.END_DATE, te.END_DATE) <= CURRENT_TIMESTAMP(), 1, 0) AS COURSE_ENDED,
+             IFF(COALESCE(co.START_TIME, te.START_TIME) > CURRENT_TIMESTAMP(), 'N', 'Y') AS COURSE_REPORTABLE,
+             IFF(co.COURSE_PARENT_ID IS NULL, 0, 1) AS CHILD_COURSE_IND,
+             NVL(cd.CANON_DESC, 'No explicit mode') AS DESIGN_MODE
+      FROM {{ database }}.CDM_LMS.COURSE co
+      LEFT JOIN {{ database }}.CDM_LMS.TERM te ON te.ID = co.TERM_ID
+      LEFT JOIN {{ database }}.CDM_META.CANON_DEFINITION cd
+        ON cd.CANON_CODE = co.DESIGN_MODE AND cd.SOURCE_DOMAIN = 'LMS' AND cd.NAME = 'DESIGN_MODE'
+  ),
+  course_institution_hierarchy AS (
+      SELECT c.ID AS COURSE_ID,
+             NVL(ih.HIERARCHY_ID_SEQ, '||0||') AS HIERARCHY_ID_SEQ,
+             NVL(ihc.PRIMARY_IND, TRUE) AS IH_PRIMARY_IND
+      FROM {{ database }}.CDM_LMS.COURSE c
+      LEFT JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc
+        ON c.ID = ihc.COURSE_ID
+       AND NOT (ihc.ROW_DELETED_TIME IS NOT NULL AND c.ROW_DELETED_TIME IS NULL)
+      LEFT JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+  ),
+  institution_hierarchy_nodes AS (
+      SELECT DISTINCT TRY_TO_NUMBER(node.VALUE) AS ID, cih.COURSE_ID
+      FROM course_institution_hierarchy cih, LATERAL SPLIT_TO_TABLE(cih.HIERARCHY_ID_SEQ, '||') node
+  ),
+  institution_hierarchy_all AS (
+      SELECT ihn.COURSE_ID,
+             COALESCE(IFF(ihn.ID = 0, '-', ih.HIERARCHY_NAME_SEQ), 'All Nodes') AS IH_NODE_NAME,
+             NVL(IFF(ihn.ID = 0, '||0||', ih.HIERARCHY_ID_SEQ), '||-1||') AS IH_PATH,
+             IFF(LEN(SPLIT_PART(IH_NODE_NAME, '||', 1)) > 0, SPLIT_PART(IH_NODE_NAME, '||', 1), SPLIT_PART(IH_NODE_NAME, '||', 2)) AS IH_LVL1,
+             NULLIF(SPLIT_PART(IH_NODE_NAME, '||', 3), '') AS IH_LVL2,
+             NULLIF(SPLIT_PART(IH_NODE_NAME, '||', 4), '') AS IH_LVL3,
+             TRIM(IFF(LEN(SPLIT_PART(IH_NODE_NAME, '||', 5)) > 0,
+                      RIGHT(IH_NODE_NAME, LEN(IH_NODE_NAME) - 6 - LEN(SPLIT_PART(IH_NODE_NAME, '||', 2))
+                            - LEN(SPLIT_PART(IH_NODE_NAME, '||', 3)) - LEN(SPLIT_PART(IH_NODE_NAME, '||', 4))),
+                      '-'), '||') AS IH_LVL4
+      FROM institution_hierarchy_nodes ihn
+      LEFT JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihn.ID
+  )
+  SELECT DISTINCT
+      co.COURSE_ID,
+      co.COURSE_NAME,
+      co.COURSE_NUMBER,
+      ih.IH_PATH,
+      ih.IH_NODE_NAME,
+      ih.IH_LVL1,
+      COALESCE(ih.IH_LVL2, '-') AS IH_LVL2,
+      COALESCE(ih.IH_LVL3, '-') AS IH_LVL3,
+      COALESCE(ih.IH_LVL4, '-') AS IH_LVL4,
+      NVL(co.TERM_NAME, '-') AS TERM_NAME,
+      CONCAT(co.COURSE_NUMBER, ' - ', co.COURSE_NAME) AS COURSE_ID_NAME,
+      co.COURSE_ENDED,
+      co.COURSE_REPORTABLE,
+      IFF(co.COURSE_CREATION_DATE < '1970-01-01'::DATE, '1970-01-01'::DATE,
+          CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), co.COURSE_CREATION_DATE))::DATE AS COURSE_CREATION_DATE,
+      IFF(COALESCE(co.START_DAY, sa.FIRST_COURSE_DAY) < '1970-01-01'::DATE, '1970-01-01'::DATE,
+          CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), COALESCE(co.START_DAY, sa.FIRST_COURSE_DAY)))::DATE AS START_DATE,
+      IFF(COALESCE(co.END_DAY, sa.LAST_COURSE_DAY) < '1970-01-01'::DATE, '1970-01-01'::DATE,
+          CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), COALESCE(co.END_DAY, sa.LAST_COURSE_DAY)))::DATE AS END_DATE,
+      IFF(COALESCE(co.END_REAL_DAY, sa.LAST_COURSE_DAY) < '1970-01-01'::DATE, '1970-01-01'::DATE,
+          CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), COALESCE(co.END_REAL_DAY, sa.LAST_COURSE_DAY)))::DATE AS END_REAL_DATE,
+      DATE_TRUNC('week', START_DATE) AS START_WEEK,
+      DATE_TRUNC('week', END_DATE) AS END_WEEK,
+      DATE_TRUNC('week', END_REAL_DATE) AS END_REAL_WEEK,
+      DATEDIFF(day, START_DATE, END_DATE) / 7 AS COURSE_WEEKS_DECIMAL,
+      DATEDIFF(week, START_WEEK, END_WEEK) + 1 AS COURSE_WEEKS,
+      IFF(sa.FIRST_COURSE_DAY < '1970-01-01'::DATE, '1970-01-01'::DATE,
+          CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), sa.FIRST_COURSE_DAY))::DATE AS START_STUDENT_ACTIVITY_DATE,
+      IFF(sa.LAST_COURSE_DAY < '1970-01-01'::DATE, '1970-01-01'::DATE,
+          CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), sa.LAST_COURSE_DAY))::DATE AS END_STUDENT_ACTIVITY_DATE,
+      co.COURSE_DURATION,
+      pc.COURSE_ROLE,
+      NVL(t.TRANSLATION_VALUE, pc.COURSE_ROLE_SOURCE_DESC) AS COURSE_ROLE_DESCRIPTION,
+      IFF(aai.COURSE_ID IS NOT NULL, 1, 0) AS ACT_AS_INSTRUCTOR_IND,
+      IFF(COALESCE(co.START_DAY, sa.FIRST_COURSE_DAY) <= CURRENT_DATE(), 1, 0) AS COURSE_STARTED_IND,
+      IFF(sa.COURSE_ID IS NOT NULL, 1, 0) AS STUDENT_ACTIVITY_IND,
+      co.CHILD_COURSE_IND,
+      IFF(pa.COURSE_ID IS NULL, 0, 1) AS PARENT_COURSE_IND,
+      co.DESIGN_MODE,
+      NVL(cih.IH_PRIMARY_IND, FALSE) AS IH_PRIMARY_IND
+  FROM course_start_end co
+  LEFT JOIN {{ database }}.CDM_LMS.INSTANCE i ON co.INSTANCE_ID = i.ID
+  LEFT JOIN student_activity sa ON sa.COURSE_ID = co.COURSE_ID
+  LEFT JOIN course_roles pc ON pc.COURSE_ID = co.COURSE_ID
+  LEFT JOIN {{ database }}.CDM_LMS.TRANSLATION t
+    ON pc.COURSE_ROLE_SOURCE_DESC = t.TRANSLATION_KEY AND t.LOCALE = 'en_US'
+  LEFT JOIN institution_hierarchy_all ih ON ih.COURSE_ID = co.COURSE_ID
+  LEFT JOIN act_as_instructor aai ON aai.COURSE_ID = co.COURSE_ID
+  LEFT JOIN parent_course pa ON pa.COURSE_ID = co.COURSE_ID
+  LEFT JOIN course_institution_hierarchy cih
+    ON cih.COURSE_ID = co.COURSE_ID AND cih.HIERARCHY_ID_SEQ = ih.IH_PATH
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: course_id_name, column: COURSE_ID_NAME, type: categorical, description: "'<course number> - <course name>'", synonyms: [course]}
+  - {name: course_name, column: COURSE_NAME, type: categorical}
+  - {name: course_number, column: COURSE_NUMBER, type: categorical, synonyms: [course code]}
+  - {name: ih_node_name, column: IH_NODE_NAME, type: categorical}
+  - {name: ih_level_1, column: IH_LVL1, type: categorical, synonyms: [institution, campus]}
+  - {name: ih_level_2, column: IH_LVL2, type: categorical, synonyms: [college, school]}
+  - {name: ih_level_3, column: IH_LVL3, type: categorical, synonyms: [department]}
+  - {name: ih_level_4, column: IH_LVL4, type: categorical}
+  - {name: ih_primary, column: IH_PRIMARY_IND, type: boolean, description: "True when this node is the course's primary hierarchy node"}
+  - {name: term_name, column: TERM_NAME, type: categorical, synonyms: [term, semester]}
+  - {name: course_role, column: COURSE_ROLE, type: categorical, synonyms: [role]}
+  - {name: course_role_description, column: COURSE_ROLE_DESCRIPTION, type: categorical, synonyms: [role name]}
+  - {name: design_mode, column: DESIGN_MODE, type: categorical, synonyms: [ultra or classic, course view]}
+  - {name: course_duration, column: COURSE_DURATION, type: categorical}
+  - {name: course_reportable, column: COURSE_REPORTABLE, type: categorical, description: "'Y' once the course or term start has passed"}
+  - {name: course_ended, column: COURSE_ENDED, type: numeric}
+  - {name: course_started, column: COURSE_STARTED_IND, type: numeric}
+  - {name: has_student_activity, column: STUDENT_ACTIVITY_IND, type: numeric}
+  - {name: has_instructor, column: ACT_AS_INSTRUCTOR_IND, type: numeric}
+  - {name: is_child_course, column: CHILD_COURSE_IND, type: numeric}
+  - {name: is_parent_course, column: PARENT_COURSE_IND, type: numeric}
+  - {name: course_weeks, column: COURSE_WEEKS, type: numeric}
+  - {name: course_creation_date, column: COURSE_CREATION_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: start_date, column: START_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: end_date, column: END_DATE, type: time, grains: [day, week, month, quarter, year], description: "Capped at today while the course is running"}
+  - {name: end_real_date, column: END_REAL_DATE, type: time, grains: [day, week, month, quarter, year], description: "The scheduled end date, not capped"}
+  - {name: first_student_activity, column: START_STUDENT_ACTIVITY_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: last_student_activity, column: END_STUDENT_ACTIVITY_DATE, type: time, grains: [day, week, month, quarter, year]}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: courses_with_student_activity, agg: count_distinct, expr: "IFF(STUDENT_ACTIVITY_IND = 1, COURSE_ID, NULL)", unit: courses}
+  - {name: courses_with_instructor, agg: count_distinct, expr: "IFF(ACT_AS_INSTRUCTOR_IND = 1, COURSE_ID, NULL)", unit: courses}
+  - {name: share_with_student_activity, agg: ratio, numerator: courses_with_student_activity, denominator: courses, unit: ratio}
+filters:
+  - {name: reportable, sql: "COURSE_REPORTABLE = 'Y'"}
+  - {name: ongoing, sql: "COURSE_ENDED = 0"}
+  - {name: top_level, sql: "CHILD_COURSE_IND = 0"}
+  - {name: ultra, sql: "DESIGN_MODE = 'Ultra'"}
+  - {name: classic, sql: "DESIGN_MODE = 'Classic'"}
