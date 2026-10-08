@@ -147,3 +147,15 @@ Before the first dataset that reads `CDM_META` or `CDM_TLM` columns missing from
 | Phase 4 review | A base dimension silently beats a joined one with the same name; two qualified refs with the same name collide; a grain suffix on `time_range.dimension` is ignored | 6c |
 | Phase 4 review | Multi-dataset joins on time dimensions of different types (DATE vs TIMESTAMP_TZ) rely on implicit casts | 6c |
 | Phase 4 review | Synonym collisions ("course count" on both `reportable_courses` and `courses`) | 5a follow-up in 6d |
+| Phase 5 review | Engine ignores `stopReason`: a `max_tokens` cut-off is returned silently, guardrail stops aren't logged, and text written alongside a tool call is dropped | 9b |
+| Phase 5 review | Tool errors don't set `"status": "error"` on `toolResult`; raw warehouse error text reaches the model | 9b |
+| Phase 5 review | An odd `CONVERSATION_MAX_MESSAGES` can start history on an assistant turn; trim to an even count | 9b |
+| Phase 5 review | Database name is resolved once at import with a silent fallback; a `CatalogError` at import surfaces as an ImportError | 9b |
+| Phase 5 review | `describe_table` re-fetches on every failure (`lru_cache` doesn't cache exceptions) | 9b |
+| Phase 5 review | `useChat` ignores a different `contextId` from the server | 6g |
+| Phase 5 review | Sync DynamoDB calls inside the async chat generator | 9b |
+| Phase 5 review | `GET /api/chat/history` returns `queries`, including ungoverned SQL: document it | 9a |
+| Phase 5 review | `semantic_layer/tool.py` and `tests/test_semantic_layer.py` are dead | 8 |
+| Phase 5 review | Filter-values schema `"items": {}` doesn't tell the model the value types | 6c |
+| Phase 5 review | A `cachePoint` after the history messages; verify the system and tools cache points on one live Bedrock call first | first deploy |
+| Phase 5 review | Query Builder and card builder run every generated query twice and receive full compiled SQL; `:param` parameter UI is dead | 6d, 6e (replaced) |
