@@ -38,13 +38,12 @@ logger = logging.getLogger("API-PROXY")
 # Post-processing PII filter — runs on EVERY response before returning to user
 # =============================================================================
 
-# Patterns for common PII types (programmatic, not prompt-dependent)
+# Patterns for common PII types (programmatic, not prompt-dependent). Bare digit runs are not
+# matched: query results are full of 9-10 digit counts and IDs.
 _PII_PATTERNS = [
     (re.compile(r'\b\d{3}-\d{2}-\d{4}\b'), '[SSN REDACTED]'),                        # SSN with dashes
-    (re.compile(r'\b\d{9}\b'), '[ID REDACTED]'),                                       # SSN without dashes (9 digits)
     (re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'), '[EMAIL REDACTED]'),  # Email
-    (re.compile(r'\b\d{10}\b'), '[PHONE REDACTED]'),                                   # 10-digit phone
-    (re.compile(r'\b\(\d{3}\)\s*\d{3}-\d{4}\b'), '[PHONE REDACTED]'),                 # Phone (xxx) xxx-xxxx
+    (re.compile(r'\(\d{3}\)\s*\d{3}-\d{4}\b'), '[PHONE REDACTED]'),                   # Phone (xxx) xxx-xxxx
     (re.compile(r'\b\d{3}\.\d{3}\.\d{4}\b'), '[PHONE REDACTED]'),                     # Phone xxx.xxx.xxxx
     (re.compile(r'\b\d{3}-\d{3}-\d{4}\b'), '[PHONE REDACTED]'),                       # Phone xxx-xxx-xxxx
     (re.compile(r'\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b'), '[CARD REDACTED]'),   # Credit card
