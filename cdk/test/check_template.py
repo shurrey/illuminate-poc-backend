@@ -1,7 +1,9 @@
 """Assertions over the synthesized CloudFormation templates.
 
-Run after `npx cdk synth -q -c environment=dev --exclusively IlluminateBase-dev`
-(--exclusively skips Lambda asset bundling, which needs Docker).
+Run from cdk/ after:
+  npx cdk synth -q -c environment=dev -c initialUserPassword=Synth-Only-Passw0rd! --exclusively IlluminateBase-dev
+The password is a placeholder so the initial-user resources synthesize; --exclusively skips
+Lambda asset bundling, which needs Docker.
 """
 
 import json
@@ -24,9 +26,13 @@ def check(name: str, ok: bool) -> bool:
 def main() -> int:
     [client] = resources("IlluminateBase-dev", "AWS::Cognito::UserPoolClient")
     writable = client["Properties"].get("WriteAttributes")
+    groups = [g["Properties"]["GroupName"] for g in resources("IlluminateBase-dev", "AWS::Cognito::UserPoolGroup")]
+    base_text = (OUT / "IlluminateBase-dev.template.json").read_text()
     results = [
         check("user pool client declares its writable attributes", writable is not None),
         check("users cannot write custom:tenant_id", writable is not None and "custom:tenant_id" not in writable),
+        check("illuminate-admins group exists", "illuminate-admins" in groups),
+        check("initial user is added to the admin group", "adminAddUserToGroup" in base_text),
     ]
     return 0 if all(results) else 1
 

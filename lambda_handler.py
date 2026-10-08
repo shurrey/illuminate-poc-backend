@@ -455,7 +455,7 @@ async def health_check():
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    authorization: str = Header(...)
+    authorization: Optional[str] = Header(None)
 ):
     """Send a message via chat_engine (non-streaming)."""
     user = _get_user_from_token(authorization)
@@ -505,7 +505,7 @@ async def chat(
 @app.post("/api/chat/stream")
 async def chat_stream(
     request: ChatRequest,
-    authorization: str = Header(...)
+    authorization: Optional[str] = Header(None)
 ):
     """
     Send a message and receive streaming response via Server-Sent Events.
@@ -587,7 +587,7 @@ async def cancel_chat(
 @app.get("/api/conversations/{context_id}")
 async def get_conversation(
     context_id: str,
-    authorization: str = Header(...)
+    authorization: Optional[str] = Header(None)
 ):
     """Get conversation history by context ID."""
     user = _get_user_from_token(authorization)
@@ -603,7 +603,7 @@ async def get_conversation(
 @app.delete("/api/conversations/{context_id}")
 async def clear_conversation(
     context_id: str,
-    authorization: str = Header(...)
+    authorization: Optional[str] = Header(None)
 ):
     """Clear a conversation context."""
     user = _get_user_from_token(authorization)
@@ -650,7 +650,7 @@ async def _proxy_dictionary_request(path: str) -> object:
 
 
 @app.get("/api/v1/dictionary/submodels")
-async def dictionary_submodels(authorization: str = Header(...)):
+async def dictionary_submodels(authorization: Optional[str] = Header(None)):
     """Returns all CDM domains with display names."""
     user = _get_user_from_token(authorization)
     if not user:
@@ -659,7 +659,7 @@ async def dictionary_submodels(authorization: str = Header(...)):
 
 
 @app.get("/api/v1/dictionary/definitions")
-async def dictionary_definitions(authorization: str = Header(...)):
+async def dictionary_definitions(authorization: Optional[str] = Header(None)):
     """Returns all column definitions."""
     user = _get_user_from_token(authorization)
     if not user:
@@ -668,7 +668,7 @@ async def dictionary_definitions(authorization: str = Header(...)):
 
 
 @app.get("/api/v1/dictionary/erd")
-async def dictionary_erd(authorization: str = Header(...)):
+async def dictionary_erd(authorization: Optional[str] = Header(None)):
     """Returns entity relationships (foreign keys)."""
     user = _get_user_from_token(authorization)
     if not user:
@@ -681,7 +681,7 @@ async def dictionary_preview(
     schema: str,
     table: str,
     limit: int = 20,
-    authorization: str = Header(...),
+    authorization: Optional[str] = Header(None),
 ):
     """Preview sample data from a Snowflake table.
 
@@ -743,7 +743,7 @@ class DashboardMetricRequest(BaseModel):
 @app.post("/api/v1/dashboard/query")
 async def dashboard_query(
     request: DashboardQueryRequest,
-    authorization: str = Header(...),
+    authorization: Optional[str] = Header(None),
 ):
     """Execute a read-only SQL query against Snowflake for dashboard widgets.
 
@@ -778,7 +778,7 @@ async def dashboard_query(
 @app.post("/api/v1/dashboard/metric")
 async def dashboard_metric(
     request: DashboardMetricRequest,
-    authorization: str = Header(...),
+    authorization: Optional[str] = Header(None),
 ):
     """Execute a canonical metric for a dashboard widget.
 
@@ -879,14 +879,14 @@ def _compile_contract(contract: QueryContract, authorization: str):
 
 
 @app.post("/api/v1/semantic/compile")
-async def semantic_compile(contract: QueryContract, authorization: str = Header(...)) -> dict:
+async def semantic_compile(contract: QueryContract, authorization: Optional[str] = Header(None)) -> dict:
     """Compile a semantic query contract to SQL without executing it."""
     return _compile_contract(contract, authorization).model_dump()
 
 
 @app.get("/api/v1/semantic/catalog")
 async def semantic_catalog(
-    authorization: str = Header(...),
+    authorization: Optional[str] = Header(None),
     if_none_match: Optional[str] = Header(default=None),
 ):
     """Public datasets, dimensions, measures and metrics; supports If-None-Match."""
@@ -908,7 +908,7 @@ async def semantic_catalog(
 
 
 @app.post("/api/v1/semantic/query")
-async def semantic_query(contract: QueryContract, authorization: str = Header(...)):
+async def semantic_query(contract: QueryContract, authorization: Optional[str] = Header(None)):
     """Compile a semantic query contract and run it through the execution guard."""
     compiled = _compile_contract(contract, authorization)
 
@@ -946,8 +946,13 @@ class OverlayPutRequest(BaseModel):
     last_reviewed: Optional[str] = None  # ISO date; defaults to today server-side
 
 
-def _require_tenant(user: Optional[dict]) -> str:
-    """Extract tenant_id or raise 403 — admin endpoints require it."""
+ADMIN_GROUP = "illuminate-admins"
+
+
+def _require_admin_tenant(user: Optional[dict]) -> str:
+    """The caller's tenant_id; 403 unless they are in the admin group and carry a tenant."""
+    if ADMIN_GROUP not in (user or {}).get("cognito:groups", []):
+        raise HTTPException(status_code=403, detail=f"Requires membership of the {ADMIN_GROUP} group.")
     tid = _tenant_id_from_user(user)
     if not tid:
         raise HTTPException(
@@ -961,7 +966,7 @@ def _require_tenant(user: Optional[dict]) -> str:
 
 
 @app.get("/api/v1/admin/metrics")
-async def admin_list_metrics(authorization: str = Header(...)) -> dict:
+async def admin_list_metrics(authorization: Optional[str] = Header(None)) -> dict:
     """List all canonical metrics + this tenant's current overlay state.
 
     Each entry: id, display_name, description, owner (canonical), entity,
@@ -971,7 +976,7 @@ async def admin_list_metrics(authorization: str = Header(...)) -> dict:
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    tenant_id = _require_tenant(user)
+    tenant_id = _require_admin_tenant(user)
 
     from semantic_layer.engine import load_canonical
     import tenant_store
@@ -1006,13 +1011,13 @@ async def admin_list_metrics(authorization: str = Header(...)) -> dict:
 @app.get("/api/v1/admin/overlay/{metric_id}")
 async def admin_get_overlay(
     metric_id: str,
-    authorization: str = Header(...),
+    authorization: Optional[str] = Header(None),
 ) -> dict:
     """Return the current overlay for one metric, or null if none exists."""
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    tenant_id = _require_tenant(user)
+    tenant_id = _require_admin_tenant(user)
 
     from semantic_layer.engine import load_canonical
     import tenant_store
@@ -1039,7 +1044,7 @@ async def admin_get_overlay(
 async def admin_put_overlay(
     metric_id: str,
     request: OverlayPutRequest,
-    authorization: str = Header(...),
+    authorization: Optional[str] = Header(None),
 ) -> dict:
     """Create or update this tenant's overlay for one metric.
 
@@ -1050,7 +1055,7 @@ async def admin_put_overlay(
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    tenant_id = _require_tenant(user)
+    tenant_id = _require_admin_tenant(user)
 
     from semantic_layer.engine import (
         SqlSafetyError,
@@ -1123,13 +1128,13 @@ async def admin_put_overlay(
 @app.delete("/api/v1/admin/overlay/{metric_id}")
 async def admin_delete_overlay(
     metric_id: str,
-    authorization: str = Header(...),
+    authorization: Optional[str] = Header(None),
 ) -> dict:
     """Remove this tenant's overlay for one metric. Canonical applies after."""
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    tenant_id = _require_tenant(user)
+    tenant_id = _require_admin_tenant(user)
 
     import tenant_store
     tenant_store.delete_overlay(tenant_id, metric_id)
