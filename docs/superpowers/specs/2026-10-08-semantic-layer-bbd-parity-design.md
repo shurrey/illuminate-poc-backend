@@ -236,14 +236,26 @@ Porting rules applied to every dataset:
 - Keep bbd-analytics' exclusions: `inferred_ind`, child courses where the source excludes them,
   `%PreviewUser` and `bbsupport%` test users.
 - Incremental and hash-diff procedures become plain query-time logic; bookkeeping columns are dropped.
-- Where the source has a known defect, port the intended behaviour and note it in the dataset's
-  `description`:
-  - `COURSE_TOOL_ACTIVITY_HOUR` is not hourly; dataset 7 keeps the raw access time and offers an
-    `hour` time grain.
-  - `TFV_STUDENT_ITEM_TOOL_ACTIVITY`'s `TERM_NAME` and `COURSE_NAME` are dropped by bbd-analytics
-    and are kept here.
+- bbd-analytics is a read-only reference. No change is made to that repo. Where its logic is
+  defective, the dataset implements the corrected behaviour, its `description` states the deviation
+  in one line, and the deviation is added to §4.1.
 - Configuration that bbd-analytics reads from `CDM_META.BBD_CALCULATION_DETAIL` is read from the same
   table, not hard-coded.
+
+### 4.1 Source defects corrected in the port
+
+Each dataset's port is checked for further defects. Any found are fixed in the dataset and added here
+in the same PR.
+
+| Source object | Defect | Correction in the dataset |
+|---|---|---|
+| `TFV_STUDENT_ITEM_TOOL_ACTIVITY` → `STUDENT_ITEM_TOOL_ACTIVITY` | Computes `TERM_NAME` and `COURSE_NAME`, which `INSERT_OVERWRITE_ENTITY` silently drops because the table lacks them | Dataset 13 exposes both as dimensions |
+| `COURSE_TOOL_ACTIVITY_HOUR` | Named hourly, but `activity_time` is the raw access time | Dataset 7 is named `course_tool_activity`; `activity_time` is a time dimension with an `hour` grain |
+| `COURSE_FILTER` vs `FILTERS` | `course_weeks` computed two ways: `ceil(datediff(day)/7)` vs week-truncated `datediff(week)+1` | Both datasets use the `FILTERS` definition (week-truncated in the tenant timezone) |
+| `STUDENT_RISK_SUCCESS` | Window normalisation partitions by `COURSE_ID` only, mixing tenants | Partition by course; the POC is single-tenant per database, and the dataset must not be ported to a shared multi-tenant schema without restoring a tenant key |
+| `PLATFORM_LMS_SESSION_ACTIVITY`, `PLATFORM_CLB_SESSION_BY_DAY…`, `STUDENT_COURSE_MINUTES_PER_CONTENT_ITEMS` | Joins on `login_source_id`, `session_id` or `course_id` without `tenant_id` | Same reasoning as above; joins use the complete natural key available in the POC CDM |
+| `PLATFORM_CLB_STORAGE_CUMULATIVE_SUM` | Output has no tenant key | Same reasoning as above |
+| `MAP_ITEM_TOOL` | Hard-coded copy of flags that `CDM_META.BBD_CALCULATION_DETAIL` also holds; the two can disagree | Dataset 24 derives the flags from `BBD_CALCULATION_DETAIL`; the hard-coded list is not ported |
 
 The existing 18 metrics are re-expressed over these datasets, with their broken column references
 fixed. Each is re-added as soon as the dataset it needs exists. The `metric.dashboard.*` IDs are
