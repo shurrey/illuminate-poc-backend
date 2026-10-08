@@ -230,3 +230,14 @@ def test_base_sql_ending_in_a_line_comment_still_compiles():
     commented = dataset(base_sql=ENROLLMENTS.base_sql + "\n-- trailing note")
     q = _compile(catalog(commented), measures=["dataset.enrollments.v1:enrollments"])
     sqlglot.parse_one(q.sql, read="snowflake")
+
+
+def test_unqualified_tables_must_name_a_cte_in_scope():
+    from semantic_layer.compiler import _check_tables
+
+    nested = "WITH DS_A AS (WITH inner_cte AS (SELECT 1 AS X FROM DB.CDM_LMS.T) SELECT X FROM inner_cte) SELECT X FROM DS_A"
+    _check_tables(nested, "DB")
+    leaked = ("WITH DS_A AS (WITH inner_cte AS (SELECT 1 AS X FROM DB.CDM_LMS.T) SELECT X FROM inner_cte), "
+              "DS_B AS (SELECT X FROM inner_cte) SELECT X FROM DS_B")
+    with pytest.raises(CompileError, match="inner_cte"):
+        _check_tables(leaked, "DB")
