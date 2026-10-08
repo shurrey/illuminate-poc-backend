@@ -29,7 +29,7 @@ _FILTER_SCHEMA = {
         "dimension": {"type": "string"},
         "op": {"type": "string", "enum": ["eq", "neq", "in", "not_in", "gt", "gte", "lt", "lte",
                                           "between", "is_null", "not_null", "contains"]},
-        "values": {"type": "array", "items": {}},
+        "values": {"type": "array", "items": {"type": ["string", "number", "boolean"]}},
     },
     "required": ["dimension", "op"],
 }

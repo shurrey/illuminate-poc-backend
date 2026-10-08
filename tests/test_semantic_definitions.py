@@ -42,3 +42,11 @@ def test_compiled_metric_passes_the_execution_guard(metric, monkeypatch):
     monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
     compiled = compile_query(QueryContract(metrics=[metric.id]), CATALOG, "DB")
     assert snowflake_client.validate_and_execute(compiled.sql, compiled=True) == {"columns": [], "rows": []}
+
+
+@pytest.mark.parametrize("metric_id", ["metric.courses.v1", "metric.classic_courses.v1", "metric.ultra_courses.v1"])
+def test_course_count_metrics_exclude_deleted_courses(metric_id):
+    metric = CATALOG.metrics[metric_id]
+    assert "live" in metric.default_filters
+    live = CATALOG.datasets[metric.dataset_id].filter("live")
+    assert live is not None and "COURSE_DELETED_IND" in live.sql

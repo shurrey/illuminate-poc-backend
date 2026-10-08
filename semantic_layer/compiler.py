@@ -249,6 +249,8 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
         filters.append((f, *_resolve(base, f.dimension, catalog, joins)[:2]))
     time_range = None
     if contract.time_range:
+        if "__" in contract.time_range.dimension.rpartition(":")[2]:
+            raise CompileError("time_range takes the plain time dimension name, without a grain suffix")
         target, dim, _ = _resolve(base, contract.time_range.dimension, catalog, joins)
         if dim.type != "time":
             raise CompileError(f"time_range needs a time dimension; {contract.time_range.dimension!r} is not one")
@@ -268,7 +270,11 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
         if target.is_pii(dim.column):
             raise CompileError(f"dimension {dim.name!r} is personally identifiable and cannot be selected")
         col = column(target, dim.column)
-        node = exp.Anonymous(this="DATE_TRUNC", expressions=[exp.Literal.string(grain), col]) if grain else col
+        node = col
+        if grain:
+            # DATE keeps grained keys comparable across datasets whose time columns are DATE vs TIMESTAMP_TZ.
+            node = exp.Cast(this=exp.Anonymous(this="DATE_TRUNC", expressions=[exp.Literal.string(grain), col]),
+                            to=exp.DataType.build("DATE"))
         select.append(exp.alias_(node, _output_name(ref)))
 
     for out_name, _, measure, metric in selections:

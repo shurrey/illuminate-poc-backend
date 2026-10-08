@@ -50,3 +50,7 @@ def test_datasets_list_the_datasets_whose_dimensions_they_can_use():
 
 def test_freehand_results_must_be_called_ungoverned_in_the_answer():
     assert "ungoverned" in PROMPT.split("## How to answer")[1].lower()
+
+
+def test_rules_say_plain_dimension_names_prefer_the_measure_dataset():
+    assert "own dataset first" in PROMPT

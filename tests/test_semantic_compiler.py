@@ -32,7 +32,7 @@ def test_dimensions_group_and_time_grains_truncate():
     q = _compile(measures=["dataset.enrollments.v1:enrollments"], dimensions=["course_role", "enrolled_at__month"])
     outer = _outer(q.sql)
     assert "COURSE_ROLE AS course_role" in outer
-    assert "DATE_TRUNC('month', ENROLLMENT_TIME) AS enrolled_at__month" in outer
+    assert "CAST(DATE_TRUNC('month', ENROLLMENT_TIME) AS DATE) AS enrolled_at__month" in outer
     assert "GROUP BY\n  1,\n  2" in outer
 
 
@@ -65,6 +65,11 @@ def test_time_range_compares_dates():
                  time_range={"dimension": "enrolled_at", "start": "2026-01-01", "end": "2026-06-30"})
     assert "CAST(ENROLLMENT_TIME AS DATE) >= '2026-01-01'" in q.sql
     assert "CAST(ENROLLMENT_TIME AS DATE) <= '2026-06-30'" in q.sql
+
+
+def test_time_range_rejects_a_grain_suffix():
+    with pytest.raises(CompileError, match="grain"):
+        _compile(measures=["dataset.enrollments.v1:enrollments"], time_range={"dimension": "enrolled_at__month", "start": "2026-01-01"})
 
 
 def test_time_range_rejects_non_time_dimension():

@@ -25,7 +25,7 @@ metrics:
     authority: vendor-canonical
     last_reviewed: 2026-10-08
     measure: dataset.course_catalog.v1:courses
-    default_filters: [top_level]
+    default_filters: [top_level, live]
     synonyms: [course count, number of courses]
     example_questions: ["How many courses are there?"]
   - id: metric.classic_courses.v1
@@ -35,7 +35,7 @@ metrics:
     authority: vendor-canonical
     last_reviewed: 2026-10-08
     measure: dataset.course_catalog.v1:courses
-    default_filters: [top_level, classic]
+    default_filters: [top_level, live, classic]
     synonyms: [classic holdouts, original experience courses]
     example_questions: ["How many Classic courses are left?"]
   - id: metric.ultra_courses.v1
@@ -45,6 +45,6 @@ metrics:
     authority: vendor-canonical
     last_reviewed: 2026-10-08
     measure: dataset.course_catalog.v1:courses
-    default_filters: [top_level, ultra]
+    default_filters: [top_level, live, ultra]
     synonyms: [ultra adoption, ultra courses]
     example_questions: ["How many courses are on Ultra?"]
