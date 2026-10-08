@@ -23,14 +23,16 @@
 | 1d | Validator, dictionary snapshot, PII set, dataset 1, two metrics | Live smoke run recorded |
 | 1e | `POST /semantic/compile` | Endpoint tests pass |
 
-## Phase 2: API (B), detailed plan: `2026-10-08-semantic-layer-phase-2-api.md`
+## Phase 2: API (B), complete (#16–#18)
 
 | Unit | Scope | Done when |
 |---|---|---|
 | 2a | `POST /semantic/query`: compile, then `validate_and_execute`. Response is `{columns, rows, sql, provenance}`. Fix the guard's `exp.Anonymous`-as-aggregate PII bypass here, because this is the first new caller. | A stubbed-Snowflake endpoint test passes; a live query returns rows |
 | 2b | `GET /semantic/catalog`: public datasets, dimensions, measures, metrics and synonyms, with an ETag | Response contains no internal datasets and no `base_sql` |
 
-## Phase 3: Security hardening (B, then F)
+## Phase 3: Security hardening (B, then F), detailed plan: `2026-10-08-semantic-layer-phase-3-security.md`
+
+Found while planning: the backend has no `/api/v1/config/snowflake` route, so 3f drops `PutSecretValue` outright and 3h removes the frontend editor that called it.
 
 | Unit | Scope | Done when |
 |---|---|---|
@@ -119,3 +121,6 @@ Before the first dataset that reads `CDM_META` or `CDM_TLM` columns missing from
 | Phase 1 review | Scoped `SUM` returns NULL rather than 0 when nothing matches: decide and document | 4i |
 | Phase 1 review | Empty YAML file raises `TypeError` instead of `CatalogError` | 4b |
 | Phase 1 review | Missing `Authorization` header returns 422 rather than 401 | 3b |
+| Phase 2 review | ETag weak/list/`*` comparison (RFC 9110); expose `ETag`, allow `If-None-Match` in CORS; `Cache-Control: private, no-cache` | 6a |
+| Phase 2 review | 502 detail returns raw Snowflake error text; non-UTF-8 bytes results give 500 | 5b |
+| Phase 2 review | Tests for the guard-rejection 502 and for an ETag change when the catalog changes | 5b |
