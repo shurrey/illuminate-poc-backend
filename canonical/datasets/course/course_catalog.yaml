@@ -5,7 +5,8 @@ description: >
   dates (creation, start, end, real end, first and last student activity), roles enrolled (preview
   and bbsupport users excluded), design mode, and status flags. Deviations: course_weeks uses the
   week-truncated definition shared with course_filters; design mode is looked up by the course's
-  canonical code rather than its source code.
+  canonical code rather than its source code. Deleted courses are included, as in bbd-analytics; the
+  course metrics exclude them with the live filter.
 grain: one row per course x institutional hierarchy node x course role
 domain: course
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_COURSE_FILTER.sql
@@ -50,6 +51,7 @@ base_sql: |
              IFF(COALESCE(co.END_DATE, te.END_DATE) <= CURRENT_TIMESTAMP(), 1, 0) AS COURSE_ENDED,
              IFF(COALESCE(co.START_TIME, te.START_TIME) > CURRENT_TIMESTAMP(), 'N', 'Y') AS COURSE_REPORTABLE,
              IFF(co.COURSE_PARENT_ID IS NULL, 0, 1) AS CHILD_COURSE_IND,
+             co.ROW_DELETED_TIME IS NOT NULL AS COURSE_DELETED_IND,
              NVL(cd.CANON_DESC, 'No explicit mode') AS DESIGN_MODE
       FROM {{ database }}.CDM_LMS.COURSE co
       LEFT JOIN {{ database }}.CDM_LMS.TERM te ON te.ID = co.TERM_ID
@@ -122,6 +124,7 @@ base_sql: |
       IFF(COALESCE(co.START_DAY, sa.FIRST_COURSE_DAY) <= CURRENT_DATE(), 1, 0) AS COURSE_STARTED_IND,
       IFF(sa.COURSE_ID IS NOT NULL, 1, 0) AS STUDENT_ACTIVITY_IND,
       co.CHILD_COURSE_IND,
+      co.COURSE_DELETED_IND,
       IFF(pa.COURSE_ID IS NULL, 0, 1) AS PARENT_COURSE_IND,
       co.DESIGN_MODE,
       NVL(cih.IH_PRIMARY_IND, FALSE) AS IH_PRIMARY_IND
@@ -159,6 +162,7 @@ dimensions:
   - {name: has_student_activity, column: STUDENT_ACTIVITY_IND, type: numeric}
   - {name: has_instructor, column: ACT_AS_INSTRUCTOR_IND, type: numeric}
   - {name: is_child_course, column: CHILD_COURSE_IND, type: numeric}
+  - {name: course_deleted, column: COURSE_DELETED_IND, type: boolean}
   - {name: is_parent_course, column: PARENT_COURSE_IND, type: numeric}
   - {name: course_weeks, column: COURSE_WEEKS, type: numeric}
   - {name: course_creation_date, column: COURSE_CREATION_DATE, type: time, grains: [day, week, month, quarter, year]}
@@ -176,5 +180,6 @@ filters:
   - {name: reportable, sql: "COURSE_REPORTABLE = 'Y'"}
   - {name: ongoing, sql: "COURSE_ENDED = 0"}
   - {name: top_level, sql: "CHILD_COURSE_IND = 0"}
+  - {name: live, sql: "NOT COURSE_DELETED_IND"}
   - {name: ultra, sql: "DESIGN_MODE = 'Ultra'"}
   - {name: classic, sql: "DESIGN_MODE = 'Classic'"}

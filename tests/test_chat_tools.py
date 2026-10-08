@@ -179,3 +179,9 @@ def test_execute_sql_needs_a_real_reason():
     wh = FakeWarehouse()
     out = _tools(wh).dispatch("execute_sql", {"sql": "SELECT 1", "reason": "."}, called=SEARCHED)
     assert "reason" in out.content["error"] and wh.sql == []
+
+
+def test_filter_values_schema_names_the_value_types():
+    spec = next(s for s in _tools().specs if s["name"] == "query_semantic")
+    items = spec["inputSchema"]["json"]["properties"]["filters"]["items"]["properties"]["values"]["items"]
+    assert items == {"type": ["string", "number", "boolean"]}

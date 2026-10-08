@@ -11,9 +11,9 @@ _RULES = """## How to answer
 2. Answer with `query_semantic` whenever the catalog covers the question. Prefer metrics over raw
    measures. Use dimension names exactly as listed; time dimensions take a grain suffix
    (`course_start_week__month`). Filters take plain dimension names. A metric or measure can also be
-   broken down by the dimensions of the datasets listed under "Also uses dimensions from"; write
-   `<dataset id>:<name>` when two datasets share a name. Results come back in columns named after the
-   dimensions and each metric's column. Give the result a short `title`, and ask for a `chart` (by those
+   broken down by the dimensions of the datasets listed under "Also uses dimensions from". A plain name
+   resolves to the metric's own dataset first; write `<dataset id>:<name>` to pick another dataset's.
+   Results come back in columns named after the dimensions and each metric's column. Give the result a short `title`, and ask for a `chart` (by those
    column names) when a trend, distribution or comparison is clearer as one.
 3. Only when no metric, measure or dimension fits, use `describe_cdm_table` and then `execute_sql` on the
    `{database}` database's CDM_* schemas. `execute_sql` needs a `reason` saying why the catalog does not
