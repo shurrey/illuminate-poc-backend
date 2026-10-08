@@ -13,7 +13,6 @@ import sqlglot
 import sqlglot.expressions as exp
 
 from .contract import CompiledQuery, ContractFilter, Provenance, QueryContract
-from .pii import PII_COLUMN_NAMES
 from .render import TemplateError, cte_name, render
 from .schema import Catalog, Dataset, DatasetDimension, Measure, SemanticMetric
 
@@ -173,7 +172,7 @@ def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> C
     aliases: list[str] = []
     for ref in contract.dimensions:
         dim, grain = _resolve_dimension(ds, ref)
-        if dim.column.upper() in {c.upper() for c in ds.pii_columns} | PII_COLUMN_NAMES:
+        if ds.is_pii(dim.column):
             raise CompileError(f"dimension {dim.name!r} is personally identifiable and cannot be selected")
         col = exp.column(dim.column)
         node = exp.Anonymous(this="DATE_TRUNC", expressions=[exp.Literal.string(grain), col]) if grain else col

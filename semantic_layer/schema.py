@@ -11,6 +11,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .pii import PII_COLUMN_NAMES
+
 DATASET_ID_PATTERN = r"^dataset\.[a-z][a-z0-9_]*\.v[0-9]+$"
 METRIC_ID_PATTERN = r"^metric\.[a-z][a-z0-9_]*\.v[0-9]+$"
 NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
@@ -111,6 +113,10 @@ class Dataset(_Definition):
 
     def filter(self, name: str) -> Optional[DatasetFilter]:
         return next((f for f in self.filters if f.name == name), None)
+
+    def is_pii(self, column: str) -> bool:
+        """Declared in pii_columns (any case) or a globally known PII column name."""
+        return column.upper() in {c.upper() for c in self.pii_columns} | PII_COLUMN_NAMES
 
 
 class SemanticMetric(_Definition):

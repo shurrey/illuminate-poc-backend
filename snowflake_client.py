@@ -14,6 +14,7 @@ import logging
 import os
 
 import boto3
+import sqlglot.expressions as exp
 
 from semantic_layer.pii import PII_COLUMN_NAMES
 
@@ -97,6 +98,22 @@ def query_preview(schema: str, table: str, limit: int = 20) -> dict:
         return {"columns": columns, "rows": rows}
     finally:
         cursor.close()
+
+
+_COUNTING_AGGREGATES = (exp.Count, exp.CountIf, exp.ApproxDistinct, exp.Hll)
+
+
+def _inside_counting_aggregate(node, select_expression) -> bool:
+    """True when the nearest aggregate above node, within select_expression, is an unwindowed count."""
+    while node is not None:
+        if isinstance(node, exp.Window):
+            return False
+        if isinstance(node, _COUNTING_AGGREGATES):
+            return not isinstance(node.parent, exp.Window)
+        if isinstance(node, exp.AggFunc) or node is select_expression:
+            return False
+        node = node.parent
+    return False
 
 
 def validate_and_execute(sql: str, params: dict | None = None) -> dict:
@@ -185,31 +202,22 @@ def validate_and_execute(sql: str, params: dict | None = None) -> dict:
                 )
             }
 
-    # PII column check — block bare PII columns in outermost SELECT without GROUP BY / aggregation
-    # Find the outermost SELECT node
+    # PII columns in the outermost SELECT must sit inside a counting aggregate. Value-returning
+    # aggregates (MIN, ARRAY_AGG, LISTAGG, ANY_VALUE, MEDIAN...) and window functions return raw
+    # values, and GROUP BY on a PII column returns one row per value, so neither unlocks PII.
     outer_select = stmt.find(exp.Select)
     if outer_select is not None:
-        has_group_by = outer_select.args.get("group") is not None
-        # Unknown functions (exp.Anonymous, e.g. a UDF) are not aggregates and must not unlock PII.
-        def _has_aggregate(node):
-            return any(isinstance(n, exp.AggFunc) for n in node.walk())
-
-        has_aggregation = any(_has_aggregate(sel) for sel in outer_select.expressions)
-
-        if not has_group_by and not has_aggregation:
-            for sel in outer_select.expressions:
-                # Get column name from the expression (or alias source)
-                col_nodes = list(sel.find_all(exp.Column))
-                for col_node in col_nodes:
-                    col_name = col_node.name.upper().strip('"').strip("'")
-                    if col_name in PII_COLUMN_NAMES:
-                        return {
-                            "error": (
-                                f"Column '{col_name}' contains personally identifiable information (PII). "
-                                "FERPA rules require aggregation or GROUP BY when accessing PII columns. "
-                                "Please revise your query to aggregate this data."
-                            )
-                        }
+        for sel in outer_select.expressions:
+            for col_node in sel.find_all(exp.Column):
+                col_name = col_node.name.upper().strip('"').strip("'")
+                if col_name in PII_COLUMN_NAMES and not _inside_counting_aggregate(col_node, sel):
+                    return {
+                        "error": (
+                            f"Column '{col_name}' contains personally identifiable information (PII). "
+                            "FERPA rules allow PII columns in the result only inside COUNT, COUNT_IF "
+                            "or APPROX_COUNT_DISTINCT. Please revise your query to count this data."
+                        )
+                    }
 
     # Enforce LIMIT <= 1000
     for limit_node in stmt.find_all(exp.Limit):

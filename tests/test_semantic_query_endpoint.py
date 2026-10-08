@@ -1,3 +1,6 @@
+from datetime import date
+from decimal import Decimal
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -59,3 +62,11 @@ def test_requires_a_valid_token(client, executed, monkeypatch):
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
     assert r.status_code == 401
     assert executed == []
+
+
+def test_numeric_and_date_results_serialise_as_json_numbers_and_iso_dates(client, monkeypatch):
+    rows = [{"TERM_NAME": "Fall", "SHARE": Decimal("0.25"), "COURSES": Decimal("12"), "START": date(2026, 8, 1)}]
+    monkeypatch.setattr(snowflake_client, "query_sql",
+                        lambda sql, params=None: {"columns": list(rows[0]), "rows": rows})
+    r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
+    assert r.json()["rows"] == [{"TERM_NAME": "Fall", "SHARE": 0.25, "COURSES": 12, "START": "2026-08-01"}]
