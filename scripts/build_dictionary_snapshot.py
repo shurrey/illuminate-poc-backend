@@ -9,7 +9,7 @@ import json
 import sys
 from pathlib import Path
 
-FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
+FIXTURES = Path(__file__).resolve().parent.parent / "semantic_layer" / "data"
 
 
 def main(catalog_src: str, definitions_src: str) -> None:

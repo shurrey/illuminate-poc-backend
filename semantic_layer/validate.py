@@ -22,10 +22,11 @@ from .compiler import CompileError, build_ctes
 from .pii import PII_COLUMN_NAMES, inside_counting_aggregate
 from .schema import Catalog, Dataset, SemanticMetric
 
-_FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
-DICTIONARY_SNAPSHOT = _FIXTURES / "cdm_dictionary.json"
-PII_SNAPSHOT = _FIXTURES / "cdm_pii_columns.json"
-SUPPLEMENT_SNAPSHOT = _FIXTURES / "cdm_dictionary_supplement.json"
+# Shipped with the package: overlays are validated at runtime against the same snapshot as canonical definitions.
+_DATA = Path(__file__).resolve().parent / "data"
+DICTIONARY_SNAPSHOT = _DATA / "cdm_dictionary.json"
+PII_SNAPSHOT = _DATA / "cdm_pii_columns.json"
+SUPPLEMENT_SNAPSHOT = _DATA / "cdm_dictionary_supplement.json"
 _DB = "VALIDATION_DB"
 
 

@@ -197,14 +197,24 @@ def _unquoted_upper(ident: Optional[exp.Identifier]) -> str:
     return ident.name if ident.quoted else ident.name.upper()
 
 
+def _ctes_in_scope(node: exp.Expression) -> set[str]:
+    """CTE names visible from node: those of every WITH clause enclosing it."""
+    names: set[str] = set()
+    while node is not None:
+        with_ = node.args.get("with")
+        if isinstance(with_, exp.With):
+            names |= {cte.alias_or_name.upper() for cte in with_.expressions}
+        node = node.parent
+    return names
+
+
 def _check_tables(sql: str, database: str) -> None:
     """Every real table must be <database>.CDM_*.<table>; unqualified names must be CTEs."""
     tree = _parse(sql, "compiled query")
-    local = {cte.alias_or_name.upper() for cte in tree.find_all(exp.CTE)}
     for table in tree.find_all(exp.Table):
         schema = _unquoted_upper(table.args.get("db"))
         catalog = _unquoted_upper(table.args.get("catalog"))
-        if not schema and not catalog and table.name.upper() in local:
+        if not schema and not catalog and table.name.upper() in _ctes_in_scope(table):
             continue
         if catalog != database.upper() or not schema.startswith("CDM_"):
             raise CompileError(
