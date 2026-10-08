@@ -1,0 +1,124 @@
+id: dataset.course_role_activity.v1
+display_name: Course activity by role
+description: >
+  Per course and role (students S, instructors I): enrollments, people with course activity in the
+  course window, minutes and distinct days of activity, last login and last submission, and
+  Collaborate usage in sessions attended by both students and instructors. Preview and bbsupport
+  test users are excluded. Counts are per course; summing across courses counts role enrollments,
+  not distinct people.
+grain: one row per course x course role (S, I)
+domain: engagement
+source: bbdata-bbd-analytics procedures/orchestration/courseRoleActivity/processCourseRoleActivity.ts
+depends_on: [dataset.course_filters.v1]
+base_sql: |
+  WITH course_use AS (
+      SELECT DISTINCT COURSE_ID, START_WEEK, END_WEEK, COURSE_CREATION_DATE, COURSE_WEEKS, COURSE_DURATION, TERM_NAME
+      FROM {{ ref('dataset.course_filters.v1') }}
+  ),
+  course_per_role AS (
+      SELECT pc.COURSE_ID, pc.COURSE_ROLE,
+             ANY_VALUE(cu.COURSE_WEEKS) AS COURSE_WEEKS,
+             ANY_VALUE(cu.TERM_NAME) AS TERM_NAME,
+             ANY_VALUE(cu.COURSE_CREATION_DATE) AS COURSE_CREATION_DATE,
+             ANY_VALUE(cu.START_WEEK) AS START_WEEK,
+             ANY_VALUE(cu.END_WEEK) AS END_WEEK,
+             ANY_VALUE(cu.COURSE_DURATION) AS COURSE_DURATION,
+             MAX(ca.FIRST_ACCESSED_TIME) AS MAX_LOGIN_ACCESSED_TIME,
+             MAX(sub.MAX_SUBMITTED_TIME) AS MAX_SUBMITTED_TIME,
+             COUNT(DISTINCT ca.PERSON_ID) AS ACTIVE_ROLE_CNT,
+             COUNT(DISTINCT pc.PERSON_ID) AS ENROLLMENT_ROLE_COUNT,
+             SUM(NVL(ca.DURATION_SUM, 0)) / 60 AS TOTAL_MIN_IN_COURSE,
+             COUNT(DISTINCT DATE_TRUNC('DAY', ca.FIRST_ACCESSED_TIME)) AS CNT_DAYS,
+             COUNT(DISTINCT CASE WHEN pc.AVAILABLE_IND = FALSE OR pc.ENABLED_IND = FALSE OR pc.ROW_DELETED_TIME IS NOT NULL
+                                 THEN NULL ELSE ca.PERSON_ID END) AS AVAILABLE_ACTIVE_ROLE_CNT,
+             COUNT(DISTINCT CASE WHEN pc.AVAILABLE_IND = FALSE OR pc.ENABLED_IND = FALSE OR pc.ROW_DELETED_TIME IS NOT NULL
+                                 THEN NULL ELSE pc.PERSON_ID END) AS AVAILABLE_ENROLLMENT_ROLE_COUNT
+      FROM {{ database }}.CDM_LMS.PERSON_COURSE pc
+      JOIN {{ database }}.CDM_LMS.PERSON pe ON pe.ID = pc.PERSON_ID
+      JOIN course_use cu ON cu.COURSE_ID = pc.COURSE_ID
+      LEFT JOIN {{ database }}.CDM_LMS.COURSE_ACTIVITY ca
+        ON pc.ID = ca.PERSON_COURSE_ID
+       AND ca.FIRST_ACCESSED_TIME BETWEEN cu.START_WEEK AND (cu.END_WEEK + 7)
+      LEFT JOIN (
+          SELECT PERSON_COURSE_ID, MAX(SUBMITTED_TIME) AS MAX_SUBMITTED_TIME
+          FROM {{ database }}.CDM_LMS.SUBMISSION
+          GROUP BY PERSON_COURSE_ID
+      ) sub ON sub.PERSON_COURSE_ID = pc.ID
+      WHERE pc.COURSE_ROLE IN ('S', 'I')
+        AND pe.LAST_NAME NOT LIKE '%PreviewUser'
+        AND pe.LAST_NAME NOT LIKE 'bbsupport%'
+      GROUP BY pc.COURSE_ID, pc.COURSE_ROLE
+  ),
+  clb_sessions AS (
+      SELECT att.SESSION_ID, mp.LMS_PERSON_ID, se.ATTENDED_DURATION, cr.LMS_COURSE_ID
+      FROM {{ database }}.CDM_CLB.ATTENDANCE att
+      JOIN {{ database }}.CDM_CLB.SESSION se ON se.ID = att.SESSION_ID
+      JOIN {{ database }}.CDM_MAP.COURSE_ROOM cr ON cr.CLB_ROOM_ID = se.ROOM_ID
+      JOIN {{ database }}.CDM_MAP.PERSON mp ON mp.CLB_PERSON_ID = att.PERSON_ID
+  ),
+  sessions_used AS (
+      SELECT se.SESSION_ID
+      FROM clb_sessions se
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE pc
+        ON pc.PERSON_ID = se.LMS_PERSON_ID AND pc.COURSE_ID = se.LMS_COURSE_ID AND pc.COURSE_ROLE IN ('S', 'I')
+      GROUP BY se.SESSION_ID
+      HAVING COUNT(DISTINCT pc.COURSE_ROLE) > 1
+  ),
+  clb_use AS (
+      SELECT pc.COURSE_ID, pc.COURSE_ROLE, COUNT(DISTINCT pc.ID) AS CNT_CLB
+      FROM clb_sessions se
+      JOIN sessions_used seu ON seu.SESSION_ID = se.SESSION_ID
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE pc
+        ON pc.PERSON_ID = se.LMS_PERSON_ID AND pc.COURSE_ID = se.LMS_COURSE_ID
+      GROUP BY pc.COURSE_ID, pc.COURSE_ROLE
+  ),
+  clb_minutes AS (
+      SELECT cr.LMS_COURSE_ID AS COURSE_ID,
+             CEIL(SUM(se.ATTENDED_DURATION) / 60, 0) AS TOTAL_SESSION_MIN,
+             COUNT(se.ID) AS SESSION_CNT
+      FROM {{ database }}.CDM_CLB.SESSION se
+      JOIN sessions_used seu ON seu.SESSION_ID = se.ID
+      JOIN {{ database }}.CDM_MAP.COURSE_ROOM cr ON cr.CLB_ROOM_ID = se.ROOM_ID
+      WHERE cr.LMS_COURSE_ID IS NOT NULL AND cr.CLB_ROOM_ID IS NOT NULL
+      GROUP BY cr.LMS_COURSE_ID
+  )
+  SELECT
+      cr.COURSE_ID, cr.COURSE_ROLE, cr.COURSE_WEEKS, cr.TERM_NAME, cr.COURSE_CREATION_DATE,
+      cr.START_WEEK, cr.END_WEEK, cr.COURSE_DURATION,
+      cr.ACTIVE_ROLE_CNT, cr.ENROLLMENT_ROLE_COUNT, cr.TOTAL_MIN_IN_COURSE, cr.CNT_DAYS,
+      NVL(clm.TOTAL_SESSION_MIN, 0) AS CLB_SESSION_MIN,
+      NVL(clm.SESSION_CNT, 0) AS CLB_SESSION_CNT,
+      NVL(clb.CNT_CLB, 0) AS CLB_COUNT_PERSON,
+      cr.MAX_LOGIN_ACCESSED_TIME, cr.MAX_SUBMITTED_TIME,
+      cr.AVAILABLE_ACTIVE_ROLE_CNT, cr.AVAILABLE_ENROLLMENT_ROLE_COUNT
+  FROM course_per_role cr
+  LEFT JOIN clb_use clb ON cr.COURSE_ID = clb.COURSE_ID AND cr.COURSE_ROLE = clb.COURSE_ROLE
+  LEFT JOIN clb_minutes clm ON cr.COURSE_ID = clm.COURSE_ID
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: course_role, column: COURSE_ROLE, type: categorical, description: "S = students, I = instructors", synonyms: [role]}
+  - {name: term_name, column: TERM_NAME, type: categorical, synonyms: [term, semester]}
+  - {name: course_duration, column: COURSE_DURATION, type: categorical}
+  - {name: course_weeks, column: COURSE_WEEKS, type: numeric}
+  - {name: course_start_week, column: START_WEEK, type: time, grains: [week, month, quarter, year]}
+  - {name: course_creation_date, column: COURSE_CREATION_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: last_login, column: MAX_LOGIN_ACCESSED_TIME, type: time, grains: [day, week, month]}
+  - {name: last_submission, column: MAX_SUBMITTED_TIME, type: time, grains: [day, week, month]}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: active_people, agg: sum, expr: ACTIVE_ROLE_CNT, unit: role enrollments, description: "People with in-window course activity, summed over courses"}
+  - {name: enrolled_people, agg: sum, expr: ENROLLMENT_ROLE_COUNT, unit: role enrollments}
+  - {name: available_active_people, agg: sum, expr: AVAILABLE_ACTIVE_ROLE_CNT, unit: role enrollments}
+  - {name: available_enrolled_people, agg: sum, expr: AVAILABLE_ENROLLMENT_ROLE_COUNT, unit: role enrollments}
+  - {name: minutes_in_course, agg: sum, expr: TOTAL_MIN_IN_COURSE, unit: minutes}
+  - {name: activity_days, agg: sum, expr: CNT_DAYS, unit: days, description: "Distinct days with activity per course, summed"}
+  - {name: collab_minutes, agg: sum, expr: CLB_SESSION_MIN, unit: minutes}
+  - {name: collab_sessions, agg: sum, expr: CLB_SESSION_CNT, unit: sessions}
+  - {name: collab_people, agg: sum, expr: CLB_COUNT_PERSON, unit: role enrollments}
+  - {name: share_active, agg: ratio, numerator: active_people, denominator: enrolled_people, unit: ratio, synonyms: [engagement rate]}
+  - {name: minutes_per_active_person, agg: ratio, numerator: minutes_in_course, denominator: active_people, unit: minutes}
+  - {name: courses_with_activity, agg: count_distinct, expr: "IFF(ACTIVE_ROLE_CNT > 0, COURSE_ID, NULL)", unit: courses}
+filters:
+  - {name: students, sql: "COURSE_ROLE = 'S'"}
+  - {name: instructors, sql: "COURSE_ROLE = 'I'"}

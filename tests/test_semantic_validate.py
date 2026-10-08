@@ -89,3 +89,22 @@ def test_matching_dimension_types_pass():
         {"name": "course_role", "column": "COURSE_ROLE", "type": "categorical"},
     ])
     assert validate_dataset(ok, catalog(ok), SNAPSHOT, PII) == []
+
+
+def _aggregating(select: str):
+    return dataset(
+        base_sql=f"SELECT pc.COURSE_ID, {select} FROM {{{{ database }}}}.CDM_LMS.PERSON_COURSE pc "
+                 "JOIN {{ database }}.CDM_LMS.PERSON p ON p.ID = pc.PERSON_ID GROUP BY pc.COURSE_ID",
+        entities=[], dimensions=[], measures=[{"name": "n", "agg": "count", "expr": "COURSE_ID"}],
+        filters=[], pii_columns=[],
+    )
+
+
+def test_counts_of_pii_columns_are_not_pii():
+    ok = _aggregating("COUNT(DISTINCT pc.PERSON_ID) AS PEOPLE, COUNT(DISTINCT p.EMAIL) AS EMAILS")
+    assert validate_dataset(ok, catalog(ok), SNAPSHOT, PII) == []
+
+
+def test_value_returning_aggregates_of_pii_stay_pii():
+    bad = _aggregating("MIN(p.BIRTH_DATE) AS EARLIEST_BIRTH")
+    assert any("EARLIEST_BIRTH" in e for e in validate_dataset(bad, catalog(bad), SNAPSHOT, PII))

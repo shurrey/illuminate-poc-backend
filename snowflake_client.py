@@ -14,9 +14,8 @@ import logging
 import os
 
 import boto3
-import sqlglot.expressions as exp
 
-from semantic_layer.pii import PII_COLUMN_NAMES
+from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
 
 logger = logging.getLogger("API-PROXY")
 
@@ -98,22 +97,6 @@ def query_preview(schema: str, table: str, limit: int = 20) -> dict:
         return {"columns": columns, "rows": rows}
     finally:
         cursor.close()
-
-
-_COUNTING_AGGREGATES = (exp.Count, exp.CountIf, exp.ApproxDistinct, exp.Hll)
-
-
-def _inside_counting_aggregate(node, select_expression) -> bool:
-    """True when the nearest aggregate above node, within select_expression, is an unwindowed count."""
-    while node is not None:
-        if isinstance(node, exp.Window):
-            return False
-        if isinstance(node, _COUNTING_AGGREGATES):
-            return not isinstance(node.parent, exp.Window)
-        if isinstance(node, exp.AggFunc) or node is select_expression:
-            return False
-        node = node.parent
-    return False
 
 
 def validate_and_execute(sql: str, params: dict | None = None) -> dict:
@@ -210,7 +193,7 @@ def validate_and_execute(sql: str, params: dict | None = None) -> dict:
         for sel in outer_select.expressions:
             for col_node in sel.find_all(exp.Column):
                 col_name = col_node.name.upper().strip('"').strip("'")
-                if col_name in PII_COLUMN_NAMES and not _inside_counting_aggregate(col_node, sel):
+                if col_name in PII_COLUMN_NAMES and not inside_counting_aggregate(col_node, sel):
                     return {
                         "error": (
                             f"Column '{col_name}' contains personally identifiable information (PII). "
