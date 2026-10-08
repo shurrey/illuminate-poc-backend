@@ -49,3 +49,20 @@ def test_non_streaming_chat_returns_tool_artifacts(client, monkeypatch):
     assert r.status_code == 200
     assert r.json()["artifacts"][0]["id"] == "a1"
     assert r.json()["artifacts"][0]["data"]["rows"] == [{"N": 0.25, "D": "2026-09-01"}]
+
+
+@pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+def test_binary_and_nan_values_in_artifacts_do_not_break_either_chat_path(client, monkeypatch, path):
+    import chat_engine
+
+    artifact = {**ARTIFACT, "data": {"columns": ["B", "F"], "rows": [{"B": b"\xff", "F": float("nan")}]}}
+
+    async def fake_stream(message, history):
+        yield {"type": "raw_complete", "text": "Done.", "messages": [], "artifacts": [artifact]}
+
+    monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
+    monkeypatch.setattr(chat_engine, "send_message", lambda message, history: ("Done.", [], [artifact]))
+    r = client.post(path, headers=AUTH, json={"message": "q"})
+    assert r.status_code == 200
+    body = r.json() if path == "/api/chat" else _events(r.text)[-1]["data"]
+    assert body["artifacts"][0]["data"]["rows"] == [{"B": "ff", "F": None}]

@@ -39,6 +39,6 @@ def test_catalog_is_not_empty():
 def test_compiled_metric_passes_the_execution_guard(metric, monkeypatch):
     import snowflake_client
 
-    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": [], "rows": []})
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
     compiled = compile_query(QueryContract(metrics=[metric.id]), CATALOG, "DB")
-    assert snowflake_client.validate_and_execute(compiled.sql) == {"columns": [], "rows": []}
+    assert snowflake_client.validate_and_execute(compiled.sql, compiled=True) == {"columns": [], "rows": []}

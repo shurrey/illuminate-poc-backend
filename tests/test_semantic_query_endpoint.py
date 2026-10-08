@@ -74,7 +74,7 @@ def test_numeric_and_date_results_serialise_as_json_numbers_and_iso_dates(client
 
 def test_guard_rejection_is_a_502_with_the_guard_message(client, monkeypatch):
     monkeypatch.setattr(snowflake_client, "validate_and_execute",
-                        lambda sql, params=None: {"error": "Schema 'X' is not in the allowed list."})
+                        lambda sql, params=None, **k: {"error": "Schema 'X' is not in the allowed list."})
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
     assert r.status_code == 502
     assert "allowed list" in r.json()["detail"]["error"]
@@ -96,3 +96,18 @@ def test_binary_values_serialise_as_hex(client, monkeypatch):
                         lambda sql, params=None: {"columns": ["B"], "rows": [{"B": b"\xff\x00"}]})
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
     assert r.status_code == 200 and r.json()["rows"] == [{"B": "ff00"}]
+
+
+def test_nan_and_infinite_values_serialise_as_null(client, monkeypatch):
+    monkeypatch.setattr(snowflake_client, "query_sql",
+                        lambda sql, params=None: {"columns": ["A", "B"], "rows": [{"A": float("nan"), "B": float("inf")}]})
+    r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
+    assert r.status_code == 200 and r.json()["rows"] == [{"A": None, "B": None}]
+
+
+def test_query_runs_through_the_guard_as_compiled_sql(client, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(snowflake_client, "validate_and_execute",
+                        lambda sql, params=None, **k: seen.update(k) or {"columns": [], "rows": []})
+    client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
+    assert seen == {"compiled": True}
