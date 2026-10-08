@@ -176,6 +176,7 @@ export class Auth extends Construct {
             GroupName: ADMIN_GROUP_NAME,
           },
           physicalResourceId: cr.PhysicalResourceId.of(`initial-user-admin-${props.initialUserEmail}`),
+          ignoreErrorCodesMatching: 'UserNotFoundException',
         },
         policy: cr.AwsCustomResourcePolicy.fromStatements([
           new iam.PolicyStatement({
