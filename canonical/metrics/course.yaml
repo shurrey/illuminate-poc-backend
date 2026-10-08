@@ -18,3 +18,33 @@ metrics:
     default_filters: [ongoing]
     synonyms: [active courses, current courses, running courses]
     example_questions: ["How many courses are running right now?"]
+  - id: metric.courses.v1
+    display_name: Courses
+    description: Top-level courses, including courses not yet started.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_catalog.v1:courses
+    default_filters: [top_level]
+    synonyms: [course count, number of courses]
+    example_questions: ["How many courses are there?"]
+  - id: metric.classic_courses.v1
+    display_name: Classic courses
+    description: Top-level courses still in the Original (Classic) course view.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_catalog.v1:courses
+    default_filters: [top_level, classic]
+    synonyms: [classic holdouts, original experience courses]
+    example_questions: ["How many Classic courses are left?"]
+  - id: metric.ultra_courses.v1
+    display_name: Ultra courses
+    description: Top-level courses in the Ultra course view.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_catalog.v1:courses
+    default_filters: [top_level, ultra]
+    synonyms: [ultra adoption, ultra courses]
+    example_questions: ["How many courses are on Ultra?"]

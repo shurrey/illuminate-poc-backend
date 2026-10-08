@@ -1,0 +1,22 @@
+metrics:
+  - id: metric.active_students.v1
+    display_name: Active students
+    description: >
+      Students with an available, enabled enrollment and course activity inside the course window,
+      in courses that have an instructor and have not been deleted.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.active_students.v1:active_students
+    default_filters: [live_courses]
+    synonyms: [active students, active learners, engaged students]
+    example_questions: ["How many active students do we have?", "Active students by course start month"]
+  - id: metric.students_with_activity.v1
+    display_name: Students with course activity
+    description: Distinct students with any in-window course activity, active or not.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.active_students.v1:students
+    synonyms: [student count, how many students]
+    example_questions: ["How many students used their courses?"]

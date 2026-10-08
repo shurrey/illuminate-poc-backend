@@ -1,0 +1,19 @@
+metrics:
+  - id: metric.average_grade.v1
+    display_name: Average grade
+    description: Average course grade percentage across graded student enrollments in reportable courses.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.student_grade.v1:average_grade_percentage
+    synonyms: [average grade, gpa, mean grade]
+    example_questions: ["What is the average grade?", "What does the grade distribution look like?"]
+  - id: metric.failing_rate.v1
+    display_name: Share of students failing
+    description: Graded student enrollments below 60%, as a share of graded enrollments.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.student_grade.v1:share_failing
+    synonyms: [failure rate, at risk by grade]
+    example_questions: ["What share of students are failing?"]

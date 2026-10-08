@@ -1,0 +1,49 @@
+metrics:
+  - id: metric.student_engagement_rate.v1
+    display_name: Student engagement rate
+    description: Share of student enrollments with course activity in the course window.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_role_activity.v1:share_active
+    default_filters: [students]
+    synonyms: [engagement rate, participation rate]
+    example_questions: ["What share of students are engaging with their courses?"]
+  - id: metric.active_courses.v1
+    display_name: Courses with student activity
+    description: Reportable courses where at least one student has course activity in the course window.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_role_activity.v1:courses_with_activity
+    default_filters: [students]
+    synonyms: [active courses, courses in use]
+    example_questions: ["How many courses have student activity this term?"]
+  - id: metric.weekly_engagement_rate.v1
+    display_name: Students active in the last 7 days
+    description: Share of students with course activity whose last course access was in the last 7 days.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_student_activity.v1:share_active_last_7_days
+    synonyms: [platform engagement, weekly engagement, active this week]
+    example_questions: ["How engaged are students this week?"]
+  - id: metric.minutes_per_active_student.v1
+    display_name: Minutes per active student
+    description: Course minutes divided by students with in-window activity.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_role_activity.v1:minutes_per_active_person
+    default_filters: [students]
+    synonyms: [time on task, time in course]
+    example_questions: ["How much time do students spend in courses?"]
+  - id: metric.content_completion_rate.v1
+    display_name: Content completion rate
+    description: Content items students marked complete, as a share of the available content items in their courses.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_student_activity.v1:content_completion_rate
+    synonyms: [content completion, progress tracking]
+    example_questions: ["How much course content are students completing?"]
