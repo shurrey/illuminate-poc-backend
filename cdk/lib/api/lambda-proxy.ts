@@ -149,7 +149,8 @@ export class LambdaProxy extends Construct {
       },
     });
 
-    // Function URL with response streaming
+    // Function URL with response streaming. Auth is the app's Cognito JWT check on every route:
+    // AWS_IAM behind CloudFront OAC would need the browser to sign a SHA-256 of each POST body.
     this.functionUrl = this.fn.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.NONE,
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
