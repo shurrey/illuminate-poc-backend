@@ -63,3 +63,11 @@ def test_fields_added_to_definitions_are_not_published_automatically():
     leaky = WithSecret(**STUDENT_ENROLLMENTS.model_dump(), secret_sql="SELECT * FROM CDM_LMS.PERSON")
     view = public_catalog(Catalog(datasets={ENROLLMENTS.id: ENROLLMENTS}, metrics={leaky.id: leaky}))
     assert "secret_sql" not in json.dumps(view)
+
+
+def test_datasets_list_the_public_datasets_whose_dimensions_they_can_use():
+    from semantic_layer.catalog import load_catalog
+
+    view = {d["id"]: d for d in public_catalog(load_catalog())["datasets"]}
+    assert "dataset.courses.v1" in view["dataset.student_grade.v1"]["joins"]
+    assert all(j in view for d in view.values() for j in d["joins"])

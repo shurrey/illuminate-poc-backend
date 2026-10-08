@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from .catalog_view import public_catalog
-from .compiler import joinable_datasets
 from .schema import Catalog
 
 _RULES = """## How to answer
@@ -52,7 +51,6 @@ def build_system_prompt(catalog: Catalog, database: str) -> str:
         metric = catalog.metrics[m["id"]]
         lines.append(f"- `{m['id']}` (dataset `{metric.dataset_id}`, column `{metric.short_name}`): "
                      f"{m['display_name']}. {m['description']}")
-    public = {ds["id"] for ds in view["datasets"]}
     lines += ["", "## Datasets"]
     for ds in view["datasets"]:
         lines += [
@@ -62,9 +60,8 @@ def build_system_prompt(catalog: Catalog, database: str) -> str:
             "Dimensions: " + ", ".join(_dimension(d) for d in ds["dimensions"]),
             "Measures: " + ", ".join(m["name"] for m in ds["measures"]),
         ]
-        joins = [j for j in joinable_datasets(catalog.datasets[ds["id"]], catalog) if j in public]
-        if joins:
-            lines.append("Also uses dimensions from: " + ", ".join(f"`{j}`" for j in joins))
+        if ds["joins"]:
+            lines.append("Also uses dimensions from: " + ", ".join(f"`{j}`" for j in ds["joins"]))
         if ds["filters"]:
             lines.append("Named filters (used by metrics): " + ", ".join(f["name"] for f in ds["filters"]))
     lines += ["", _RULES.format(database=database)]
