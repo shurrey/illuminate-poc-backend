@@ -1,0 +1,51 @@
+import json
+from datetime import date
+from decimal import Decimal
+
+import pytest
+from fastapi.testclient import TestClient
+
+import lambda_handler
+
+AUTH = {"Authorization": "Bearer test"}
+ARTIFACT = {"id": "a1", "type": "table", "title": "t",
+            "data": {"columns": ["N", "D"], "rows": [{"N": Decimal("0.25"), "D": date(2026, 9, 1)}]},
+            "provenance": {"governed": True}}
+
+
+@pytest.fixture
+def client(monkeypatch):
+    import conversation_store
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "u1"} if a else None)
+    monkeypatch.setattr(conversation_store, "load_history", lambda cid, owner: [])
+    monkeypatch.setattr(conversation_store, "save_turn", lambda *a, **k: None)
+    return TestClient(lambda_handler.app)
+
+
+def _events(body: str) -> list[dict]:
+    return [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
+
+
+def test_stream_completes_with_tool_artifacts_serialised_as_json(client, monkeypatch):
+    import chat_engine
+
+    async def fake_stream(message, history):
+        yield {"type": "status", "message": "Running a governed query..."}
+        yield {"type": "raw_complete", "text": "Answer for jane@example.edu", "messages": [], "artifacts": [ARTIFACT]}
+
+    monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
+    r = client.post("/api/chat/stream", headers=AUTH, json={"message": "q"})
+    complete = _events(r.text)[-1]
+    assert complete["type"] == "complete"
+    assert complete["data"]["artifacts"][0]["data"]["rows"] == [{"N": 0.25, "D": "2026-09-01"}]
+    assert "[EMAIL REDACTED]" in complete["data"]["text"]
+
+
+def test_non_streaming_chat_returns_tool_artifacts(client, monkeypatch):
+    import chat_engine
+
+    monkeypatch.setattr(chat_engine, "send_message", lambda message, history: ("Three.", [], [ARTIFACT]))
+    r = client.post("/api/chat", headers=AUTH, json={"message": "q"})
+    assert r.status_code == 200
+    assert r.json()["artifacts"][0]["id"] == "a1"
+    assert r.json()["artifacts"][0]["data"]["rows"] == [{"N": 0.25, "D": "2026-09-01"}]

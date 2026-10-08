@@ -12,11 +12,11 @@ import os
 import json
 import logging
 import re
-import uuid
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -59,115 +59,6 @@ def _scrub_pii(text: str) -> str:
     for pattern, replacement in _PII_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
-
-
-# =============================================================================
-# Chart extraction from [CHART_CONFIG] text markers
-# =============================================================================
-
-_CHART_PATTERN = re.compile(r'\[CHART_CONFIG\]\s*(.*?)\s*\[/CHART_CONFIG\]', re.DOTALL)
-_SQL_QUERY_PATTERN = re.compile(r'\[SQL_QUERY\]\s*(.*?)\s*\[/SQL_QUERY\]', re.DOTALL)
-_QUERY_PARAMS_PATTERN = re.compile(r'\[QUERY_PARAMS\]\s*(.*?)\s*\[/QUERY_PARAMS\]', re.DOTALL)
-
-
-def extract_chart_configs(text: str) -> tuple[str, list[dict]]:
-    """Extract [CHART_CONFIG]{...}[/CHART_CONFIG] blocks from agent text.
-
-    Returns (cleaned_text, list_of_frontend_chart_artifacts).
-    """
-    matches = list(_CHART_PATTERN.finditer(text))
-    if not matches:
-        return text, []
-
-    charts = []
-    for match in matches:
-        try:
-            config = json.loads(match.group(1))
-            chart_type = config.get("chart_type", "bar")
-            valid_types = ["bar", "line", "pie", "scatter", "histogram"]
-            if chart_type not in valid_types:
-                chart_type = "bar"
-
-            chart_artifact = {
-                "id": str(uuid.uuid4()),
-                "type": "chart",
-                "title": config.get("title", "Chart"),
-                "data": {
-                    "chart_type": chart_type,
-                    "title": config.get("title", "Chart"),
-                    "x_axis": config.get("x_axis", ""),
-                    "y_axis": config.get("y_axis", ""),
-                    "x_label": config.get("x_label", config.get("x_axis", "")),
-                    "y_label": config.get("y_label", config.get("y_axis", "")),
-                    "data": config.get("data", []),
-                },
-            }
-            charts.append(chart_artifact)
-            logger.info(f"Extracted chart: {chart_type} '{config.get('title')}' with {len(config.get('data', []))} points")
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.warning(f"Failed to parse chart config: {e}")
-
-    # Remove markers from text and clean up whitespace
-    cleaned = _CHART_PATTERN.sub('', text).strip()
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-    return cleaned, charts
-
-
-# =============================================================================
-# SQL query extraction from [SQL_QUERY] text markers
-# =============================================================================
-
-def extract_sql_queries(text: str) -> tuple[str, list[dict]]:
-    """Extract [SQL_QUERY] and [QUERY_PARAMS] blocks from agent text.
-
-    Returns (cleaned_text, list_of_frontend_sql_artifacts).
-    Each artifact may include a "parameters" array if the query is parameterized.
-    """
-    # Extract any [QUERY_PARAMS] blocks first (they follow [SQL_QUERY] blocks)
-    param_blocks = []
-    for match in _QUERY_PARAMS_PATTERN.finditer(text):
-        try:
-            params = json.loads(match.group(1))
-            if isinstance(params, list):
-                param_blocks.append(params)
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.warning(f"Failed to parse query params: {e}")
-
-    matches = list(_SQL_QUERY_PATTERN.finditer(text))
-    if not matches:
-        # Still clean up any orphaned param blocks
-        cleaned = _QUERY_PARAMS_PATTERN.sub('', text).strip()
-        return cleaned, []
-
-    sql_artifacts = []
-    for i, match in enumerate(matches):
-        try:
-            config = json.loads(match.group(1))
-            sql_text = config.get("sql", "")
-            title = config.get("title", "SQL Query")
-
-            if sql_text:
-                sql_artifact = {
-                    "id": str(uuid.uuid4()),
-                    "type": "sql",
-                    "title": title,
-                    "data": sql_text,
-                }
-                # Attach parameters if available (params follow their SQL block in order)
-                if i < len(param_blocks):
-                    sql_artifact["parameters"] = param_blocks[i]
-                    logger.info(f"Extracted parameterized SQL query: '{title}' with {len(param_blocks[i])} param(s)")
-                else:
-                    logger.info(f"Extracted SQL query: '{title}'")
-                sql_artifacts.append(sql_artifact)
-        except (json.JSONDecodeError, TypeError) as e:
-            logger.warning(f"Failed to parse SQL query config: {e}")
-
-    # Remove both marker types from text and clean up whitespace
-    cleaned = _SQL_QUERY_PATTERN.sub('', text).strip()
-    cleaned = _QUERY_PARAMS_PATTERN.sub('', cleaned).strip()
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-    return cleaned, sql_artifacts
 
 
 # =============================================================================
@@ -339,7 +230,6 @@ async def send_message(
     message_text: str,
     owner: str,
     context_id: Optional[str] = None,
-    tenant_id: Optional[str] = None,
 ) -> dict:
     """Send a message via chat_engine (non-streaming)."""
     import asyncio
@@ -355,21 +245,20 @@ async def send_message(
         })
 
     loop = asyncio.get_event_loop()
-    response_text, _ = await loop.run_in_executor(
-        None, lambda: engine_send(message_text, bedrock_history, tenant_id=tenant_id)
+    response_text, _, artifacts = await loop.run_in_executor(
+        None, lambda: engine_send(message_text, bedrock_history)
     )
 
     if context_id:
         save_turn(context_id, owner, message_text, response_text)
 
-    return {"text": response_text, "contextId": context_id}
+    return {"text": response_text, "artifacts": artifacts, "contextId": context_id}
 
 
 async def send_message_streaming(
     message_text: str,
     owner: str,
     context_id: Optional[str] = None,
-    tenant_id: Optional[str] = None,
 ):
     """Stream a response via chat_engine, yielding frontend events."""
     from chat_engine import send_message_streaming as engine_stream
@@ -385,13 +274,13 @@ async def send_message_streaming(
             "content": [{"text": msg["content"]}],
         })
 
-    full_text = ""
+    full_text, artifacts = "", []
     try:
-        async for event in engine_stream(message_text, bedrock_history, tenant_id=tenant_id):
+        async for event in engine_stream(message_text, bedrock_history):
             if event["type"] == "status":
                 yield event
             elif event["type"] == "raw_complete":
-                full_text = event["text"]
+                full_text, artifacts = event["text"], event["artifacts"]
                 if context_id:
                     save_turn(context_id, owner, message_text, full_text)
 
@@ -399,16 +288,10 @@ async def send_message_streaming(
             yield {"type": "error", "message": "Empty response"}
             return
 
-        # Process markers
-        cleaned_text, chart_artifacts = extract_chart_configs(full_text)
-        cleaned_text, sql_artifacts = extract_sql_queries(cleaned_text)
-        artifacts = chart_artifacts + sql_artifacts
-        cleaned_text = _scrub_pii(cleaned_text)
-
         yield {
             "type": "complete",
             "data": {
-                "text": cleaned_text,
+                "text": _scrub_pii(full_text),
                 "artifacts": artifacts,
                 "contextId": context_id,
             },
@@ -481,24 +364,11 @@ async def chat(
             message_text=message_text,
             owner=user["sub"],
             context_id=context_id,
-            tenant_id=_tenant_id_from_user(user),
         )
 
-        text = result.get("text", "")
-
-        cleaned_text, chart_artifacts = extract_chart_configs(text)
-        cleaned_text, sql_artifacts = extract_sql_queries(cleaned_text)
-        artifacts = chart_artifacts + sql_artifacts
-        cleaned_text = _scrub_pii(cleaned_text)
-
-        if chart_artifacts:
-            logger.info(f"Injected {len(chart_artifacts)} chart artifact(s) into response")
-        if sql_artifacts:
-            logger.info(f"Injected {len(sql_artifacts)} SQL artifact(s) into response")
-
         return ChatResponse(
-            text=cleaned_text,
-            artifacts=artifacts,
+            text=_scrub_pii(result.get("text", "")),
+            artifacts=jsonable_encoder(result["artifacts"]),
             context_id=result.get("contextId", context_id),
         )
 
@@ -544,7 +414,6 @@ async def chat_stream(
                 message_text=message_text,
                 owner=user["sub"],
                 context_id=context_id,
-                tenant_id=_tenant_id_from_user(user),
             ):
                 # Check if request was cancelled
                 if request_id and request_id in _cancelled_requests:
@@ -557,7 +426,8 @@ async def chat_stream(
                     _cancelled_requests.discard(request_id)
                     break
 
-                event_data = json.dumps(event)
+                # Tool artifacts carry Snowflake Decimal/date values that plain json.dumps rejects.
+                event_data = json.dumps(jsonable_encoder(event))
                 yield f"data: {event_data}\n\n"
 
         except Exception as e:
