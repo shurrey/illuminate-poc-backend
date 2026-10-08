@@ -223,7 +223,8 @@ def validate_and_execute(sql: str, params: dict | None = None) -> dict:
         return query_sql(stripped, params)
     except Exception as exc:
         logger.error("Snowflake execution error: %s", exc)
-        return {"error": str(exc)}
+        # warehouse_error separates Snowflake failures (internal detail) from guard rejections.
+        return {"error": str(exc), "warehouse_error": True}
 
 
 def query_sql(sql: str, params: dict | None = None) -> dict:

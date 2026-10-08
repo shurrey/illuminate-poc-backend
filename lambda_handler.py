@@ -830,8 +830,8 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
     result = await loop.run_in_executor(None, lambda: validate_and_execute(compiled.sql))
     if "error" in result:
         logger.error("Semantic query failed: %s", result["error"])
-        raise HTTPException(status_code=502, detail={"error": result["error"], "sql": compiled.sql})
-    from fastapi.encoders import jsonable_encoder
+        message = "The warehouse could not run this query." if result.get("warehouse_error") else result["error"]
+        raise HTTPException(status_code=502, detail={"error": message, "sql": compiled.sql})
     from fastapi.responses import JSONResponse
 
     # jsonable_encoder turns Snowflake's Decimal into numbers; response-model serialisation makes them strings.
@@ -840,7 +840,7 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
         "rows": result["rows"],
         "sql": compiled.sql,
         "provenance": compiled.provenance,
-    }))
+    }, custom_encoder={bytes: bytes.hex}))
 
 
 # =============================================================================
