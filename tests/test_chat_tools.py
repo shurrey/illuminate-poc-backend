@@ -15,6 +15,9 @@ class FakeWarehouse:
         return {"columns": list(self.rows[0]) if self.rows else [], "rows": self.rows}
 
 
+SEARCHED = ("search_catalog",)
+
+
 def _tools(warehouse=None):
     return ChatTools(CATALOG, "DB", execute=warehouse or FakeWarehouse())
 
@@ -36,11 +39,11 @@ def test_query_semantic_runs_compiled_sql_and_returns_provenance():
     out = _tools(wh).dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"], "dimensions": ["term_name"],
                                                  "title": "Courses by term"})
     assert wh.sql and "DS_COURSE_FILTERS_V1" in wh.sql[0]
-    assert out.content["rows"] == [{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3}]
+    assert out.content["rows"] == [{"term_name": "Fall", "reportable_courses": 3}]
     assert out.content["provenance"]["governed"] is True
     table = next(a for a in out.artifacts if a["type"] == "table")
     assert table["title"] == "Courses by term"
-    assert table["data"] == {"columns": ["TERM_NAME", "REPORTABLE_COURSES"], "rows": [{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3}]}
+    assert table["data"] == {"columns": ["term_name", "reportable_courses"], "rows": [{"term_name": "Fall", "reportable_courses": 3}]}
     assert table["query"]["metrics"] == ["metric.reportable_courses.v1"]
     assert table["sql"] == wh.sql[0]
     assert any(a["type"] == "sql" and a["data"] == wh.sql[0] for a in out.artifacts)
@@ -75,14 +78,15 @@ def test_chart_artifact_uses_the_result_rows():
                                                  "chart": {"type": "bar", "x": "TERM_NAME", "y": "REPORTABLE_COURSES"}})
     chart = next(a for a in out.artifacts if a["type"] == "chart")
     assert chart["data"]["chart_type"] == "bar"
-    assert chart["data"]["x_axis"] == "TERM_NAME" and chart["data"]["data"] == wh.rows
+    assert chart["data"]["x_axis"] == "term_name"
+    assert chart["data"]["data"] == [{"term_name": "Fall", "reportable_courses": 3}]
 
 
 def test_chart_naming_missing_columns_is_dropped_with_a_note():
     out = _tools().dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"],
                                               "chart": {"type": "bar", "x": "NOPE", "y": "N"}})
     assert not any(a["type"] == "chart" for a in out.artifacts)
-    assert "NOPE" in out.content["chart_error"]
+    assert "nope" in out.content["chart_error"]
 
 
 def test_unknown_tool():
@@ -105,7 +109,7 @@ def _fallback(warehouse=None):
 def test_execute_sql_requires_a_reason_and_runs_nothing_without_one():
     wh = FakeWarehouse()
     for reason in (None, "", "   "):
-        out = _fallback(wh).dispatch("execute_sql", {"sql": "SELECT 1", "reason": reason})
+        out = _fallback(wh).dispatch("execute_sql", {"sql": "SELECT 1", "reason": reason}, called=SEARCHED)
         assert "reason" in out.content["error"]
     assert wh.sql == []
 
@@ -113,7 +117,8 @@ def test_execute_sql_requires_a_reason_and_runs_nothing_without_one():
 def test_execute_sql_results_are_marked_ungoverned_with_the_reason():
     wh = FakeWarehouse([{"N": 7}])
     out = _fallback(wh).dispatch("execute_sql", {"sql": "SELECT COUNT(*) AS N FROM DB.CDM_LMS.COURSE",
-                                                 "reason": "No dataset covers raw course counts by instance"})
+                                                 "reason": "No dataset covers raw course counts by instance"},
+                                    called=SEARCHED)
     assert wh.sql == ["SELECT COUNT(*) AS N FROM DB.CDM_LMS.COURSE"]
     assert out.content["provenance"] == {"governed": False, "reason": "No dataset covers raw course counts by instance"}
     assert all(a["provenance"]["governed"] is False for a in out.artifacts)
@@ -122,7 +127,7 @@ def test_execute_sql_results_are_marked_ungoverned_with_the_reason():
 
 def test_execute_sql_errors_pass_through():
     out = _fallback(FakeWarehouse(error="Schema 'X' is not in the allowed list")).dispatch(
-        "execute_sql", {"sql": "SELECT * FROM X.Y", "reason": "testing"})
+        "execute_sql", {"sql": "SELECT * FROM X.Y", "reason": "testing the error path"}, called=SEARCHED)
     assert "allowed list" in out.content["error"] and out.artifacts == []
 
 
@@ -145,5 +150,32 @@ def test_only_governed_queries_run_with_the_compiled_guard():
     modes = []
     tools = ChatTools(CATALOG, "DB", execute=lambda sql, params=None, compiled=False: modes.append(compiled) or {"columns": ["N"], "rows": [{"N": 1}]})
     tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
-    tools.dispatch("execute_sql", {"sql": "SELECT COUNT(*) AS N FROM CDM_LMS.COURSE", "reason": "no governed metric counts all course rows"})
+    tools.dispatch("execute_sql", {"sql": "SELECT COUNT(*) AS N FROM CDM_LMS.COURSE", "reason": "no governed metric counts all course rows"}, called=SEARCHED)
     assert modes == [True, False]
+
+
+def test_governed_results_use_the_contract_names_so_charts_match():
+    wh = FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3}])
+    out = _tools(wh).dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"], "dimensions": ["term_name"],
+                                                 "chart": {"type": "bar", "x": "term_name", "y": "REPORTABLE_COURSES"}})
+    assert "chart_error" not in out.content
+    chart = next(a for a in out.artifacts if a["type"] == "chart")
+    assert (chart["data"]["x_axis"], chart["data"]["y_axis"]) == ("term_name", "reportable_courses")
+
+
+def test_the_model_is_not_sent_the_compiled_sql():
+    out = _tools().dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
+    assert "sql" not in out.content
+
+
+
+def test_execute_sql_needs_the_catalog_searched_first_in_the_turn():
+    wh = FakeWarehouse()
+    out = _tools(wh).dispatch("execute_sql", {"sql": "SELECT 1", "reason": "no governed metric counts raw rows"})
+    assert "search_catalog" in out.content["error"] and wh.sql == []
+
+
+def test_execute_sql_needs_a_real_reason():
+    wh = FakeWarehouse()
+    out = _tools(wh).dispatch("execute_sql", {"sql": "SELECT 1", "reason": "."}, called=SEARCHED)
+    assert "reason" in out.content["error"] and wh.sql == []

@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 from .catalog_view import public_catalog
+from .compiler import joinable_datasets
 from .schema import Catalog
 
 _RULES = """## How to answer
 1. Call `search_catalog` with the user's question to find governed metrics, measures and dimensions.
 2. Answer with `query_semantic` whenever the catalog covers the question. Prefer metrics over raw
    measures. Use dimension names exactly as listed; time dimensions take a grain suffix
-   (`course_start_week__month`). Filters take plain dimension names. Give the result a short `title`,
-   and ask for a `chart` when a trend, distribution or comparison is clearer as one.
+   (`course_start_week__month`). Filters take plain dimension names. A metric or measure can also be
+   broken down by the dimensions of the datasets listed under "Also uses dimensions from"; write
+   `<dataset id>:<name>` when two datasets share a name. Results come back in columns named after the
+   dimensions and each metric's column. Give the result a short `title`, and ask for a `chart` (by those
+   column names) when a trend, distribution or comparison is clearer as one.
 3. Only when no metric, measure or dimension fits, use `describe_cdm_table` and then `execute_sql` on the
    `{database}` database's CDM_* schemas. `execute_sql` needs a `reason` saying why the catalog does not
-   cover the question; its results are shown to the user as ungoverned.
+   cover the question. Say in your answer that the result is ungoverned and why.
 4. The tools return the data, SQL and provenance to the user directly. Do not repeat the SQL or
    reproduce whole result tables in your answer.
 
@@ -45,7 +49,10 @@ def build_system_prompt(catalog: Catalog, database: str) -> str:
         "## Metrics",
     ]
     for m in view["metrics"]:
-        lines.append(f"- `{m['id']}`: {m['display_name']}. {m['description']}")
+        metric = catalog.metrics[m["id"]]
+        lines.append(f"- `{m['id']}` (dataset `{metric.dataset_id}`, column `{metric.short_name}`): "
+                     f"{m['display_name']}. {m['description']}")
+    public = {ds["id"] for ds in view["datasets"]}
     lines += ["", "## Datasets"]
     for ds in view["datasets"]:
         lines += [
@@ -55,6 +62,9 @@ def build_system_prompt(catalog: Catalog, database: str) -> str:
             "Dimensions: " + ", ".join(_dimension(d) for d in ds["dimensions"]),
             "Measures: " + ", ".join(m["name"] for m in ds["measures"]),
         ]
+        joins = [j for j in joinable_datasets(catalog.datasets[ds["id"]], catalog) if j in public]
+        if joins:
+            lines.append("Also uses dimensions from: " + ", ".join(f"`{j}`" for j in joins))
         if ds["filters"]:
             lines.append("Named filters (used by metrics): " + ", ".join(f["name"] for f in ds["filters"]))
     lines += ["", _RULES.format(database=database)]

@@ -137,6 +137,18 @@ def _joins_from(base: Dataset, catalog: Catalog, complete_only: bool = True) -> 
     return out
 
 
+def joinable_datasets(base: Dataset, catalog: Catalog) -> list[str]:
+    """Ids of the datasets whose dimensions queries on base can use."""
+    return sorted(_joins_from(base, catalog))
+
+
+def named_result(result: dict) -> dict:
+    """A compiled query's result keyed by the contract's output names; Snowflake upper-cases unquoted aliases."""
+    rename = {c: c.lower() for c in result["columns"]}
+    return {**result, "columns": list(rename.values()),
+            "rows": [{rename.get(k, k): v for k, v in row.items()} for row in result["rows"]]}
+
+
 def _resolve(base: Dataset, ref: str, catalog: Catalog, joins: dict) -> tuple[Dataset, DatasetDimension, Optional[str]]:
     ds_id, name, grain = _split_ref(ref)
     if ds_id is not None and ds_id != base.id:

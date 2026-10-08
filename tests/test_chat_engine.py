@@ -34,8 +34,9 @@ class RecordingTools:
     def __init__(self):
         self.calls = []
 
-    def dispatch(self, name, tool_input):
+    def dispatch(self, name, tool_input, called=()):
         self.calls.append((name, tool_input))
+        self.called = tuple(called)
         return ToolResult({"rows": [{"N": 3}]}, [{"id": "a1", "type": "table", "data": {"columns": ["N"], "rows": [{"N": 3}]}}])
 
 
@@ -92,3 +93,27 @@ def test_streaming_yields_statuses_then_the_answer_with_artifacts(monkeypatch, t
 def test_engine_uses_the_semantic_prompt():
     assert "search_catalog" in chat_engine.SYSTEM_PROMPT
     assert "metric.active_students.v1" in chat_engine.SYSTEM_PROMPT
+
+
+def test_an_empty_final_reply_becomes_a_short_message(monkeypatch, tools):
+    bedrock = ScriptedBedrock(_tool("query_semantic", {}), _text(""))
+    monkeypatch.setattr(chat_engine, "_bedrock", bedrock)
+    text, _, artifacts = chat_engine.send_message("q", [])
+    assert text.strip() and artifacts
+
+
+def test_streaming_never_completes_with_empty_text(monkeypatch, tools):
+    bedrock = ScriptedBedrock(_text("  "))
+    monkeypatch.setattr(chat_engine, "_bedrock", bedrock)
+
+    async def collect():
+        return [e async for e in chat_engine.send_message_streaming("q", [])]
+
+    assert asyncio.run(collect())[-1]["text"].strip()
+
+
+def test_tools_learn_which_tools_ran_earlier_in_the_turn(monkeypatch, tools):
+    bedrock = ScriptedBedrock(_tool("search_catalog", {}, "t1"), _tool("execute_sql", {}, "t2"), _text("ok"))
+    monkeypatch.setattr(chat_engine, "_bedrock", bedrock)
+    chat_engine.send_message("q", [])
+    assert tools.called == ("search_catalog",)

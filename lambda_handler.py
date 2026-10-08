@@ -265,14 +265,25 @@ def _queries_from(artifacts: list[dict]) -> list[dict]:
     return out
 
 
-def _model_history(history: list[dict]) -> list[dict]:
-    messages = []
+def _model_turns(history: list[dict], message_text: str) -> tuple[list[dict], str]:
+    """Converse messages for the history, and the new user text.
+
+    The queries behind each answer are replayed at the start of the user turn that follows it, so
+    the model can modify them without its own earlier answers showing the JSON to copy.
+    """
+    messages, pending = [], None
     for msg in history:
-        text = msg["content"]
-        if msg.get("queries"):
-            text += "\n\nQueries behind this answer (modify these for follow-up questions):\n" + json.dumps(msg["queries"])
+        text = msg["content"] if msg["content"].strip() else "(no answer)"
+        if msg["role"] == "user" and pending:
+            text = _with_queries(text, pending)
+        pending = msg.get("queries") if msg["role"] == "assistant" else None
         messages.append({"role": msg["role"], "content": [{"text": text}]})
-    return messages
+    return messages, _with_queries(message_text, pending) if pending else message_text
+
+
+def _with_queries(text: str, queries: list[dict]) -> str:
+    return f"<previous_queries>{json.dumps(queries)}</previous_queries>\n\n{text}"
+
 
 async def send_message(
     message_text: str,
@@ -285,11 +296,11 @@ async def send_message(
     from conversation_store import load_history, save_turn
 
     context_id = _conversation_id(context_id, owner)
-    bedrock_history = _model_history(load_history(context_id, owner))
+    bedrock_history, model_text = _model_turns(load_history(context_id, owner), message_text)
 
     loop = asyncio.get_event_loop()
     response_text, _, artifacts = await loop.run_in_executor(
-        None, lambda: engine_send(message_text, bedrock_history)
+        None, lambda: engine_send(model_text, bedrock_history)
     )
 
     save_turn(context_id, owner, message_text, response_text, _queries_from(artifacts))
@@ -309,18 +320,19 @@ async def send_message_streaming(
     yield {"type": "status", "message": "Processing your question..."}
 
     context_id = _conversation_id(context_id, owner)
-    bedrock_history = _model_history(load_history(context_id, owner))
+    bedrock_history, model_text = _model_turns(load_history(context_id, owner), message_text)
 
     full_text, artifacts = "", []
     try:
-        async for event in engine_stream(message_text, bedrock_history):
+        async for event in engine_stream(model_text, bedrock_history):
             if event["type"] == "status":
                 yield event
             elif event["type"] == "raw_complete":
                 full_text, artifacts = event["text"], event["artifacts"]
-                save_turn(context_id, owner, message_text, full_text, _queries_from(artifacts))
+                if full_text.strip():
+                    save_turn(context_id, owner, message_text, full_text, _queries_from(artifacts))
 
-        if not full_text:
+        if not full_text.strip():
             yield {"type": "error", "message": "Empty response"}
             return
 
@@ -850,7 +862,9 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
         message = "The warehouse could not run this query." if result.get("warehouse_error") else result["error"]
         raise HTTPException(status_code=502, detail={"error": message, "sql": compiled.sql})
     from fastapi.responses import JSONResponse
+    from semantic_layer.compiler import named_result
 
+    result = named_result(result)
     # jsonable_encoder turns Snowflake's Decimal into numbers; response-model serialisation makes them strings.
     return JSONResponse(_json_safe({
         "columns": result["columns"],

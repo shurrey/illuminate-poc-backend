@@ -8,17 +8,19 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Iterable, Optional
 
 from pydantic import ValidationError
 
-from .compiler import CompileError, compile_query
+from .compiler import CompileError, compile_query, named_result
 from .dictionary import describe_table
 from .contract import QueryContract
 from .schema import Catalog
 from .search import search_catalog
 
 MODEL_ROW_LIMIT = 200
+MIN_REASON_LENGTH = 15
+_GOVERNED_TOOLS = {"search_catalog", "query_semantic"}
 _CONTRACT_FIELDS = set(QueryContract.model_fields)
 
 _FILTER_SCHEMA = {
@@ -136,10 +138,13 @@ class ChatTools:
     def specs(self) -> list[dict]:
         return SPECS
 
-    def dispatch(self, name: str, tool_input: dict) -> ToolResult:
+    def dispatch(self, name: str, tool_input: dict, called: Iterable[str] = ()) -> ToolResult:
+        """called: the tools already run earlier in this turn."""
         handler = getattr(self, f"_tool_{name}", None)
         if handler is None:
             return ToolResult({"error": f"Unknown tool: {name}"})
+        if name == "execute_sql" and not _GOVERNED_TOOLS & set(called):
+            return ToolResult({"error": "Call search_catalog first; execute_sql is only for questions the catalog cannot answer"})
         return handler(tool_input)
 
     def _tool_search_catalog(self, tool_input: dict) -> ToolResult:
@@ -156,6 +161,7 @@ class ChatTools:
         if "error" in result:
             return ToolResult({"error": result["error"], "sql": compiled.sql})
 
+        result = named_result(result)
         rows, columns = result["rows"], result["columns"]
         provenance = compiled.provenance.model_dump()
         query = contract.model_dump(mode="json", exclude_defaults=True)
@@ -163,7 +169,7 @@ class ChatTools:
         common = {"query": query, "sql": compiled.sql, "provenance": provenance}
         content = {
             "columns": columns, "rows": rows[:MODEL_ROW_LIMIT], "row_count": len(rows),
-            "truncated": len(rows) > MODEL_ROW_LIMIT, "provenance": provenance, "sql": compiled.sql,
+            "truncated": len(rows) > MODEL_ROW_LIMIT, "provenance": provenance,
         }
         artifacts = [
             _artifact("table", title, {"columns": columns, "rows": rows}, **common),
@@ -171,13 +177,13 @@ class ChatTools:
         ]
         chart = tool_input.get("chart")
         if chart:
-            missing = [c for c in (chart.get("x"), chart.get("y")) if c not in columns]
+            x, y = (str(chart.get(k, "")).lower() for k in ("x", "y"))
+            missing = [c for c in (x, y) if c not in columns]
             if missing:
                 content["chart_error"] = f"chart columns not in the result: {missing}; result columns are {columns}"
             else:
                 artifacts.append(_artifact("chart", title, {
-                    "chart_type": chart["type"], "title": title,
-                    "x_axis": chart["x"], "y_axis": chart["y"], "data": rows,
+                    "chart_type": chart["type"], "title": title, "x_axis": x, "y_axis": y, "data": rows,
                 }, **common))
         return ToolResult(content, artifacts)
 
@@ -190,8 +196,8 @@ class ChatTools:
 
     def _tool_execute_sql(self, tool_input: dict) -> ToolResult:
         reason = (tool_input.get("reason") or "").strip()
-        if not reason:
-            return ToolResult({"error": "execute_sql needs a reason saying why no governed definition fits"})
+        if len(reason) < MIN_REASON_LENGTH:
+            return ToolResult({"error": "execute_sql needs a reason (a sentence) saying why no governed definition fits"})
         sql = tool_input.get("sql", "")
         result = self.execute(sql, None)
         if "error" in result:

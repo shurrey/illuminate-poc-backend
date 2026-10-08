@@ -35,7 +35,7 @@ def _score(question: set[str], fields: dict[str, list[str]]) -> int:
 
 
 def search_catalog(question: str, catalog: Catalog, limit: int = 8) -> list[dict]:
-    """Best matches first: {kind, id, display_name, description, score}; empty when nothing matches."""
+    """Best matches first: {kind, id, dataset, display_name, description, score}; empty when nothing matches."""
     q = _tokens(question)
     hits = []
     public = {i: d for i, d in catalog.datasets.items() if d.visibility == "public"}
@@ -45,20 +45,20 @@ def search_catalog(question: str, catalog: Catalog, limit: int = 8) -> list[dict
         s = _score(q, {"synonym": m.synonyms, "name": [m.display_name, m.short_name],
                        "question": m.example_questions, "description": [m.description]})
         if s:
-            hits.append({"kind": "metric", "id": m.id, "display_name": m.display_name,
+            hits.append({"kind": "metric", "id": m.id, "dataset": m.dataset_id, "display_name": m.display_name,
                          "description": m.description, "score": s + _METRIC_BOOST})
     for ds in public.values():
         for meas in ds.measures:
             s = _score(q, {"synonym": meas.synonyms, "name": [meas.name], "description": [meas.description]})
             if s:
-                hits.append({"kind": "measure", "id": f"{ds.id}:{meas.name}", "display_name": meas.name,
+                hits.append({"kind": "measure", "id": f"{ds.id}:{meas.name}", "dataset": ds.id, "display_name": meas.name,
                              "description": meas.description or ds.display_name, "score": s})
         for dim in ds.dimensions:
             if ds.is_pii(dim.column):
                 continue
             s = _score(q, {"synonym": dim.synonyms, "name": [dim.name], "description": [dim.description]})
             if s:
-                hits.append({"kind": "dimension", "id": f"{ds.id}:{dim.name}", "display_name": dim.name,
+                hits.append({"kind": "dimension", "id": f"{ds.id}:{dim.name}", "dataset": ds.id, "display_name": dim.name,
                              "description": dim.description or ds.display_name, "score": s})
     hits.sort(key=lambda h: (-h["score"], h["kind"] != "metric", h["id"]))
     return hits[:limit]

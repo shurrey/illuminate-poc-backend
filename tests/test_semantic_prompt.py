@@ -36,3 +36,17 @@ def test_rules_put_governed_tools_first_and_require_a_reason_for_freehand_sql():
 def test_no_text_markers_are_requested():
     for marker in ("[CHART_CONFIG]", "[SQL_QUERY]", "[QUERY_PARAMS]"):
         assert marker not in PROMPT
+
+
+def test_metrics_name_their_dataset_and_result_column():
+    m = CATALOG.metrics["metric.average_grade.v1"]
+    assert f"`{m.id}` (dataset `{m.dataset_id}`, column `{m.short_name}`)" in PROMPT
+
+
+def test_datasets_list_the_datasets_whose_dimensions_they_can_use():
+    section = PROMPT.split("### `dataset.student_grade.v1`")[1].split("###")[0]
+    assert "dataset.courses.v1" in section
+
+
+def test_freehand_results_must_be_called_ungoverned_in_the_answer():
+    assert "ungoverned" in PROMPT.split("## How to answer")[1].lower()
