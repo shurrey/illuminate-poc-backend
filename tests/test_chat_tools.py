@@ -87,3 +87,55 @@ def test_chart_naming_missing_columns_is_dropped_with_a_note():
 
 def test_unknown_tool():
     assert "Unknown tool" in _tools().dispatch("drop_tables", {}).content["error"]
+
+
+DICTIONARY = {
+    ("CDM_LMS", "COURSE"): [
+        {"name": "ID", "type": "NUMBER", "pii": False, "description": "Primary key"},
+        {"name": "NAME", "type": "TEXT", "pii": False, "description": "Course name"},
+    ],
+}
+
+
+def _fallback(warehouse=None):
+    return ChatTools(CATALOG, "DB", execute=warehouse or FakeWarehouse(),
+                     describe=lambda schema, table: DICTIONARY.get((schema.upper(), table.upper())))
+
+
+def test_execute_sql_requires_a_reason_and_runs_nothing_without_one():
+    wh = FakeWarehouse()
+    for reason in (None, "", "   "):
+        out = _fallback(wh).dispatch("execute_sql", {"sql": "SELECT 1", "reason": reason})
+        assert "reason" in out.content["error"]
+    assert wh.sql == []
+
+
+def test_execute_sql_results_are_marked_ungoverned_with_the_reason():
+    wh = FakeWarehouse([{"N": 7}])
+    out = _fallback(wh).dispatch("execute_sql", {"sql": "SELECT COUNT(*) AS N FROM DB.CDM_LMS.COURSE",
+                                                 "reason": "No dataset covers raw course counts by instance"})
+    assert wh.sql == ["SELECT COUNT(*) AS N FROM DB.CDM_LMS.COURSE"]
+    assert out.content["provenance"] == {"governed": False, "reason": "No dataset covers raw course counts by instance"}
+    assert all(a["provenance"]["governed"] is False for a in out.artifacts)
+    assert "query" not in out.artifacts[0]
+
+
+def test_execute_sql_errors_pass_through():
+    out = _fallback(FakeWarehouse(error="Schema 'X' is not in the allowed list")).dispatch(
+        "execute_sql", {"sql": "SELECT * FROM X.Y", "reason": "testing"})
+    assert "allowed list" in out.content["error"] and out.artifacts == []
+
+
+def test_describe_cdm_table_returns_columns():
+    out = _fallback().dispatch("describe_cdm_table", {"schema": "cdm_lms", "table": "course"})
+    assert [c["name"] for c in out.content["columns"]] == ["ID", "NAME"]
+
+
+def test_describe_unknown_table_is_an_error():
+    out = _fallback().dispatch("describe_cdm_table", {"schema": "CDM_LMS", "table": "NOPE"})
+    assert "CDM_LMS.NOPE" in out.content["error"]
+
+
+def test_specs_include_the_fallback_tools():
+    names = {s["name"] for s in _fallback().specs}
+    assert {"execute_sql", "describe_cdm_table"} <= names
