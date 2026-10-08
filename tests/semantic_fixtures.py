@@ -38,6 +38,7 @@ COURSES = Dataset(
     source="test",
     base_sql="SELECT c.ID AS COURSE_ID, c.NAME AS COURSE_NAME, c.START_DATE "
              "FROM {{ database }}.CDM_LMS.COURSE c",
+    complete=True,
     entities=[{"name": "course", "column": "COURSE_ID", "type": "primary"}],
     dimensions=[
         {"name": "course_name", "column": "COURSE_NAME", "type": "categorical"},

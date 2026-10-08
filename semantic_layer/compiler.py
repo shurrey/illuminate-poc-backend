@@ -124,11 +124,11 @@ def _output_name(ref: str) -> str:
     return ref.rpartition(":")[2]
 
 
-def _joins_from(base: Dataset, catalog: Catalog) -> dict[str, tuple[Dataset, str, str]]:
+def _joins_from(base: Dataset, catalog: Catalog, complete_only: bool = True) -> dict[str, tuple[Dataset, str, str]]:
     """Datasets reachable many-to-one from base: id -> (dataset, base column, its primary column)."""
     out: dict[str, tuple[Dataset, str, str]] = {}
     for other in catalog.datasets.values():
-        if other.id == base.id:
+        if other.id == base.id or (complete_only and not other.complete):
             continue
         for mine in base.entities:
             theirs = next((e for e in other.entities if e.name == mine.name and e.type == "primary"), None)
@@ -144,7 +144,11 @@ def _resolve(base: Dataset, ref: str, catalog: Catalog, joins: dict) -> tuple[Da
         if target is None:
             raise CompileError(f"unknown dataset {ds_id} in dimension {ref!r}")
         if ds_id not in joins:
-            reverse = _joins_from(target, catalog)
+            if ds_id in _joins_from(base, catalog, complete_only=False):
+                raise CompileError(
+                    f"{ds_id} is not complete (it omits some {base.id} rows), so it cannot supply dimensions"
+                )
+            reverse = _joins_from(target, catalog, complete_only=False)
             if base.id in reverse:
                 raise CompileError(f"joining {ds_id} to {base.id} would multiply {base.id} rows")
             raise CompileError(f"{ds_id} cannot be reached from {base.id} through a shared entity")

@@ -114,3 +114,11 @@ def test_snapshot_includes_tables_from_the_live_schema_supplement():
     meta = SNAPSHOT["VALIDATION_DB"]["CDM_META"]
     assert meta["BBD_CALCULATION_DETAIL"]["CALCULATION_LIST"] == "ARRAY"
     assert "CANON_DEFINITION" in meta
+
+
+def test_measures_may_only_count_pii_columns():
+    bad = dataset(measures=[{"name": "n", "agg": "count", "expr": "ID"},
+                            {"name": "latest_email", "agg": "max", "expr": "EMAIL"},
+                            {"name": "emails", "agg": "count_distinct", "expr": "EMAIL"}])
+    errors = "\n".join(validate_dataset(bad, catalog(bad), SNAPSHOT, PII))
+    assert "latest_email" in errors and "emails" not in errors

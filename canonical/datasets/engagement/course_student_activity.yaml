@@ -21,6 +21,7 @@ base_sql: |
              ANY_VALUE(cu.COURSE_WEEKS) AS COURSE_WEEKS,
              ANY_VALUE(cu.COURSE_DURATION) AS COURSE_DURATION,
              ANY_VALUE(cu.TERM_NAME) AS TERM_NAME,
+             ANY_VALUE(cu.COURSE_ENDED) AS COURSE_ENDED,
              COUNT(DISTINCT DATE_TRUNC('DAY', ca.FIRST_ACCESSED_TIME)) AS CNT_DAYS,
              SUM(ca.INTERACTION_CNT) AS INTERACTION_COUNT,
              ANY_VALUE(sub.SUBMISSION_COUNT) AS SUBMISSION_COUNT,
@@ -35,7 +36,7 @@ base_sql: |
       FROM {{ database }}.CDM_LMS.PERSON_COURSE pc
       JOIN {{ database }}.CDM_LMS.PERSON pe ON pe.ID = pc.PERSON_ID
       JOIN (
-          SELECT DISTINCT COURSE_ID, START_WEEK, END_WEEK, COURSE_WEEKS, COURSE_DURATION, TERM_NAME
+          SELECT DISTINCT COURSE_ID, START_WEEK, END_WEEK, COURSE_WEEKS, COURSE_DURATION, TERM_NAME, COURSE_ENDED
           FROM {{ ref('dataset.course_filters.v1') }}
       ) cu ON cu.COURSE_ID = pc.COURSE_ID
       JOIN {{ database }}.CDM_LMS.COURSE_ACTIVITY ca
@@ -83,7 +84,7 @@ base_sql: |
   SELECT
       cr.COURSE_ID, cr.PERSON_FIRST_NAME, cr.PERSON_LAST_NAME, cr.ALTERNATIVE_SOURCE_ID,
       cr.INTERACTION_COUNT, cr.SUBMISSION_COUNT, cr.PERSON_EMAIL, cr.PERSON_COURSE_ID, cr.PERSON_ID,
-      cr.COURSE_WEEKS, cr.COURSE_DURATION, cr.TERM_NAME, cr.TOTAL_MIN_IN_COURSE, cr.CNT_DAYS, cr.ACCESSES_COUNT,
+      cr.COURSE_WEEKS, cr.COURSE_DURATION, cr.TERM_NAME, cr.COURSE_ENDED, cr.TOTAL_MIN_IN_COURSE, cr.CNT_DAYS, cr.ACCESSES_COUNT,
       cr.FIRST_ACCESSED_TIME, cr.LAST_ACCESSED_TIME, cr.LAST_INITIAL_ACCESSED_TIME, cr.ACTIVE,
       COALESCE(cr.PERCENT_ACTIVITY, 0) AS PERCENT_ACTIVITY,
       COALESCE(clb.TOTAL_SESSION_MIN, 0) AS CLB_SESSION_MIN,
@@ -105,6 +106,7 @@ dimensions:
   - {name: course_duration, column: COURSE_DURATION, type: categorical}
   - {name: course_weeks, column: COURSE_WEEKS, type: numeric}
   - {name: active, column: ACTIVE, type: numeric, description: "1 when the enrollment is available, enabled and not deleted"}
+  - {name: course_ended, column: COURSE_ENDED, type: numeric, description: "1 when the course or term end date has passed"}
   - {name: first_access, column: FIRST_ACCESSED_TIME, type: time, grains: [day, week, month]}
   - {name: last_access, column: LAST_ACCESSED_TIME, type: time, grains: [day, week, month], synonyms: [last seen]}
   - {name: person_email, column: PERSON_EMAIL, type: categorical, description: "Filter only; never selectable"}
@@ -128,4 +130,5 @@ measures:
   - {name: share_active_last_7_days, agg: ratio, numerator: students_active_last_7_days, denominator: students, unit: ratio}
 filters:
   - {name: active_only, sql: "ACTIVE = 1"}
+  - {name: ongoing_courses, sql: "COURSE_ENDED = 0"}
 pii_columns: [PERSON_ID, PERSON_COURSE_ID, ALTERNATIVE_SOURCE_ID, PERSON_FIRST_NAME, PERSON_LAST_NAME, PERSON_EMAIL]

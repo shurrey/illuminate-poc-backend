@@ -5,7 +5,8 @@ description: >
   course window, minutes and distinct days of activity, last login and last submission, and
   Collaborate usage in sessions attended by both students and instructors. Preview and bbsupport
   test users are excluded. Counts are per course; summing across courses counts role enrollments,
-  not distinct people.
+  not distinct people. Collaborate minutes and sessions are course-level and repeat on both role
+  rows, so their measures read the student row only.
 grain: one row per course x course role (S, I)
 domain: engagement
 source: bbdata-bbd-analytics procedures/orchestration/courseRoleActivity/processCourseRoleActivity.ts
@@ -113,8 +114,8 @@ measures:
   - {name: available_enrolled_people, agg: sum, expr: AVAILABLE_ENROLLMENT_ROLE_COUNT, unit: role enrollments}
   - {name: minutes_in_course, agg: sum, expr: TOTAL_MIN_IN_COURSE, unit: minutes}
   - {name: activity_days, agg: sum, expr: CNT_DAYS, unit: days, description: "Distinct days with activity per course, summed"}
-  - {name: collab_minutes, agg: sum, expr: CLB_SESSION_MIN, unit: minutes}
-  - {name: collab_sessions, agg: sum, expr: CLB_SESSION_CNT, unit: sessions}
+  - {name: collab_minutes, agg: sum, expr: "IFF(COURSE_ROLE = 'S', CLB_SESSION_MIN, NULL)", unit: minutes}
+  - {name: collab_sessions, agg: sum, expr: "IFF(COURSE_ROLE = 'S', CLB_SESSION_CNT, NULL)", unit: sessions}
   - {name: collab_people, agg: sum, expr: CLB_COUNT_PERSON, unit: role enrollments}
   - {name: share_active, agg: ratio, numerator: active_people, denominator: enrolled_people, unit: ratio, synonyms: [engagement rate]}
   - {name: minutes_per_active_person, agg: ratio, numerator: minutes_in_course, denominator: active_people, unit: minutes}

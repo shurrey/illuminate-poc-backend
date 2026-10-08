@@ -1,0 +1,47 @@
+id: dataset.courses.v1
+display_name: Courses (conformed course dimension)
+description: >
+  Every course exactly once, with its term, design mode, dates and status. Course-grain datasets and
+  enrollment-grain datasets take their course and term dimensions from here, so a grouping by term
+  or course never depends on which students had activity. Not a bbd-analytics product; it applies
+  the course and term logic of COURSE_FILTER at course grain.
+grain: one row per course
+domain: course
+complete: true
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_COURSE_FILTER.sql (course_start_end)
+base_sql: |
+  SELECT co.ID AS COURSE_ID,
+         co.NAME AS COURSE_NAME,
+         co.COURSE_NUMBER,
+         CONCAT(co.COURSE_NUMBER, ' - ', co.NAME) AS COURSE_ID_NAME,
+         NVL(te.NAME, '-') AS TERM_NAME,
+         NVL(cd.CANON_DESC, 'No explicit mode') AS DESIGN_MODE,
+         COALESCE(co.START_TIME, te.START_TIME)::DATE AS COURSE_START_DATE,
+         COALESCE(co.END_TIME, te.END_TIME)::DATE AS COURSE_END_DATE,
+         IFF(COALESCE(co.END_DATE, te.END_DATE) <= CURRENT_DATE(), 1, 0) AS COURSE_ENDED,
+         IFF(co.COURSE_PARENT_ID IS NULL, 0, 1) AS CHILD_COURSE_IND,
+         co.ROW_DELETED_TIME IS NOT NULL AS COURSE_DELETED_IND,
+         co.AVAILABLE_IND
+  FROM {{ database }}.CDM_LMS.COURSE co
+  LEFT JOIN {{ database }}.CDM_LMS.TERM te ON te.ID = co.TERM_ID
+  LEFT JOIN {{ database }}.CDM_META.CANON_DEFINITION cd
+    ON cd.CANON_CODE = co.DESIGN_MODE AND cd.SOURCE_DOMAIN = 'LMS' AND cd.NAME = 'DESIGN_MODE'
+entities:
+  - {name: course, column: COURSE_ID, type: primary}
+dimensions:
+  - {name: course_name, column: COURSE_NAME, type: categorical, synonyms: [course, class]}
+  - {name: course_number, column: COURSE_NUMBER, type: categorical, synonyms: [course code]}
+  - {name: course_id_name, column: COURSE_ID_NAME, type: categorical}
+  - {name: term_name, column: TERM_NAME, type: categorical, synonyms: [term, semester]}
+  - {name: design_mode, column: DESIGN_MODE, type: categorical, synonyms: [ultra or classic, course view]}
+  - {name: course_ended, column: COURSE_ENDED, type: numeric}
+  - {name: is_child_course, column: CHILD_COURSE_IND, type: numeric}
+  - {name: course_deleted, column: COURSE_DELETED_IND, type: boolean}
+  - {name: course_available, column: AVAILABLE_IND, type: boolean}
+  - {name: course_start, column: COURSE_START_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: course_end, column: COURSE_END_DATE, type: time, grains: [day, week, month, quarter, year]}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+filters:
+  - {name: live, sql: "NOT COURSE_DELETED_IND"}
+  - {name: top_level, sql: "CHILD_COURSE_IND = 0"}

@@ -25,6 +25,7 @@ base_sql: |
              CASE WHEN co.START_DATE IS NOT NULL THEN DATEADD(day, -7, DATE_TRUNC('week', co.START_DATE))
                   WHEN te.START_DATE IS NOT NULL THEN DATEADD(day, -7, DATE_TRUNC('week', te.START_DATE))
              END AS START_DATE,
+             COALESCE(co.START_DATE, te.START_DATE) AS ACTUAL_START_DATE,
              IFF(COALESCE(co.END_DATE, te.END_DATE) IS NOT NULL, 'Fixed', 'Continuous') AS COURSE_DURATION,
              IFF(COALESCE(co.END_DATE, te.END_DATE) <= CURRENT_DATE(), 1, 0) AS COURSE_ENDED
       FROM {{ database }}.CDM_LMS.COURSE co
@@ -72,6 +73,7 @@ base_sql: |
       NVL(co.TERM_NAME, '-') AS TERM_NAME,
       co.COURSE_ENDED,
       IFF(YEAR(co.START_DATE) < 1970, TO_DATE('1970-01-01'), co.START_DATE) AS START_DATE,
+      co.ACTUAL_START_DATE,
       co.COURSE_DURATION,
       re.COURSE_ROLE
   FROM course_start_end co
@@ -96,6 +98,6 @@ dimensions:
 measures:
   - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
   - {name: courses_without_enrollments, agg: count_distinct, expr: "IFF(COURSE_ROLE IS NULL, COURSE_ID, NULL)", unit: courses}
-  - {name: courses_not_started, agg: count_distinct, expr: "IFF(START_DATE > CURRENT_DATE(), COURSE_ID, NULL)", unit: courses}
+  - {name: courses_not_started, agg: count_distinct, expr: "IFF(ACTUAL_START_DATE > CURRENT_DATE(), COURSE_ID, NULL)", unit: courses}
 filters:
   - {name: ongoing, sql: "COURSE_ENDED = 0"}

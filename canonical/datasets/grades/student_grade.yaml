@@ -4,8 +4,10 @@ description: >
   One row per student enrollment in a reportable course: the final-grade column's score, the
   summed score over the other gradebook items whose type is listed in CDM_META.BBD_CALCULATION_DETAIL,
   normalized-score statistics, and grade_percentage = the greater of the two as a percentage,
-  bucketed into 5-point bands. As in bbd-analytics, an enrollment with no possible points gets
-  grade_percentage 0 (band '0-04%'); the grade measures below count graded enrollments only.
+  bucketed into 5-point bands. Deviation: bbd-analytics counts possible points of unscored items and
+  scores ungraded enrollments as 0%; here only scored items count, a final grade without possible
+  points is NULL, an enrollment with no scored work has a NULL grade_percentage ('Not graded'), and
+  exactly 100% falls in the 95-100% band rather than '>100%'.
 grain: one row per student enrollment (person_course) in a reportable course
 domain: grades
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_STUDENT_GRADE.sql
@@ -49,7 +51,8 @@ base_sql: |
   ),
   counted_grades AS (
       SELECT PERSON_COURSE_ID,
-             SUM(SCORE) AS SUM_SCORE, SUM(POSSIBLE_SCORE) AS SUM_POSSIBLE_SCORE, COUNT(*) AS MAX_COUNT,
+             SUM(SCORE) AS SUM_SCORE, SUM(IFF(SCORE IS NOT NULL, POSSIBLE_SCORE, NULL)) AS SUM_POSSIBLE_SCORE,
+             COUNT(*) AS MAX_COUNT, COUNT(SCORE) AS SCORED_ITEMS,
              MAX(NORMALIZED_SCORE) AS MAX_NORMALIZED_SCORE, AVG(NORMALIZED_SCORE) AS AVG_NORMALIZED_SCORE,
              SUM(ZERO_IND_NORMALIZED_SCORE) AS ZERO_NORMALIZED_SCORE, SUM(NULL_IND_NORMALIZED_SCORE) AS NULL_NORMALIZED_SCORE
       FROM counted_grades_detail
@@ -58,8 +61,9 @@ base_sql: |
   student_bucket AS (
       SELECT ap.COURSE_ID, ap.PERSON_ID, ap.PERSON_COURSE_ID,
              ap.PERSON_COURSE_AVAILABLE, ap.PERSON_COURSE_ENABLED, ap.PERSON_COURSE_DELETED,
-             NVL(fi.FINAL_SCORE, 0) / IFF(NVL(fi.FINAL_POSSIBLE_SCORE, 0) = 0, 1, fi.FINAL_POSSIBLE_SCORE) AS FINAL_GRADE,
-             NVL(co.SUM_SCORE, 0) / IFF(NVL(co.SUM_POSSIBLE_SCORE, 0) = 0, 1, co.SUM_POSSIBLE_SCORE) AS SUM_GRADE,
+             IFF(fi.FINAL_SCORE IS NOT NULL AND fi.FINAL_POSSIBLE_SCORE > 0,
+                 fi.FINAL_SCORE / fi.FINAL_POSSIBLE_SCORE, NULL) AS FINAL_GRADE,
+             IFF(co.SUM_POSSIBLE_SCORE > 0, co.SUM_SCORE / co.SUM_POSSIBLE_SCORE, NULL) AS SUM_GRADE,
              GREATEST(NVL(fi.FINAL_SCORE, 0), NVL(co.SUM_SCORE, 0)) AS SCORE,
              GREATEST(NVL(fi.FINAL_POSSIBLE_SCORE, 0), NVL(co.SUM_POSSIBLE_SCORE, 0)) AS POSSIBLE_SCORE,
              NVL(fi.FINAL_SCORE, 0) AS FINAL_SCORE,
@@ -67,13 +71,15 @@ base_sql: |
              fi.FINAL_POSSIBLE_SCORE, co.SUM_POSSIBLE_SCORE, fi.FINAL_NORMALIZED_SCORE,
              co.MAX_NORMALIZED_SCORE, co.AVG_NORMALIZED_SCORE, co.ZERO_NORMALIZED_SCORE, co.NULL_NORMALIZED_SCORE,
              co.MAX_COUNT AS ENROLLMENT_ITEMS,
-             GREATEST(FINAL_GRADE, SUM_GRADE) * 100 AS GRADE_PERCENTAGE,
-             WIDTH_BUCKET(GRADE_PERCENTAGE, 0, 100, 20) AS BUCKET
+             co.SCORED_ITEMS,
+             GREATEST_IGNORE_NULLS(FINAL_GRADE, SUM_GRADE) * 100 AS GRADE_PERCENTAGE,
+             -- WIDTH_BUCKET puts exactly 100 in the overflow bucket; full marks belong in 95-100%.
+             IFF(ROUND(GRADE_PERCENTAGE, 2) = 100, 20, WIDTH_BUCKET(GRADE_PERCENTAGE, 0, 100, 20)) AS BUCKET
       FROM active_persons ap
       LEFT JOIN final_grades fi ON fi.PERSON_COURSE_ID = ap.PERSON_COURSE_ID
       LEFT JOIN counted_grades co ON co.PERSON_COURSE_ID = ap.PERSON_COURSE_ID
   )
-  SELECT sb.*, bn.BUCKET_DESC
+  SELECT sb.*, IFF(sb.GRADE_PERCENTAGE IS NULL, 'Not graded', bn.BUCKET_DESC) AS BUCKET_DESC
   FROM student_bucket sb
   LEFT JOIN bucket_name bn ON bn.BUCKET = sb.BUCKET
 entities:
@@ -81,21 +87,21 @@ entities:
   - {name: course, column: COURSE_ID, type: foreign}
   - {name: person, column: PERSON_ID, type: foreign}
 dimensions:
-  - {name: grade_band, column: BUCKET_DESC, type: categorical, description: "5-point grade_percentage band, '<0%' to '>100%'", synonyms: [grade range, grade bucket]}
+  - {name: grade_band, column: BUCKET_DESC, type: categorical, description: "5-point grade_percentage band, '<0%' to '>100%', or 'Not graded'", synonyms: [grade range, grade bucket]}
   - {name: enrollment_available, column: PERSON_COURSE_AVAILABLE, type: boolean}
   - {name: enrollment_enabled, column: PERSON_COURSE_ENABLED, type: boolean}
   - {name: graded_items, column: ENROLLMENT_ITEMS, type: numeric, description: "Graded non-final items counted for the enrollment"}
 measures:
   - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students}
   - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
-  - {name: graded_enrollments, agg: count_distinct, expr: "IFF(POSSIBLE_SCORE > 0, PERSON_COURSE_ID, NULL)", unit: enrollments}
-  - {name: average_grade_percentage, agg: avg, expr: "IFF(POSSIBLE_SCORE > 0, GRADE_PERCENTAGE, NULL)", unit: percent, synonyms: [average grade, mean grade, gpa]}
-  - {name: median_grade_percentage, agg: median, expr: "IFF(POSSIBLE_SCORE > 0, GRADE_PERCENTAGE, NULL)", unit: percent}
-  - {name: average_final_grade, agg: avg, expr: "IFF(FINAL_POSSIBLE_SCORE > 0, FINAL_GRADE * 100, NULL)", unit: percent}
+  - {name: graded_enrollments, agg: count_distinct, expr: "IFF(GRADE_PERCENTAGE IS NOT NULL, PERSON_COURSE_ID, NULL)", unit: enrollments}
+  - {name: average_grade_percentage, agg: avg, expr: GRADE_PERCENTAGE, unit: percent, synonyms: [average grade, mean grade, gpa]}
+  - {name: median_grade_percentage, agg: median, expr: GRADE_PERCENTAGE, unit: percent}
+  - {name: average_final_grade, agg: avg, expr: "FINAL_GRADE * 100", unit: percent}
   - {name: average_normalized_score, agg: avg, expr: AVG_NORMALIZED_SCORE, unit: score}
-  - {name: failing_enrollments, agg: count_distinct, expr: "IFF(POSSIBLE_SCORE > 0 AND GRADE_PERCENTAGE < 60, PERSON_COURSE_ID, NULL)", unit: enrollments, description: "Graded enrollments below 60%"}
+  - {name: failing_enrollments, agg: count_distinct, expr: "IFF(GRADE_PERCENTAGE < 60, PERSON_COURSE_ID, NULL)", unit: enrollments, description: "Graded enrollments below 60%"}
   - {name: share_failing, agg: ratio, numerator: failing_enrollments, denominator: graded_enrollments, unit: ratio}
 filters:
-  - {name: graded_only, sql: "POSSIBLE_SCORE > 0", description: Enrollments with at least one possible point}
+  - {name: graded_only, sql: "GRADE_PERCENTAGE IS NOT NULL", description: Enrollments with at least one scored item}
   - {name: active_enrollments, sql: "PERSON_COURSE_AVAILABLE AND PERSON_COURSE_ENABLED AND PERSON_COURSE_DELETED IS NULL"}
 pii_columns: [PERSON_ID, PERSON_COURSE_ID]
