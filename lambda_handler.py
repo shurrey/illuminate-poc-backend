@@ -442,6 +442,9 @@ app.add_middleware(
 
 # Track cancelled request IDs
 _cancelled_requests: set[str] = set()
+# request_id -> Cognito sub of the user streaming it. Per Lambda instance, so a cancel that
+# lands on a different instance than its stream finds nothing and returns 404.
+_request_owners: dict[str, str] = {}
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -532,6 +535,9 @@ async def chat_stream(
         f"context_id={context_id}, request_id={request_id}"
     )
 
+    if request_id:
+        _request_owners[request_id] = user["sub"]
+
     async def event_generator():
         """Relay SSE events from chat_engine to the frontend."""
         try:
@@ -565,6 +571,7 @@ async def chat_stream(
         finally:
             if request_id:
                 _cancelled_requests.discard(request_id)
+                _request_owners.pop(request_id, None)
 
     return StreamingResponse(
         event_generator(),
@@ -582,7 +589,13 @@ async def cancel_chat(
     request_id: str,
     authorization: Optional[str] = Header(None)
 ):
-    """Cancel an in-progress chat request."""
+    """Cancel an in-progress chat request owned by the caller."""
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    if _request_owners.get(request_id) != user["sub"]:
+        raise HTTPException(status_code=404, detail="No such request in progress")
+
     logger.info(f"Cancelling request: {request_id}")
     _cancelled_requests.add(request_id)
     return {"success": True, "request_id": request_id}
