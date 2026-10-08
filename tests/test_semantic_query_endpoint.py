@@ -53,7 +53,7 @@ def test_execution_errors_are_502_with_the_sql(client, monkeypatch):
     monkeypatch.setattr(snowflake_client, "query_sql", boom)
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
     assert r.status_code == 502
-    assert "warehouse suspended" in r.json()["detail"]["error"]
+    assert r.json()["detail"]["error"] == "The warehouse could not run this query."
     assert "DS_COURSE_FILTERS_V1" in r.json()["detail"]["sql"]
 
 
@@ -70,3 +70,29 @@ def test_numeric_and_date_results_serialise_as_json_numbers_and_iso_dates(client
                         lambda sql, params=None: {"columns": list(rows[0]), "rows": rows})
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
     assert r.json()["rows"] == [{"TERM_NAME": "Fall", "SHARE": 0.25, "COURSES": 12, "START": "2026-08-01"}]
+
+
+def test_guard_rejection_is_a_502_with_the_guard_message(client, monkeypatch):
+    monkeypatch.setattr(snowflake_client, "validate_and_execute",
+                        lambda sql, params=None: {"error": "Schema 'X' is not in the allowed list."})
+    r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
+    assert r.status_code == 502
+    assert "allowed list" in r.json()["detail"]["error"]
+
+
+def test_warehouse_failures_do_not_expose_snowflake_internals(client, monkeypatch):
+    def boom(sql, params=None):
+        raise RuntimeError("002003 (42S02): Object 'PROD_DB.SECRET_SCHEMA.T' does not exist or not authorized, role BBDATA_ROLE")
+
+    monkeypatch.setattr(snowflake_client, "query_sql", boom)
+    r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
+    assert r.status_code == 502
+    assert "BBDATA_ROLE" not in r.text and "SECRET_SCHEMA" not in r.text
+    assert "warehouse" in r.json()["detail"]["error"].lower()
+
+
+def test_binary_values_serialise_as_hex(client, monkeypatch):
+    monkeypatch.setattr(snowflake_client, "query_sql",
+                        lambda sql, params=None: {"columns": ["B"], "rows": [{"B": b"\xff\x00"}]})
+    r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
+    assert r.status_code == 200 and r.json()["rows"] == [{"B": "ff00"}]
