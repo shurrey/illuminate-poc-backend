@@ -72,7 +72,7 @@ export class LambdaProxy extends Construct {
 
     // Secrets Manager (read + write for config endpoint)
     role.addToPolicy(new iam.PolicyStatement({
-      actions: ['secretsmanager:GetSecretValue', 'secretsmanager:PutSecretValue'],
+      actions: ['secretsmanager:GetSecretValue'],
       resources: [props.snowflakeSecretArn],
     }));
 
