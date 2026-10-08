@@ -134,6 +134,9 @@ Rules:
   flags `isPii` (snapshot: `tests/fixtures/cdm_pii_columns.json`), plus any output named in
   `semantic_layer/pii.py`. They can be used in filters and counted, but never selected as a dimension.
 - Every real table must be `{{ database }}.CDM_*.<table>`; unqualified names must be CTEs.
+- Only datasets marked `complete: true` (every instance of the primary entity has a row) supply
+  dimensions to other datasets. `dataset.courses.v1` is the complete course dimension.
+- Measures over PII columns must be counts.
 - A dimension's `type` must match its column's inferred SQL type (`boolean`, `time`, `numeric`).
 - Filters are applied through metrics' `default_filters`; there is no dataset-level default.
 
@@ -268,6 +271,8 @@ in the same PR.
 | `TFV_FILTERS_ALL_COURSES` | INNER JOIN to person after LEFT JOIN to person_course drops courses with no enrollments, contradicting the view's include-all-courses intent | Dataset 3 filters test users inside the enrollment join; courses with no enrollments are kept with a null course_role |
 | `TFV_COURSE_FILTER` | Design mode is looked up by joining canon_definition.canon_code to the course's source code (design_mode_source_code) instead of its canonical code; identical in current data, wrong in general | Dataset 4 joins on COURSE.DESIGN_MODE |
 | `TFV_FILTERS`, `TFV_FILTERS_IH` (as views) | `start_week`/`end_week` are TIMESTAMP_TZ in the view; the materialized tables store DATE, which downstream week arithmetic (`end_week + 7`) relies on | Datasets 1 and 2 cast both columns to DATE |
+| `TFV_STUDENT_GRADE` | Sums possible points of unscored items; a final grade with no possible points becomes the raw score (grades of about 8,500% live); enrollments with no scored work score 0%; `WIDTH_BUCKET` puts exactly 100% in '>100%' | Dataset 16 counts scored items only, sets those grades to NULL ('Not graded'), and bands full marks as 95-100% |
+| `COURSE_ROLE_ACTIVITY` | Course-level Collaborate minutes and sessions repeat on both the S and I rows | Dataset 10's Collaborate measures read the student row only |
 
 The existing 18 metrics are re-expressed over these datasets, with their broken column references
 fixed. Each is re-added as soon as the dataset it needs exists. The `metric.dashboard.*` IDs are
