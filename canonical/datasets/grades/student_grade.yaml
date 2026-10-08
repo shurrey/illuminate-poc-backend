@@ -1,0 +1,101 @@
+id: dataset.student_grade.v1
+display_name: Student course grades
+description: >
+  One row per student enrollment in a reportable course: the final-grade column's score, the
+  summed score over the other gradebook items whose type is listed in CDM_META.BBD_CALCULATION_DETAIL,
+  normalized-score statistics, and grade_percentage = the greater of the two as a percentage,
+  bucketed into 5-point bands. As in bbd-analytics, an enrollment with no possible points gets
+  grade_percentage 0 (band '0-04%'); the grade measures below count graded enrollments only.
+grain: one row per student enrollment (person_course) in a reportable course
+domain: grades
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_STUDENT_GRADE.sql
+depends_on: [dataset.course_filters.v1]
+base_sql: |
+  WITH active_persons AS (
+      SELECT DISTINCT pc.COURSE_ID, pc.PERSON_ID, pc.ID AS PERSON_COURSE_ID,
+             pc.AVAILABLE_IND AS PERSON_COURSE_AVAILABLE, pc.ENABLED_IND AS PERSON_COURSE_ENABLED,
+             pc.ROW_DELETED_TIME AS PERSON_COURSE_DELETED
+      FROM {{ database }}.CDM_LMS.PERSON_COURSE pc
+      JOIN {{ ref('dataset.course_filters.v1') }} fv ON fv.COURSE_ID = pc.COURSE_ID AND fv.COURSE_ROLE = 'S'
+      JOIN {{ database }}.CDM_LMS.PERSON pe ON pe.ID = pc.PERSON_ID
+      WHERE pc.STUDENT_IND = TRUE
+  ),
+  bucket_name AS (
+      SELECT BUCKET, BUCKET_DESC
+      FROM (VALUES (0, '<0%'), (1, '0-04%'), (2, '05-09%'), (3, '10-14%'), (4, '15-19%'), (5, '20-24%'),
+                   (6, '25-29%'), (7, '30-34%'), (8, '35-39%'), (9, '40-44%'), (10, '45-49%'), (11, '50-54%'),
+                   (12, '55-59%'), (13, '60-64%'), (14, '65-69%'), (15, '70-74%'), (16, '75-79%'), (17, '80-84%'),
+                   (18, '85-89%'), (19, '90-94%'), (20, '95-100%'), (21, '>100%')) AS v (BUCKET, BUCKET_DESC)
+  ),
+  final_grades AS (
+      SELECT gr.PERSON_COURSE_ID, gr.SCORE AS FINAL_SCORE, gr.POSSIBLE_SCORE AS FINAL_POSSIBLE_SCORE,
+             gr.NORMALIZED_SCORE AS FINAL_NORMALIZED_SCORE
+      FROM {{ database }}.CDM_LMS.GRADE gr
+      JOIN {{ database }}.CDM_LMS.GRADEBOOK gb ON gb.ID = gr.GRADEBOOK_ID
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE pc ON gr.PERSON_COURSE_ID = pc.ID AND pc.COURSE_ID = gb.COURSE_ID
+      WHERE gr.ROW_DELETED_TIME IS NULL AND gb.FINAL_GRADE_IND = TRUE
+  ),
+  counted_grades_detail AS (
+      SELECT gr.PERSON_COURSE_ID, gr.SCORE, gr.POSSIBLE_SCORE, gr.NORMALIZED_SCORE,
+             IFF(gr.NORMALIZED_SCORE = 0, 1, NULL) AS ZERO_IND_NORMALIZED_SCORE,
+             IFF(gr.NORMALIZED_SCORE IS NULL, 1, NULL) AS NULL_IND_NORMALIZED_SCORE
+      FROM {{ database }}.CDM_LMS.GRADE gr
+      JOIN {{ database }}.CDM_LMS.GRADEBOOK gb ON gb.ID = gr.GRADEBOOK_ID
+      JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = gb.COURSE_ITEM_ID
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE pc ON gr.PERSON_COURSE_ID = pc.ID AND pc.COURSE_ID = gb.COURSE_ID
+      JOIN {{ database }}.CDM_META.BBD_CALCULATION_DETAIL cd
+        ON cd.NAME = IFF(ci.ITEM_TYPE IN ('SCORM_ENGINE', 'CONTENT_PACKAGE_SCORM', 'SCORM'), 'SCORM PACKAGE', ci.ITEM_TYPE)
+      WHERE gr.ROW_DELETED_TIME IS NULL AND (gb.FINAL_GRADE_IND = FALSE OR gb.FINAL_GRADE_IND IS NULL)
+  ),
+  counted_grades AS (
+      SELECT PERSON_COURSE_ID,
+             SUM(SCORE) AS SUM_SCORE, SUM(POSSIBLE_SCORE) AS SUM_POSSIBLE_SCORE, COUNT(*) AS MAX_COUNT,
+             MAX(NORMALIZED_SCORE) AS MAX_NORMALIZED_SCORE, AVG(NORMALIZED_SCORE) AS AVG_NORMALIZED_SCORE,
+             SUM(ZERO_IND_NORMALIZED_SCORE) AS ZERO_NORMALIZED_SCORE, SUM(NULL_IND_NORMALIZED_SCORE) AS NULL_NORMALIZED_SCORE
+      FROM counted_grades_detail
+      GROUP BY PERSON_COURSE_ID
+  ),
+  student_bucket AS (
+      SELECT ap.COURSE_ID, ap.PERSON_ID, ap.PERSON_COURSE_ID,
+             ap.PERSON_COURSE_AVAILABLE, ap.PERSON_COURSE_ENABLED, ap.PERSON_COURSE_DELETED,
+             NVL(fi.FINAL_SCORE, 0) / IFF(NVL(fi.FINAL_POSSIBLE_SCORE, 0) = 0, 1, fi.FINAL_POSSIBLE_SCORE) AS FINAL_GRADE,
+             NVL(co.SUM_SCORE, 0) / IFF(NVL(co.SUM_POSSIBLE_SCORE, 0) = 0, 1, co.SUM_POSSIBLE_SCORE) AS SUM_GRADE,
+             GREATEST(NVL(fi.FINAL_SCORE, 0), NVL(co.SUM_SCORE, 0)) AS SCORE,
+             GREATEST(NVL(fi.FINAL_POSSIBLE_SCORE, 0), NVL(co.SUM_POSSIBLE_SCORE, 0)) AS POSSIBLE_SCORE,
+             NVL(fi.FINAL_SCORE, 0) AS FINAL_SCORE,
+             NVL(co.SUM_SCORE, 0) AS SUM_SCORE,
+             fi.FINAL_POSSIBLE_SCORE, co.SUM_POSSIBLE_SCORE, fi.FINAL_NORMALIZED_SCORE,
+             co.MAX_NORMALIZED_SCORE, co.AVG_NORMALIZED_SCORE, co.ZERO_NORMALIZED_SCORE, co.NULL_NORMALIZED_SCORE,
+             co.MAX_COUNT AS ENROLLMENT_ITEMS,
+             GREATEST(FINAL_GRADE, SUM_GRADE) * 100 AS GRADE_PERCENTAGE,
+             WIDTH_BUCKET(GRADE_PERCENTAGE, 0, 100, 20) AS BUCKET
+      FROM active_persons ap
+      LEFT JOIN final_grades fi ON fi.PERSON_COURSE_ID = ap.PERSON_COURSE_ID
+      LEFT JOIN counted_grades co ON co.PERSON_COURSE_ID = ap.PERSON_COURSE_ID
+  )
+  SELECT sb.*, bn.BUCKET_DESC
+  FROM student_bucket sb
+  LEFT JOIN bucket_name bn ON bn.BUCKET = sb.BUCKET
+entities:
+  - {name: person_course, column: PERSON_COURSE_ID, type: primary}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: grade_band, column: BUCKET_DESC, type: categorical, description: "5-point grade_percentage band, '<0%' to '>100%'", synonyms: [grade range, grade bucket]}
+  - {name: enrollment_available, column: PERSON_COURSE_AVAILABLE, type: boolean}
+  - {name: enrollment_enabled, column: PERSON_COURSE_ENABLED, type: boolean}
+  - {name: graded_items, column: ENROLLMENT_ITEMS, type: numeric, description: "Graded non-final items counted for the enrollment"}
+measures:
+  - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students}
+  - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
+  - {name: graded_enrollments, agg: count_distinct, expr: "IFF(POSSIBLE_SCORE > 0, PERSON_COURSE_ID, NULL)", unit: enrollments}
+  - {name: average_grade_percentage, agg: avg, expr: "IFF(POSSIBLE_SCORE > 0, GRADE_PERCENTAGE, NULL)", unit: percent, synonyms: [average grade, mean grade, gpa]}
+  - {name: median_grade_percentage, agg: median, expr: "IFF(POSSIBLE_SCORE > 0, GRADE_PERCENTAGE, NULL)", unit: percent}
+  - {name: average_final_grade, agg: avg, expr: "IFF(FINAL_POSSIBLE_SCORE > 0, FINAL_GRADE * 100, NULL)", unit: percent}
+  - {name: average_normalized_score, agg: avg, expr: AVG_NORMALIZED_SCORE, unit: score}
+  - {name: failing_enrollments, agg: count_distinct, expr: "IFF(POSSIBLE_SCORE > 0 AND GRADE_PERCENTAGE < 60, PERSON_COURSE_ID, NULL)", unit: enrollments, description: "Graded enrollments below 60%"}
+  - {name: share_failing, agg: ratio, numerator: failing_enrollments, denominator: graded_enrollments, unit: ratio}
+filters:
+  - {name: graded_only, sql: "POSSIBLE_SCORE > 0", description: Enrollments with at least one possible point}
+  - {name: active_enrollments, sql: "PERSON_COURSE_AVAILABLE AND PERSON_COURSE_ENABLED AND PERSON_COURSE_DELETED IS NULL"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]

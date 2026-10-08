@@ -1,0 +1,7 @@
+{
+ "_source": "illuminate-mcp describe_entity, 2026-10-08: tables the data-dictionary export omits",
+ "CDM_META": {
+  "BBD_CALCULATION_DEFINITION": {"DESCRIPTION": "TEXT", "NAME": "TEXT", "SOURCE_SCHEMA": "TEXT"},
+  "BBD_CALCULATION_DETAIL": {"CALCULATION_LIST": "ARRAY", "DISPLAY_NAME": "TEXT", "NAME": "TEXT"}
+ }
+}

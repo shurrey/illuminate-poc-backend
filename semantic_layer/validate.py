@@ -25,12 +25,20 @@ from .schema import Catalog, Dataset, SemanticMetric
 _FIXTURES = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 DICTIONARY_SNAPSHOT = _FIXTURES / "cdm_dictionary.json"
 PII_SNAPSHOT = _FIXTURES / "cdm_pii_columns.json"
+SUPPLEMENT_SNAPSHOT = _FIXTURES / "cdm_dictionary_supplement.json"
 _DB = "VALIDATION_DB"
 
 
-def load_snapshot(path: Path = DICTIONARY_SNAPSHOT) -> dict:
-    """The snapshot as a sqlglot schema: {database: {schema: {table: {column: type}}}}."""
-    return {_DB: json.loads(path.read_text())}
+def load_snapshot(path: Path = DICTIONARY_SNAPSHOT, supplement: Path = SUPPLEMENT_SNAPSHOT) -> dict:
+    """The snapshot as a sqlglot schema: {database: {schema: {table: {column: type}}}}.
+
+    The supplement adds tables the dictionary export omits, taken from the live schema.
+    """
+    schemas = json.loads(path.read_text())
+    for schema, tables in json.loads(supplement.read_text()).items():
+        if not schema.startswith("_"):
+            schemas.setdefault(schema, {}).update(tables)
+    return {_DB: schemas}
 
 
 def load_pii_columns(path: Path = PII_SNAPSHOT) -> frozenset[str]:
