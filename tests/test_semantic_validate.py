@@ -108,3 +108,9 @@ def test_counts_of_pii_columns_are_not_pii():
 def test_value_returning_aggregates_of_pii_stay_pii():
     bad = _aggregating("MIN(p.BIRTH_DATE) AS EARLIEST_BIRTH")
     assert any("EARLIEST_BIRTH" in e for e in validate_dataset(bad, catalog(bad), SNAPSHOT, PII))
+
+
+def test_snapshot_includes_tables_from_the_live_schema_supplement():
+    meta = SNAPSHOT["VALIDATION_DB"]["CDM_META"]
+    assert meta["BBD_CALCULATION_DETAIL"]["CALCULATION_LIST"] == "ARRAY"
+    assert "CANON_DEFINITION" in meta
