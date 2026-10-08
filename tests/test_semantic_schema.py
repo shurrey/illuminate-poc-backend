@@ -71,3 +71,9 @@ def test_contract_limit_bounds(limit):
 def test_time_range_rejects_inverted_bounds():
     with pytest.raises(ValidationError, match="after end"):
         TimeRange(dimension="d", start="2026-02-01", end="2026-01-01")
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_filter_values_must_be_finite(value):
+    with pytest.raises(ValidationError):
+        ContractFilter(dimension="d", op="eq", values=[value])

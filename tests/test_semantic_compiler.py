@@ -101,7 +101,7 @@ def test_pii_dimension_can_be_filtered():
     ({"measures": ["dataset.enrollments.v1:nope"]}, "unknown measure"),
     ({"measures": ["dataset.enrollments.v1:enrollments"], "dimensions": ["nope"]}, "unknown dimension"),
     ({"measures": ["dataset.enrollments.v1:enrollments"], "dimensions": ["enrolled_at__year"]}, "grain"),
-    ({"measures": ["dataset.enrollments.v1:enrollments"], "filters": [{"dimension": "nope", "op": "is_null"}]}, "unknown filter dimension"),
+    ({"measures": ["dataset.enrollments.v1:enrollments"], "filters": [{"dimension": "nope", "op": "is_null"}]}, "unknown dimension 'nope'"),
     ({"metrics": ["metric.student_enrollments.v1"], "measures": ["dataset.enrollments.v1:enrollments"],
       "dimensions": []}, None),
 ])
@@ -111,13 +111,6 @@ def test_contract_errors(contract, match):
         return
     with pytest.raises(CompileError, match=match):
         _compile(**contract)
-
-
-def test_measures_from_two_datasets_are_rejected_until_joins_exist():
-    other = dataset(id="dataset.other.v1")
-    with pytest.raises(CompileError, match="more than one dataset"):
-        _compile(catalog(ENROLLMENTS, other),
-                 measures=["dataset.enrollments.v1:enrollments", "dataset.other.v1:enrollments"])
 
 
 def test_internal_datasets_cannot_be_queried():
@@ -217,7 +210,7 @@ def test_scoped_count_star_counts_matching_rows():
 
 
 def test_grain_suffix_is_not_a_filter_dimension():
-    with pytest.raises(CompileError, match="unknown filter dimension 'enrolled_at__month'"):
+    with pytest.raises(CompileError, match="'enrolled_at__month' has a grain suffix; filters take the plain dimension name"):
         _compile(measures=["dataset.enrollments.v1:enrollments"],
                  filters=[{"dimension": "enrolled_at__month", "op": "not_null"}])
 
