@@ -20,6 +20,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from semantic_layer.contract import QueryContract
+
 # JWT validation
 from jose import jwt, JWTError
 import requests as http_requests
@@ -845,6 +847,37 @@ async def dashboard_metric(
     except Exception as e:
         logger.error(f"Dashboard metric {request.metric_id} failed: {e}")
         return {"error": str(e), "sql_attempted": sql}
+
+
+# =============================================================================
+# Semantic layer
+# =============================================================================
+
+
+def _semantic_database() -> str:
+    """Snowflake database the semantic layer's {{ database }} placeholder resolves to."""
+    db = os.environ.get("SNOWFLAKE_DATABASE")
+    if db:
+        return db
+    from chat_engine import _database
+    return _database
+
+
+@app.post("/api/v1/semantic/compile")
+async def semantic_compile(contract: QueryContract, authorization: str = Header(...)) -> dict:
+    """Compile a semantic query contract to SQL without executing it."""
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    from semantic_layer.catalog import default_catalog
+    from semantic_layer.compiler import CompileError, compile_query
+
+    try:
+        compiled = compile_query(contract, default_catalog(), _semantic_database())
+    except CompileError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return compiled.model_dump()
 
 
 # =============================================================================
