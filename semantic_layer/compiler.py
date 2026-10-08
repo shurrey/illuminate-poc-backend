@@ -110,14 +110,68 @@ def _aggregate(ds: Dataset, m: Measure, scope: Optional[exp.Expression]) -> exp.
     return exp.Anonymous(this=m.agg.upper(), expressions=[arg])
 
 
-def _resolve_dimension(ds: Dataset, ref: str) -> tuple[DatasetDimension, Optional[str]]:
-    name, _, grain = ref.partition("__")
-    dim = ds.dimension(name)
+def _split_ref(ref: str) -> tuple[Optional[str], str, Optional[str]]:
+    """'[dataset.x.v1:]name[__grain]' -> (dataset id or None, name, grain or None)."""
+    qualifier, sep, rest = ref.rpartition(":")
+    name, suffix, grain = rest.partition("__")
+    if suffix and not grain:
+        raise CompileError(f"dimension {ref!r} has an empty grain after '__'")
+    return (qualifier if sep else None), name, (grain or None)
+
+
+def _output_name(ref: str) -> str:
+    """The result column for a dimension reference: its name and grain, without a dataset qualifier."""
+    return ref.rpartition(":")[2]
+
+
+def _joins_from(base: Dataset, catalog: Catalog) -> dict[str, tuple[Dataset, str, str]]:
+    """Datasets reachable many-to-one from base: id -> (dataset, base column, its primary column)."""
+    out: dict[str, tuple[Dataset, str, str]] = {}
+    for other in catalog.datasets.values():
+        if other.id == base.id:
+            continue
+        for mine in base.entities:
+            theirs = next((e for e in other.entities if e.name == mine.name and e.type == "primary"), None)
+            if theirs is not None and other.id not in out:
+                out[other.id] = (other, mine.column, theirs.column)
+    return out
+
+
+def _resolve(base: Dataset, ref: str, catalog: Catalog, joins: dict) -> tuple[Dataset, DatasetDimension, Optional[str]]:
+    ds_id, name, grain = _split_ref(ref)
+    if ds_id is not None and ds_id != base.id:
+        target = catalog.datasets.get(ds_id)
+        if target is None:
+            raise CompileError(f"unknown dataset {ds_id} in dimension {ref!r}")
+        if ds_id not in joins:
+            reverse = _joins_from(target, catalog)
+            if base.id in reverse:
+                raise CompileError(f"joining {ds_id} to {base.id} would multiply {base.id} rows")
+            raise CompileError(f"{ds_id} cannot be reached from {base.id} through a shared entity")
+    elif ds_id is not None or base.dimension(name) is not None:
+        target = base
+    else:
+        hits = [d for d, _, _ in joins.values() if d.dimension(name) is not None]
+        if not hits:
+            raise CompileError(f"unknown dimension {name!r} on {base.id} or the datasets it joins to")
+        if len(hits) > 1:
+            ids = ", ".join(sorted(h.id for h in hits))
+            raise CompileError(f"dimension {name!r} is ambiguous ({ids}); qualify it as '<dataset id>:{name}'")
+        target = hits[0]
+    dim = target.dimension(name)
     if dim is None:
-        raise CompileError(f"unknown dimension {name!r} on {ds.id}")
+        raise CompileError(f"{target.id} has no dimension {name!r}")
     if grain and grain not in dim.grains:
         raise CompileError(f"dimension {name!r} does not support grain {grain!r}; allowed: {dim.grains}")
-    return dim, grain or None
+    return target, dim, grain
+
+
+def _qualified(node: exp.Expression, table: Optional[str]) -> exp.Expression:
+    if table:
+        for col in node.find_all(exp.Column):
+            if not col.table:
+                col.set("table", exp.to_identifier(table))
+    return node
 
 
 def _unquoted_upper(ident: Optional[exp.Identifier]) -> str:
@@ -142,8 +196,8 @@ def _check_tables(sql: str, database: str) -> None:
             )
 
 
-def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> CompiledQuery:
-    selections: list[tuple[str, Dataset, Measure, Optional[SemanticMetric]]] = []
+def _selections(contract: QueryContract, catalog: Catalog) -> list[tuple[str, Dataset, Measure, Optional[SemanticMetric]]]:
+    out = []
     for metric_id in contract.metrics:
         metric = catalog.metrics.get(metric_id)
         if metric is None:
@@ -152,72 +206,138 @@ def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> C
         measure = ds.measure(metric.measure_name) if ds else None
         if measure is None:
             raise CompileError(f"metric {metric_id} points at missing measure {metric.measure}")
-        selections.append((metric.short_name, ds, measure, metric))
+        out.append((metric.short_name, ds, measure, metric))
     for ref in contract.measures:
         ds_id, _, name = ref.partition(":")
         ds = catalog.datasets.get(ds_id)
         measure = ds.measure(name) if ds else None
         if measure is None:
             raise CompileError(f"unknown measure {ref}")
-        selections.append((name, ds, measure, None))
+        out.append((name, ds, measure, None))
+    for _, ds, _, _ in out:
+        if ds.visibility != "public":
+            raise CompileError(f"{ds.id} is internal and cannot be queried directly")
+    return out
 
-    dataset_ids = sorted({ds.id for _, ds, _, _ in selections})
-    if len(dataset_ids) > 1:
-        raise CompileError(f"measures from more than one dataset are not supported yet: {dataset_ids}")
-    ds = selections[0][1]
-    if ds.visibility != "public":
-        raise CompileError(f"{ds.id} is internal and cannot be queried directly")
+
+def _group_query(base: Dataset, selections: list, contract: QueryContract, catalog: Catalog) -> tuple[exp.Select, list[str]]:
+    """One aggregate SELECT over base (plus many-to-one joins) and the dataset ids it reads."""
+    joins = _joins_from(base, catalog)
+    dims = [(ref, *_resolve(base, ref, catalog, joins)) for ref in contract.dimensions]
+    filters = []
+    for f in contract.filters:
+        if "__" in f.dimension.rpartition(":")[2]:
+            raise CompileError(
+                f"filter dimension {f.dimension!r} has a grain suffix; filters take the plain dimension name"
+            )
+        filters.append((f, *_resolve(base, f.dimension, catalog, joins)[:2]))
+    time_range = None
+    if contract.time_range:
+        target, dim, _ = _resolve(base, contract.time_range.dimension, catalog, joins)
+        if dim.type != "time":
+            raise CompileError(f"time_range needs a time dimension; {contract.time_range.dimension!r} is not one")
+        time_range = (target, dim)
+
+    joined = []
+    for target in [t for _, t, _, _ in dims] + [t for _, t, _ in filters] + ([time_range[0]] if time_range else []):
+        if target.id != base.id and target.id not in joined:
+            joined.append(target.id)
+    alias = {base.id: "b" if joined else None} | {ds_id: f"j{i}" for i, ds_id in enumerate(joined, start=1)}
+
+    def column(target: Dataset, name: str) -> exp.Column:
+        return exp.column(name, table=alias[target.id])
 
     select: list[exp.Expression] = []
-    aliases: list[str] = []
-    for ref in contract.dimensions:
-        dim, grain = _resolve_dimension(ds, ref)
-        if ds.is_pii(dim.column):
+    for ref, target, dim, grain in dims:
+        if target.is_pii(dim.column):
             raise CompileError(f"dimension {dim.name!r} is personally identifiable and cannot be selected")
-        col = exp.column(dim.column)
+        col = column(target, dim.column)
         node = exp.Anonymous(this="DATE_TRUNC", expressions=[exp.Literal.string(grain), col]) if grain else col
-        select.append(exp.alias_(node, ref))
-        aliases.append(ref)
+        select.append(exp.alias_(node, _output_name(ref)))
 
-    for alias, _, measure, metric in selections:
+    for out_name, _, measure, metric in selections:
         scope = None
         if metric and metric.default_filters:
             parts = []
             for fname in metric.default_filters:
-                f = ds.filter(fname)
+                f = base.filter(fname)
                 if f is None:
                     raise CompileError(f"metric {metric.id} uses unknown filter {fname!r}")
-                parts.append(_parse(f.sql, f"{ds.id} filter {fname}"))
+                parts.append(_parse(f.sql, f"{base.id} filter {fname}"))
             scope = exp.and_(*parts)
-        select.append(exp.alias_(_aggregate(ds, measure, scope), alias))
-        aliases.append(alias)
-    if len(set(aliases)) != len(aliases):
-        raise CompileError(f"output names collide: {aliases}")
+        select.append(exp.alias_(_qualified(_aggregate(base, measure, scope), alias[base.id]), out_name))
 
     where: list[exp.Expression] = []
-    for f in contract.filters:
-        dim = ds.dimension(f.dimension)
-        if dim is None:
-            raise CompileError(f"unknown filter dimension {f.dimension!r} on {ds.id}")
-        col = exp.column(dim.column)
+    for f, target, dim in filters:
+        col = column(target, dim.column)
         if dim.type == "time":
             col = exp.Cast(this=col, to=exp.DataType.build("DATE"))
         where.append(_condition(col, f))
-    if contract.time_range:
-        dim = ds.dimension(contract.time_range.dimension)
-        if dim is None or dim.type != "time":
-            raise CompileError(f"time_range needs a time dimension; {contract.time_range.dimension!r} is not one")
-        day = exp.Cast(this=exp.column(dim.column), to=exp.DataType.build("DATE"))
+    if time_range:
+        day = exp.Cast(this=column(*time_range[:1], time_range[1].column), to=exp.DataType.build("DATE"))
         if contract.time_range.start:
             where.append(exp.GTE(this=day, expression=exp.Literal.string(contract.time_range.start.isoformat())))
         if contract.time_range.end:
             where.append(exp.LTE(this=day.copy(), expression=exp.Literal.string(contract.time_range.end.isoformat())))
 
-    query = exp.select(*select).from_(cte_name(ds.id))
+    source = exp.to_table(cte_name(base.id))
+    query = exp.select(*select).from_(exp.alias_(source, "b", table=True) if joined else source)
+    for ds_id in joined:
+        other, mine, theirs = joins[ds_id]
+        on = exp.EQ(this=exp.column(mine, table="b"), expression=exp.column(theirs, table=alias[ds_id]))
+        query = query.join(exp.alias_(exp.to_table(cte_name(ds_id)), alias[ds_id], table=True), on=on, join_type="left")
     if where:
         query = query.where(exp.and_(*where))
     if contract.dimensions:
         query = query.group_by(*[exp.Literal.number(i + 1) for i in range(len(contract.dimensions))])
+    return query, [base.id] + joined
+
+
+def _combine(groups: list[str], contract: QueryContract, measure_names: list[list[str]]) -> exp.Select:
+    """Join per-dataset aggregate CTEs g1..gN on the shared dimensions (null-safe)."""
+    dims = [_output_name(d) for d in contract.dimensions]
+    select = [
+        exp.alias_(exp.Coalesce(this=exp.column(d, table=groups[0]), expressions=[exp.column(d, table=g) for g in groups[1:]]), d)
+        for d in dims
+    ]
+    for g, names in zip(groups, measure_names):
+        select += [exp.column(n, table=g) for n in names]
+    query = exp.select(*select).from_(groups[0])
+    for i, g in enumerate(groups[1:], start=1):
+        if not dims:
+            query = query.join(g, join_type="cross")
+            continue
+        conditions = []
+        for d in dims:
+            prior = [exp.column(d, table=p) for p in groups[:i]]
+            left = prior[0] if len(prior) == 1 else exp.Coalesce(this=prior[0], expressions=prior[1:])
+            conditions.append(exp.NullSafeEQ(this=left, expression=exp.column(d, table=g)))
+        query = query.join(g, on=exp.and_(*conditions), join_type="full outer")
+    return query
+
+
+def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> CompiledQuery:
+    selections = _selections(contract, catalog)
+    aliases = [_output_name(d) for d in contract.dimensions] + [name for name, _, _, _ in selections]
+    if len({a.lower() for a in aliases}) != len(aliases):
+        raise CompileError(f"output names collide: {aliases}")
+
+    bases: dict[str, list] = {}
+    for sel in selections:
+        bases.setdefault(sel[1].id, []).append(sel)
+    groups = [(_group_query(catalog.datasets[ds_id], sels, contract, catalog), sels) for ds_id, sels in bases.items()]
+
+    read = list(dict.fromkeys(ds_id for (_, used), _ in groups for ds_id in used))
+    ctes = build_ctes(catalog, read, database)
+    with_parts = [f"{name} AS (\n{sql}\n)" for name, sql in ctes.items()]
+
+    if len(groups) == 1:
+        query = groups[0][0][0]
+    else:
+        names = [f"g{i}" for i in range(1, len(groups) + 1)]
+        with_parts += [f"{n} AS (\n{q.sql(dialect='snowflake', pretty=True)}\n)" for n, ((q, _), _) in zip(names, groups)]
+        query = _combine(names, contract, [[name for name, _, _, _ in sels] for _, sels in groups])
+
     lowered = {a.lower() for a in aliases}
     for ob in contract.order_by:
         if ob.field.lower() not in lowered:
@@ -225,9 +345,7 @@ def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> C
         query = query.order_by(exp.Ordered(this=exp.column(ob.field), desc=ob.direction == "desc"))
     query = query.limit(contract.limit)
 
-    ctes = build_ctes(catalog, [ds.id], database)
-    with_clause = ",\n".join(f"{name} AS (\n{sql}\n)" for name, sql in ctes.items())
-    sql = f"WITH {with_clause}\n{query.sql(dialect='snowflake', pretty=True)}"
+    sql = "WITH " + ",\n".join(with_parts) + "\n" + query.sql(dialect="snowflake", pretty=True)
     _check_tables(sql, database)
 
     return CompiledQuery(

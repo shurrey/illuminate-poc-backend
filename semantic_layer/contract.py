@@ -5,14 +5,14 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictBool, StrictInt, model_validator
 
 FilterOp = Literal[
     "eq", "neq", "in", "not_in", "gt", "gte", "lt", "lte",
     "between", "is_null", "not_null", "contains",
 ]
 # StrictBool precedes StrictInt so JSON true stays a bool rather than becoming 1.
-FilterValue = Union[StrictBool, StrictInt, float, str]
+FilterValue = Union[StrictBool, StrictInt, FiniteFloat, str]
 
 _ARITY = {
     "is_null": (0, 0), "not_null": (0, 0),
