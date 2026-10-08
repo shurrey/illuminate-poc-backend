@@ -30,7 +30,7 @@
 | 2a | `POST /semantic/query`: compile, then `validate_and_execute`. Response is `{columns, rows, sql, provenance}`. Fix the guard's `exp.Anonymous`-as-aggregate PII bypass here, because this is the first new caller. | A stubbed-Snowflake endpoint test passes; a live query returns rows |
 | 2b | `GET /semantic/catalog`: public datasets, dimensions, measures, metrics and synonyms, with an ETag | Response contains no internal datasets and no `base_sql` |
 
-## Phase 3: Security hardening (B, then F), detailed plan: `2026-10-08-semantic-layer-phase-3-security.md`
+## Phase 3: Security hardening (B, then F), complete (#20–#27, frontend #5); deploy steps: `docs/runbooks/deploy-security-hardening.md`
 
 Found while planning: the backend has no `/api/v1/config/snowflake` route, so 3f drops `PutSecretValue` outright and 3h removes the frontend editor that called it.
 
@@ -124,3 +124,11 @@ Before the first dataset that reads `CDM_META` or `CDM_TLM` columns missing from
 | Phase 2 review | ETag weak/list/`*` comparison (RFC 9110); expose `ETag`, allow `If-None-Match` in CORS; `Cache-Control: private, no-cache` | 6a |
 | Phase 2 review | 502 detail returns raw Snowflake error text; non-UTF-8 bytes results give 500 | 5b |
 | Phase 2 review | Tests for the guard-rejection 502 and for an ETag change when the catalog changes | 5b |
+| Phase 3 review | `/api/chat/cancel` cannot reach its stream across Lambda instances: remove it, or back it with DynamoDB | 5f |
+| Phase 3 review | A deleted or expired conversation's `context_id` can be claimed by another user: generate `context_id` server-side | 5f |
+| Phase 3 review | Same-user concurrent `save_turn` can drop a turn (no version condition) | 5f |
+| Phase 3 review | Admin 403 tests should assert the store was never called | 6b |
+| Phase 3 review | Frontend `isAdmin` flashes "requires administrator access" before auth loads; recomputed only on mount and login | 6i |
+| Phase 3 review | `/docs`, `/redoc` and `/openapi.json` are public; disable them outside dev | 9b |
+| Phase 3 review | `_validate_token` accepts both ID and access tokens; check `token_use` | 9b |
+| Phase 3 review | Developer page shows an error for non-admins' table preview; hide the button instead | 6h |
