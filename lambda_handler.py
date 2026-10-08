@@ -338,6 +338,7 @@ class HealthResponse(BaseModel):
 
 async def send_message(
     message_text: str,
+    owner: str,
     context_id: Optional[str] = None,
     tenant_id: Optional[str] = None,
 ) -> dict:
@@ -346,7 +347,7 @@ async def send_message(
     from chat_engine import send_message as engine_send
     from conversation_store import load_history, save_turn
 
-    history = load_history(context_id) if context_id else []
+    history = load_history(context_id, owner) if context_id else []
     bedrock_history = []
     for msg in history:
         bedrock_history.append({
@@ -360,13 +361,14 @@ async def send_message(
     )
 
     if context_id:
-        save_turn(context_id, message_text, response_text)
+        save_turn(context_id, owner, message_text, response_text)
 
     return {"text": response_text, "contextId": context_id}
 
 
 async def send_message_streaming(
     message_text: str,
+    owner: str,
     context_id: Optional[str] = None,
     tenant_id: Optional[str] = None,
 ):
@@ -376,7 +378,7 @@ async def send_message_streaming(
 
     yield {"type": "status", "message": "Processing your question..."}
 
-    history = load_history(context_id) if context_id else []
+    history = load_history(context_id, owner) if context_id else []
     bedrock_history = []
     for msg in history:
         bedrock_history.append({
@@ -392,7 +394,7 @@ async def send_message_streaming(
             elif event["type"] == "raw_complete":
                 full_text = event["text"]
                 if context_id:
-                    save_turn(context_id, message_text, full_text)
+                    save_turn(context_id, owner, message_text, full_text)
 
         if not full_text:
             yield {"type": "error", "message": "Empty response"}
@@ -475,6 +477,7 @@ async def chat(
     try:
         result = await send_message(
             message_text=message_text,
+            owner=user["sub"],
             context_id=context_id,
             tenant_id=_tenant_id_from_user(user),
         )
@@ -534,6 +537,7 @@ async def chat_stream(
         try:
             async for event in send_message_streaming(
                 message_text=message_text,
+                owner=user["sub"],
                 context_id=context_id,
                 tenant_id=_tenant_id_from_user(user),
             ):
@@ -595,9 +599,10 @@ async def get_conversation(
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     logger.info(f"Conversation history requested for context: {context_id}")
-    from conversation_store import load_history
-    history = load_history(context_id)
-    return {"messages": history}
+    from conversation_store import load_history, owns
+    if not owns(context_id, user["sub"]):
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"messages": load_history(context_id, user["sub"])}
 
 
 @app.delete("/api/conversations/{context_id}")
@@ -612,7 +617,8 @@ async def clear_conversation(
 
     logger.info(f"Clear conversation requested for context: {context_id}")
     from conversation_store import clear_history
-    clear_history(context_id)
+    if not clear_history(context_id, user["sub"]):
+        raise HTTPException(status_code=404, detail="Conversation not found")
     return {"success": True}
 
 

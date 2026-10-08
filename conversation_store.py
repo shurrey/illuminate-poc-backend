@@ -11,7 +11,8 @@ import logging
 from typing import Optional
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger("API-PROXY")
 
@@ -31,19 +32,30 @@ def _get_table():
     return _table
 
 
-def load_history(context_id: str) -> list[dict]:
-    """Load conversation messages for a context_id.
+def _item(context_id: str) -> Optional[dict]:
+    return _get_table().get_item(Key={"context_id": context_id}).get("Item")
 
-    Returns list of {"role": "user"|"assistant", "content": "..."} dicts,
-    ordered chronologically. Returns empty list if no history.
+
+def owns(context_id: str, owner: str) -> bool:
+    """True when the conversation exists and was created by owner (a Cognito sub)."""
+    try:
+        item = _item(context_id)
+    except Exception as e:
+        logger.warning(f"Failed to read conversation owner: {e}")
+        return False
+    return bool(item) and item.get("owner_sub") == owner
+
+
+def load_history(context_id: str, owner: str) -> list[dict]:
+    """Messages for context_id, oldest first; empty if missing or owned by someone else.
+
+    Returns list of {"role": "user"|"assistant", "content": "..."} dicts.
     """
     if not context_id:
         return []
     try:
-        table = _get_table()
-        response = table.get_item(Key={"context_id": context_id})
-        item = response.get("Item")
-        if not item:
+        item = _item(context_id)
+        if not item or item.get("owner_sub") != owner:
             return []
         messages = json.loads(item.get("messages", "[]"))
         return messages[-_MAX_MESSAGES:]
@@ -52,38 +64,49 @@ def load_history(context_id: str) -> list[dict]:
         return []
 
 
-def save_turn(context_id: str, user_message: str, assistant_message: str):
-    """Append a user+assistant turn to conversation history.
+def save_turn(context_id: str, owner: str, user_message: str, assistant_message: str):
+    """Append a turn; never writes over a conversation that belongs to someone else.
 
-    Creates the item if it doesn't exist, appends if it does.
-    Trims to MAX_MESSAGES and sets TTL for automatic cleanup.
+    Items without an owner predate ownership tracking; the first writer claims them.
     """
     if not context_id:
         return
     try:
-        history = load_history(context_id)
+        history = load_history(context_id, owner)
         history.append({"role": "user", "content": user_message})
         history.append({"role": "assistant", "content": assistant_message})
-        # Trim to max
         history = history[-_MAX_MESSAGES:]
 
-        table = _get_table()
-        table.put_item(Item={
-            "context_id": context_id,
-            "messages": json.dumps(history),
-            "updated_at": int(time.time()),
-            "ttl": int(time.time()) + _TTL_SECONDS,
-        })
+        _get_table().put_item(
+            Item={
+                "context_id": context_id,
+                "owner_sub": owner,
+                "messages": json.dumps(history),
+                "updated_at": int(time.time()),
+                "ttl": int(time.time()) + _TTL_SECONDS,
+            },
+            ConditionExpression=Attr("owner_sub").not_exists() | Attr("owner_sub").eq(owner),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            logger.warning("Refused to save turn: context %s belongs to another user", context_id)
+        else:
+            logger.warning(f"Failed to save conversation history: {e}")
     except Exception as e:
         logger.warning(f"Failed to save conversation history: {e}")
 
 
-def clear_history(context_id: str):
-    """Delete conversation history for a context_id."""
+def clear_history(context_id: str, owner: str) -> bool:
+    """Delete the conversation if owner owns it; False when it is missing or someone else's."""
     if not context_id:
-        return
+        return False
     try:
-        table = _get_table()
-        table.delete_item(Key={"context_id": context_id})
-    except Exception as e:
-        logger.warning(f"Failed to clear conversation history: {e}")
+        _get_table().delete_item(
+            Key={"context_id": context_id},
+            ConditionExpression=Attr("owner_sub").eq(owner),
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            logger.warning(f"Failed to clear conversation history: {e}")
+        return False
