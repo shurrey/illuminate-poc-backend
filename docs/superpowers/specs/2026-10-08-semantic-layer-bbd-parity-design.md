@@ -71,14 +71,18 @@ Backend defects fixed as part of this design (not separately):
 ```
 canonical/
   datasets/<domain>/<dataset>.yaml   # one file per dataset
-  metrics.yaml                       # governed metrics over dataset measures
+  metrics/<domain>.yaml              # governed metrics over dataset measures
   glossary.yaml                      # synonyms → dataset / dimension / measure / metric
 semantic_layer/
-  models.py      # Pydantic schema
-  catalog.py     # load, validate, cache, merge tenant overlays
+  schema.py      # Pydantic definitions: datasets, dimensions, measures, metrics
+  contract.py    # Pydantic query contract and compile result
+  render.py      # sandboxed base_sql rendering ({{ database }}, {{ ref() }} only)
+  catalog.py     # load and cache; tenant overlay merging added in Phase 6b
   compiler.py    # contract → SQL
-  validate.py    # dictionary column check, PII declarations, dependency graph
+  validate.py    # dictionary column check, PII declarations
+  pii.py         # PII column names, shared with the execution guard
   tool.py        # Bedrock tool specs
+  (models.py and engine.py serve the legacy metrics until Phase 8 removes them)
 tests/fixtures/cdm_dictionary.json   # committed dictionary snapshot + refresh script
 ```
 
@@ -282,13 +286,17 @@ retired, and new IDs follow `metric.<name>.v1`.
   the datasets the request uses; an ambiguous name must be qualified as
   `dataset.<id>.v1:<dimension>`.
 - Filter `op` is one of `eq`, `neq`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`, `between`,
-  `is_null`, `not_null`, `contains`. Values are bound as Snowflake parameters, never interpolated.
+  `is_null`, `not_null`, `contains`. Values become typed literal nodes in the sqlglot AST of the
+  outer query; they are never spliced into SQL text. (Driver-side binding was rejected: sqlglot
+  cannot parse the connector's default `%(name)s` placeholders, and pyformat would require
+  escaping every `%` in ported `LIKE` patterns.) Filters on time dimensions compare `CAST(... AS DATE)`.
 - `limit` defaults to 100 with a maximum of 1000. The compiler emits the limit itself; nothing
   appends a second one.
 
 ### 5.2 Compiler
 
-`compiler.compile(contract, catalog, tenant) -> CompiledQuery{sql, params, provenance}`
+`compiler.compile_query(contract, catalog, database) -> CompiledQuery{sql, provenance}`
+(Phase 6b adds the tenant argument.)
 
 1. Resolve metrics and measures to datasets and apply tenant overlays.
 2. Plan joins across datasets through declared entities, choosing the shortest path; reject fan-out.
@@ -309,7 +317,7 @@ applied, and `governed: true`.
 |---|---|---|
 | GET | `/api/v1/semantic/catalog` | Public datasets, dimensions, measures, metrics and synonyms, with the caller's tenant overlays merged. ETag-cached. |
 | POST | `/api/v1/semantic/query` | Contract in; `{columns, rows, sql, provenance}` out. |
-| POST | `/api/v1/semantic/compile` | Contract in; `{sql, params, provenance}` out, without executing. |
+| POST | `/api/v1/semantic/compile` | Contract in; `{sql, provenance}` out, without executing. |
 | GET/PUT/DELETE | `/api/v1/admin/overlay/{target}` | Overlay CRUD for measures, filters and metrics (§3.4). Admin role required (§8 Phase 3). |
 | GET | `/api/v1/admin/overlay/{target}/history` | Previous overlay versions. |
 | POST | `/api/v1/admin/overlay/{target}/revert` | Revert to a previous version. |
@@ -345,7 +353,7 @@ The frontend never authors, stores or executes SQL.
 | Surface | Behaviour |
 |---|---|
 | API client | `services/semanticApi.ts` (catalog, query, compile), with types generated from the backend's Pydantic models and kept in step by a script. |
-| Cards (dashboard and custom) | `{id, title, viz, query: <contract>}`. Render via `/semantic/query`; "View SQL" via `/semantic/compile`. Change indicators come from metric `comparison`. Storage key is version-bumped and old state discarded. |
+| Cards (dashboard and custom) | `{id, title, viz, query: <contract>}`. The metric `comparison` field (§3.3) is added to the schema in this unit. Render via `/semantic/query`; "View SQL" via `/semantic/compile`. Change indicators come from metric `comparison`. Storage key is version-bumped and old state discarded. |
 | Card builder | Two paths: choose metrics, dimensions and filters from the catalog; or describe the card in natural language, in which case the agent returns a contract for preview. Ungoverned results cannot be saved. |
 | Query Builder | A structured builder over the catalog. Natural language fills the builder (the agent returns a contract); "modify" edits the contract. Compiled SQL is read-only. Saved queries are contracts. |
 | Import Query | The agent maps pasted SQL to a contract and lists anything that does not map. Unmappable queries are reported and not saved. |
@@ -385,10 +393,10 @@ reviewable surface. Spec, plan and other documentation land as separate docs PRs
 
 | Phase | Repo | Units |
 |---|---|---|
-| **1. Walking skeleton** (larger by design) | backend | Pydantic schema; catalog loader; compiler with `ref()`, measures, dimensions, filters, sandboxed Jinja and limit handling; dictionary snapshot and column validator; `POST /semantic/compile`; dataset 1 (`course_filters`) and one metric |
+| **1. Walking skeleton** (five PRs; 1c is the largest) | backend | 1a definition and contract models · 1b sandboxed template rendering and catalog loader · 1c compiler (single dataset, `ref()` CTEs, measures, dimensions, filters, limit) · 1d dictionary snapshot, column validator, shared PII set, dataset 1 (`course_filters`) and two metrics · 1e `POST /semantic/compile` |
 | **2. API** | backend | `POST /semantic/query` · `GET /semantic/catalog` |
 | **3. Security hardening** | backend, poc | (a) Make `custom:tenant_id` non-writable by users: set the user pool client's `writeAttributes` to exclude it, and add a migration note (attribute mutability cannot change in place) · (b) Admin role: a Cognito `illuminate-admins` group, checked server-side on `/admin/*` and `/config/*` · (c) Conversation ownership: store the owner `sub` on each context and check it on GET/DELETE · (d) Cancel endpoint: require JWT and check ownership of the request id · (e) Keep the Function URL's `authType: NONE` with in-app JWT validation (OAC-signed Lambda URLs would require the browser to send a SHA-256 of every POST body), and remove the unattached WAF and the unused VPC/NAT · (f) Remove `secretsmanager:PutSecretValue` unless `/config/snowflake` PUT stays, in which case keep it admin-only · (g) PII scrubber: stop redacting all 9–10 digit numbers; scrub only patterns tied to PII columns · (h) Frontend: hide admin routes for non-admins |
-| **4. Core datasets** | backend | One per PR: 2 `course_filters_ih`, 3 `course_filters_all`, 4 `course_catalog`, 5 `active_students`, 10 `course_role_activity`, 11 `course_student_activity`, 16 `student_grade`, then a metrics PR re-expressing the six dashboard metrics and the grade and enrollment metrics |
+| **4. Core datasets** | backend | First, compiler cross-dataset joins through declared entities with fan-out rejection. Then one per PR: 2 `course_filters_ih`, 3 `course_filters_all`, 4 `course_catalog`, 5 `active_students`, 10 `course_role_activity`, 11 `course_student_activity`, 16 `student_grade`, then a metrics PR re-expressing the six dashboard metrics and the grade and enrollment metrics |
 | **5. Chat grounded in the layer** | backend | `search_catalog` · `query_semantic` · catalog system prompt with caching · `describe_cdm_table` and labelled `execute_sql` fallback · structured artifacts replacing markers · turn history with contracts |
 | **6. Frontend** | poc | Semantic API client and types · cards as contracts · card builder · Query Builder · Import mapping · chat artifacts, provenance and pinning · Semantic layer developer tab · admin overlay editor (after the backend overlay extension below) |
 | **6b. Overlay extension** | backend | Per-measure, per-filter and metric-default overlays with versioning, history and revert (precedes the Phase 6 admin editor) |
