@@ -81,6 +81,9 @@ class Dataset(_Definition):
     grain: str
     domain: str = Field(pattern=NAME_PATTERN)
     visibility: Literal["public", "internal"] = "public"
+    # True when every instance of the primary entity has a row; only complete datasets supply
+    # dimensions to other datasets, so a join can neither multiply nor silently drop rows.
+    complete: bool = False
     source: str
     depends_on: list[str] = Field(default_factory=list)
     base_sql: str

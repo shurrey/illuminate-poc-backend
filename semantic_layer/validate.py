@@ -117,6 +117,7 @@ def validate_dataset(ds: Dataset, catalog: Catalog, snapshot: dict, pii: frozens
         return [f"{ds.id}: {e}"]
 
     errors: list[str] = []
+    pii_outputs = (outputs & PII_COLUMN_NAMES) | _traced_pii(ds, catalog, snapshot, outputs, pii)
 
     def need(cols: set[str], what: str) -> None:
         missing = sorted(cols - outputs)
@@ -129,12 +130,15 @@ def validate_dataset(ds: Dataset, catalog: Catalog, snapshot: dict, pii: frozens
         need({d.column.upper()}, f"dimension {d.name}")
     for m in ds.measures:
         if m.expr:
-            need(_columns_in(m.expr), f"measure {m.name}")
+            cols = _columns_in(m.expr)
+            need(cols, f"measure {m.name}")
+            exposed = sorted(c for c in cols if c in pii_outputs or ds.is_pii(c))
+            if exposed and m.agg not in ("count", "count_distinct"):
+                errors.append(f"{ds.id}: measure {m.name} returns values of PII columns {exposed}; only counts are allowed")
     for f in ds.filters:
         need(_columns_in(f.sql), f"filter {f.name}")
     need({c.upper() for c in ds.pii_columns}, "pii_columns")
-    flagged = (outputs & PII_COLUMN_NAMES) | _traced_pii(ds, catalog, snapshot, outputs, pii)
-    undeclared = sorted(flagged - {c.upper() for c in ds.pii_columns})
+    undeclared = sorted(pii_outputs - {c.upper() for c in ds.pii_columns})
     if undeclared:
         errors.append(f"{ds.id}: outputs PII columns not listed in pii_columns: {undeclared}")
     return errors + _dimension_type_errors(ds, catalog, snapshot)

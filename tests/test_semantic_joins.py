@@ -50,7 +50,7 @@ def test_unknown_or_unreachable_qualified_dimension_is_an_error():
 def test_ambiguous_dimension_across_joined_datasets_is_an_error():
     twin = dataset(id="dataset.twin.v1", base_sql=COURSES.base_sql, entities=COURSES.model_dump()["entities"],
                    dimensions=COURSES.model_dump()["dimensions"], measures=COURSES.model_dump()["measures"],
-                   pii_columns=[])
+                   pii_columns=[], complete=True)
     with pytest.raises(CompileError, match="ambiguous"):
         _compile(catalog(ENROLLMENTS, COURSES, twin), measures=["dataset.enrollments.v1:enrollments"],
                  dimensions=["course_name"])
@@ -94,3 +94,35 @@ def test_every_dimension_must_be_reachable_from_every_measure_dataset():
 def test_empty_grain_suffix_is_rejected():
     with pytest.raises(CompileError, match="grain"):
         _compile(measures=["dataset.enrollments.v1:enrollments"], dimensions=["course_role__"])
+
+
+def test_dimensions_are_only_joined_from_complete_datasets():
+    partial = dataset(id="dataset.partial_courses.v1", base_sql=COURSES.base_sql + " WHERE c.START_DATE IS NOT NULL",
+                      entities=COURSES.model_dump()["entities"], dimensions=COURSES.model_dump()["dimensions"],
+                      measures=COURSES.model_dump()["measures"], pii_columns=[], complete=False)
+    cat = catalog(ENROLLMENTS, partial)
+    with pytest.raises(CompileError, match="not complete"):
+        _compile(cat, measures=["dataset.enrollments.v1:enrollments"], dimensions=["dataset.partial_courses.v1:course_name"])
+    with pytest.raises(CompileError, match="unknown dimension"):
+        _compile(cat, measures=["dataset.enrollments.v1:enrollments"], dimensions=["course_name"])
+
+
+def test_three_datasets_with_a_dimension_merge_on_the_coalesced_key():
+    third = dataset(id="dataset.third.v1")
+    q = _compile(catalog(ENROLLMENTS, COURSES, third),
+                 measures=["dataset.enrollments.v1:enrollments", "dataset.courses.v1:courses", "dataset.third.v1:people"],
+                 dimensions=["dataset.courses.v1:course_name"], order_by=[{"field": "course_name", "direction": "asc"}])
+    outer = q.sql[q.sql.rindex("\nSELECT"):]
+    assert "COALESCE(g1.course_name, g2.course_name) IS NOT DISTINCT FROM g3.course_name" in outer
+    assert "COALESCE(g1.course_name, g2.course_name, g3.course_name) AS course_name" in outer
+    assert "ORDER BY\n  course_name" in outer
+
+
+def test_filters_and_time_ranges_through_joins_apply_in_every_group():
+    q = _compile(measures=["dataset.enrollments.v1:enrollments", "dataset.courses.v1:courses"],
+                 filters=[{"dimension": "course_name", "op": "eq", "values": ["Biology"]}],
+                 time_range={"dimension": "course_start", "start": "2026-01-01"})
+    g1 = q.sql[q.sql.index("g1 AS ("):q.sql.index("g2 AS (")]
+    g2 = q.sql[q.sql.index("g2 AS ("):q.sql.rindex("\nSELECT")]
+    assert "j1.COURSE_NAME = 'Biology'" in g1 and "CAST(j1.START_DATE AS DATE) >= '2026-01-01'" in g1
+    assert "COURSE_NAME = 'Biology'" in g2 and "CAST(START_DATE AS DATE) >= '2026-01-01'" in g2

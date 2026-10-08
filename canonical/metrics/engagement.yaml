@@ -9,23 +9,26 @@ metrics:
     default_filters: [students]
     synonyms: [engagement rate, participation rate]
     example_questions: ["What share of students are engaging with their courses?"]
-  - id: metric.active_courses.v1
+  - id: metric.courses_with_student_activity.v1
     display_name: Courses with student activity
-    description: Reportable courses where at least one student has course activity in the course window.
+    description: Reportable courses where at least one student has had course activity in the course window.
     owner: Blackboard
     authority: vendor-canonical
     last_reviewed: 2026-10-08
     measure: dataset.course_role_activity.v1:courses_with_activity
     default_filters: [students]
-    synonyms: [active courses, courses in use]
-    example_questions: ["How many courses have student activity this term?"]
+    synonyms: [courses in use, courses with activity]
+    example_questions: ["How many courses have student activity?"]
   - id: metric.weekly_engagement_rate.v1
     display_name: Students active in the last 7 days
-    description: Share of students with course activity whose last course access was in the last 7 days.
+    description: >
+      Share of students with an active enrollment in an ongoing course whose last course access was
+      in the last 7 days.
     owner: Blackboard
     authority: vendor-canonical
     last_reviewed: 2026-10-08
     measure: dataset.course_student_activity.v1:share_active_last_7_days
+    default_filters: [active_only, ongoing_courses]
     synonyms: [platform engagement, weekly engagement, active this week]
     example_questions: ["How engaged are students this week?"]
   - id: metric.minutes_per_active_student.v1
