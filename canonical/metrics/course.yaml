@@ -1,0 +1,20 @@
+metrics:
+  - id: metric.reportable_courses.v1
+    display_name: Reportable courses
+    description: Top-level courses that have started and have at least one student enrollment.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_filters.v1:courses
+    synonyms: [how many courses, number of courses, course count]
+    example_questions: ["How many courses do we have this term?", "How many courses are there per department?"]
+  - id: metric.ongoing_courses.v1
+    display_name: Ongoing courses
+    description: Reportable courses whose end date has not passed.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.course_filters.v1:courses
+    default_filters: [ongoing]
+    synonyms: [active courses, current courses, running courses]
+    example_questions: ["How many courses are running right now?"]

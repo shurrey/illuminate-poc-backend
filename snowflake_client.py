@@ -15,6 +15,8 @@ import os
 
 import boto3
 
+from semantic_layer.pii import PII_COLUMN_NAMES
+
 logger = logging.getLogger("API-PROXY")
 
 _sf_connection = None
@@ -184,12 +186,6 @@ def validate_and_execute(sql: str, params: dict | None = None) -> dict:
             }
 
     # PII column check — block bare PII columns in outermost SELECT without GROUP BY / aggregation
-    _PII_COLUMNS = {
-        "FIRST_NAME", "LAST_NAME", "EMAIL", "SSN", "PHONE", "ADDRESS",
-        "DOB", "DATE_OF_BIRTH", "PASSWORD", "PASSWD", "PHONE_NUMBER",
-        "STREET_ADDRESS", "ZIP_CODE", "ZIPCODE",
-    }
-
     # Find the outermost SELECT node
     outer_select = stmt.find(exp.Select)
     if outer_select is not None:
@@ -208,7 +204,7 @@ def validate_and_execute(sql: str, params: dict | None = None) -> dict:
                 col_nodes = list(sel.find_all(exp.Column))
                 for col_node in col_nodes:
                     col_name = col_node.name.upper().strip('"').strip("'")
-                    if col_name in _PII_COLUMNS:
+                    if col_name in PII_COLUMN_NAMES:
                         return {
                             "error": (
                                 f"Column '{col_name}' contains personally identifiable information (PII). "
