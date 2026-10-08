@@ -32,7 +32,7 @@ const env: cdk.Environment = {
 };
 
 // =============================================================================
-// Stack 1: Base infrastructure (VPC, Cognito, S3, Secrets, WAF)
+// Stack 1: Base infrastructure (Cognito, S3, Secrets)
 // =============================================================================
 const base = new BaseStack(app, `IlluminateBase-${environment}`, {
   env,

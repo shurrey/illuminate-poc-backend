@@ -33,6 +33,9 @@ def main() -> int:
         check("users cannot write custom:tenant_id", writable is not None and "custom:tenant_id" not in writable),
         check("illuminate-admins group exists", "illuminate-admins" in groups),
         check("initial user is added to the admin group", "adminAddUserToGroup" in base_text),
+        check("no VPC or NAT gateway (nothing runs in it)",
+              not resources("IlluminateBase-dev", "AWS::EC2::VPC") and not resources("IlluminateBase-dev", "AWS::EC2::NatGateway")),
+        check("no unattached WAF web ACL", not resources("IlluminateBase-dev", "AWS::WAFv2::WebACL")),
     ]
     return 0 if all(results) else 1
 
