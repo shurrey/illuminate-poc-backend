@@ -18,6 +18,9 @@ export interface AuthProps {
   initialTenantId?: string;
 }
 
+/** Members may edit their tenant's metric overlays; the API reads it from the cognito:groups claim. */
+export const ADMIN_GROUP_NAME = 'illuminate-admins';
+
 export class Auth extends Construct {
   public readonly userPool: cognito.UserPool;
   public readonly userPoolClient: cognito.UserPoolClient;
@@ -46,6 +49,12 @@ export class Auth extends Construct {
       customAttributes: {
         tenant_id: new cognito.StringAttribute({ minLen: 1, maxLen: 256, mutable: true }),
       },
+    });
+
+    const adminGroup = new cognito.CfnUserPoolGroup(this, 'AdminGroup', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: ADMIN_GROUP_NAME,
+      description: 'Can edit tenant metric overlays',
     });
 
     // Set UserPoolTier to LITE (not exposed in L2 construct)
@@ -156,6 +165,27 @@ export class Auth extends Construct {
       });
 
       setPassword.node.addDependency(createUser);
+
+      const addToAdmins = new cr.AwsCustomResource(this, 'InitialUserAdminGroup', {
+        onCreate: {
+          service: 'CognitoIdentityServiceProvider',
+          action: 'adminAddUserToGroup',
+          parameters: {
+            UserPoolId: this.userPool.userPoolId,
+            Username: props.initialUserEmail,
+            GroupName: ADMIN_GROUP_NAME,
+          },
+          physicalResourceId: cr.PhysicalResourceId.of(`initial-user-admin-${props.initialUserEmail}`),
+        },
+        policy: cr.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            actions: ['cognito-idp:AdminAddUserToGroup'],
+            resources: [this.userPool.userPoolArn],
+          }),
+        ]),
+      });
+      addToAdmins.node.addDependency(createUser);
+      addToAdmins.node.addDependency(adminGroup);
     }
   }
 }
