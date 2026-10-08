@@ -114,7 +114,7 @@ measures:
      unit: students, synonyms: [active learners]}
   - {name: enrolled_students, agg: count_distinct, expr: PERSON_ID, unit: students}
 filters:
-  - {name: active_only, sql: "ACTIVE = 1", default: false}
+  - {name: active_only, sql: "ACTIVE = 1"}
 pii_columns: [EMAIL, FIRST_NAME, LAST_NAME, ALTERNATIVE_SOURCE_ID]
 ```
 
@@ -130,8 +130,12 @@ Rules:
 - `measures.agg` is one of `sum`, `count`, `count_distinct`, `avg`, `min`, `max`, `median`, or
   `ratio` (with `numerator` and `denominator` measure names). `expr` is a column expression over the
   dataset's own columns.
-- `pii_columns` must list every column the dictionary flags as PII. They can be used in filters and
-  counted, but never selected as a dimension.
+- `pii_columns` must list every output column whose lineage reaches a column the data dictionary
+  flags `isPii` (snapshot: `tests/fixtures/cdm_pii_columns.json`), plus any output named in
+  `semantic_layer/pii.py`. They can be used in filters and counted, but never selected as a dimension.
+- Every real table must be `{{ database }}.CDM_*.<table>`; unqualified names must be CTEs.
+- A dimension's `type` must match its column's inferred SQL type (`boolean`, `time`, `numeric`).
+- Filters are applied through metrics' `default_filters`; there is no dataset-level default.
 
 ### 3.3 Metric schema
 
@@ -175,7 +179,8 @@ Run offline in pytest for every dataset and metric:
 3. Every column referenced in `base_sql`, `expr`, filter SQL and dimension columns exists in the
    dictionary snapshot (parsed with `sqlglot`, qualified through CTE aliases).
 4. Compiled SQL parses, references only `CDM_*` schemas, and passes the execution guard.
-5. `pii_columns` covers every dictionary-flagged PII column the dataset exposes.
+5. `pii_columns` covers every output traced (sqlglot lineage) to a dictionary-flagged PII column.
+6. Dimension types match the inferred types of their columns.
 
 Live smoke run (illuminate-mcp, during development; recorded in each dataset PR description): row
 count, one aggregate per measure, and one query per dimension.
