@@ -701,7 +701,7 @@ async def dictionary_preview(
     limit: int = 20,
     authorization: Optional[str] = Header(None),
 ):
-    """Preview sample data from a Snowflake table.
+    """Preview sample rows from a CDM table (administrators only).
 
     Returns { columns: string[], rows: Record<string, unknown>[] }.
     Schema must start with CDM_, limit capped at 100.
@@ -709,6 +709,8 @@ async def dictionary_preview(
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    # Raw rows include person tables, so previews are for administrators only.
+    _require_admin(user)
 
     # Validate identifiers
     if not _SAFE_IDENTIFIER.match(schema) or not _SAFE_IDENTIFIER.match(table):
@@ -763,11 +765,10 @@ async def dashboard_query(
     request: DashboardQueryRequest,
     authorization: Optional[str] = Header(None),
 ):
-    """Execute a read-only SQL query against Snowflake for dashboard widgets.
+    """Execute caller-supplied SQL for dashboard widgets through the execution guard.
 
-    Only SELECT/WITH statements are allowed. Supports Snowflake bind variables
-    via the optional `params` dict (e.g., {"term_name": "Fall 2024"}).
-    Returns columns + rows on success, or an error message on failure.
+    The guard limits it to read-only CDM_* queries with PII only inside counts, the same
+    rules as chat's freehand SQL. Returns columns + rows, or {error}.
     """
     user = _get_user_from_token(authorization)
     if not user:
@@ -778,13 +779,14 @@ async def dashboard_query(
 
     try:
         import asyncio
-        from snowflake_client import query_sql
+        from snowflake_client import validate_and_execute
 
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: query_sql(request.sql, params=request.params)
+            None, lambda: validate_and_execute(request.sql, params=request.params)
         )
-        logger.info(f"Dashboard query returned {len(result['rows'])} rows")
+        if "rows" in result:
+            logger.info(f"Dashboard query returned {len(result['rows'])} rows")
         return result
     except ValueError as e:
         return {"error": str(e)}
@@ -967,10 +969,14 @@ class OverlayPutRequest(BaseModel):
 ADMIN_GROUP = "illuminate-admins"
 
 
-def _require_admin_tenant(user: Optional[dict]) -> str:
-    """The caller's tenant_id; 403 unless they are in the admin group and carry a tenant."""
+def _require_admin(user: Optional[dict]) -> None:
     if ADMIN_GROUP not in (user or {}).get("cognito:groups", []):
         raise HTTPException(status_code=403, detail=f"Requires membership of the {ADMIN_GROUP} group.")
+
+
+def _require_admin_tenant(user: Optional[dict]) -> str:
+    """The caller's tenant_id; 403 unless they are in the admin group and carry a tenant."""
+    _require_admin(user)
     tid = _tenant_id_from_user(user)
     if not tid:
         raise HTTPException(
