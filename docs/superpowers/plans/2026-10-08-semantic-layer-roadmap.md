@@ -13,7 +13,7 @@
 
 "Done when" is the acceptance check, in addition to the test suite passing.
 
-## Phase 1: Walking skeleton (B), detailed plan written
+## Phase 1: Walking skeleton (B), complete (#9–#14)
 
 | Unit | Scope | Done when |
 |---|---|---|
@@ -23,7 +23,7 @@
 | 1d | Validator, dictionary snapshot, PII set, dataset 1, two metrics | Live smoke run recorded |
 | 1e | `POST /semantic/compile` | Endpoint tests pass |
 
-## Phase 2: API (B)
+## Phase 2: API (B), detailed plan: `2026-10-08-semantic-layer-phase-2-api.md`
 
 | Unit | Scope | Done when |
 |---|---|---|
@@ -73,7 +73,7 @@
 | 6f | Import Query maps pasted SQL to a contract and lists what doesn't map | Browser check with one mappable and one unmappable query |
 | 6g | Chat artifacts: provenance chips, "Pin as card", Ungoverned badge | Browser check |
 | 6h | Developer "Semantic layer" tab (datasets, relationships, metrics) | Browser check |
-| 6b (B) | Overlays for measure `expr`, filter `sql` and metric default filters; versioning, history, revert; sandboxed validation | Overlay tests, including SSTI attempts, pass |
+| 6b (B) | Overlays for measure `expr`, filter `sql` and metric default filters; versioning, history, revert; sandboxed validation. Before overlays ship, also: (1) filter SQL and measure exprs must parse to exactly one statement; (2) the CTE-name check must be scoped per dataset, not global | Overlay tests, including SSTI attempts, multi-statement and cross-scope CTE cases, pass |
 | 6i | Admin overlay editor on the 6b API | Browser check |
 
 ## Phase 7: Remaining datasets (B), one PR each, in this order
@@ -108,3 +108,14 @@ Before the first dataset that reads `CDM_META` or `CDM_TLM` columns missing from
 | 9c (F) | Restore linting with an ESLint flat config (`next lint` was removed in Next 16) |
 | 9d (F) | Make the `AddCorsOrigin` custom resource update `ALLOWED_ORIGINS`; add `ts-node` to `infra/` devDependencies |
 | 9e (F) | Add or remove the `/privacy` route |
+
+## Deferred minors from reviews (fold into the named unit)
+
+| From | Item | Unit |
+|---|---|---|
+| Phase 1 review | Filter values `Infinity`/`NaN` render as identifiers: use `FiniteFloat` | 4a |
+| Phase 1 review | Empty grain suffix (`course_role__`) accepted | 4a |
+| Phase 1 review | Grain-suffixed filter error should say suffixes aren't allowed in filters | 4a |
+| Phase 1 review | Scoped `SUM` returns NULL rather than 0 when nothing matches: decide and document | 4i |
+| Phase 1 review | Empty YAML file raises `TypeError` instead of `CatalogError` | 4b |
+| Phase 1 review | Missing `Authorization` header returns 422 rather than 401 | 3b |
