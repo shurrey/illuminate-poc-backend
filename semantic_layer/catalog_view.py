@@ -5,6 +5,7 @@ Every published field is listed explicitly so fields added to the definitions la
 
 from __future__ import annotations
 
+from .compiler import joinable_datasets
 from .schema import Catalog, Dataset
 
 _DIMENSION_FIELDS = {"name", "type", "description", "grains", "synonyms"}
@@ -15,7 +16,7 @@ _METRIC_FIELDS = {
 }
 
 
-def _dataset_view(ds: Dataset) -> dict:
+def _dataset_view(ds: Dataset, joins: list[str]) -> dict:
     return {
         "id": ds.id,
         "display_name": ds.display_name,
@@ -28,13 +29,16 @@ def _dataset_view(ds: Dataset) -> dict:
         ],
         "measures": [m.model_dump(include=_MEASURE_FIELDS) for m in ds.measures],
         "filters": [{"name": f.name, "description": f.description} for f in ds.filters],
+        "joins": joins,
     }
 
 
 def public_catalog(catalog: Catalog) -> dict:
     public = {i: d for i, d in catalog.datasets.items() if d.visibility == "public"}
     return {
-        "datasets": [_dataset_view(d) for d in public.values()],
+        "datasets": [
+            _dataset_view(d, [j for j in joinable_datasets(d, catalog) if j in public]) for d in public.values()
+        ],
         "metrics": [
             m.model_dump(mode="json", include=_METRIC_FIELDS)
             for m in catalog.metrics.values() if m.dataset_id in public
