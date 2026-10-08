@@ -802,19 +802,66 @@ def _semantic_database() -> str:
     return _database
 
 
+_OVERLAY_TTL_SECONDS = 60
+_overlay_cache: dict[str, tuple[float, list]] = {}
+
+
+def _tenant_overlays(tenant_id: str) -> list:
+    """The tenant's overlays, cached briefly per instance; admin writes on this instance invalidate it."""
+    import time
+    import overlay_store
+
+    hit = _overlay_cache.get(tenant_id)
+    if hit and time.monotonic() - hit[0] < _OVERLAY_TTL_SECONDS:
+        return hit[1]
+    overlays = overlay_store.list_overlays(tenant_id)
+    _overlay_cache[tenant_id] = (time.monotonic(), overlays)
+    return overlays
+
+
+def _apply_each(catalog, overlays: list) -> tuple:
+    """Apply overlays one at a time, skipping any that no longer fit the canonical definitions."""
+    from pydantic import ValidationError
+    from semantic_layer.overlays import OverlayError, apply_overlays
+
+    applied = []
+    for ov in overlays:
+        try:
+            catalog = apply_overlays(catalog, [ov])
+            applied.append(ov)
+        except (OverlayError, ValidationError) as e:
+            logger.warning("Skipping overlay %s: %s", ov.target, e)
+    return catalog, applied
+
+
+def _catalog_for(user: Optional[dict]) -> tuple:
+    """The canonical catalog with the caller's tenant overlays applied, and the overlays used."""
+    from semantic_layer.catalog import default_catalog
+
+    tenant_id = _tenant_id_from_user(user)
+    if not tenant_id:
+        return default_catalog(), []
+    return _apply_each(default_catalog(), _tenant_overlays(tenant_id))
+
+
 def _compile_contract(contract: QueryContract, authorization: str):
     """Authenticate, then compile; raises the HTTP error the caller should return."""
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    from semantic_layer.catalog import default_catalog
     from semantic_layer.compiler import CompileError, compile_query
 
+    catalog, overlays = _catalog_for(user)
     try:
-        return compile_query(contract, default_catalog(), _semantic_database())
+        compiled = compile_query(contract, catalog, _semantic_database())
     except CompileError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    p = compiled.provenance
+    p.overlays = [f"{o.target}@v{o.version}" for o in overlays
+                  if (o.kind == "metric" and o.target.split(":", 1)[1] in p.metrics)
+                  or (o.kind != "metric" and o.target.split(":")[1] in p.datasets)]
+    return compiled
 
 
 @app.post("/api/v1/semantic/compile")
@@ -836,10 +883,9 @@ async def semantic_catalog(
     import hashlib
     from fastapi import Response
     from fastapi.responses import JSONResponse
-    from semantic_layer.catalog import default_catalog
     from semantic_layer.catalog_view import public_catalog
 
-    body = public_catalog(default_catalog())
+    body = public_catalog(_catalog_for(user)[0])
     etag = '"' + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:32] + '"'
     headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
     if if_none_match == etag:
@@ -880,13 +926,6 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
 # Customer-facing endpoints for managing this tenant's metric overlays. The
 # tenant_id is taken from the user's Cognito custom:tenant_id claim — users
 # can only see/edit their own tenant's overlays.
-
-class OverlayPutRequest(BaseModel):
-    measure_sql: str
-    diff_description: str = ""
-    owner: str = ""
-    last_reviewed: Optional[str] = None  # ISO date; defaults to today server-side
-
 
 ADMIN_GROUP = "illuminate-admins"
 
@@ -954,141 +993,137 @@ async def admin_list_metrics(authorization: Optional[str] = Header(None)) -> dic
     return {"tenant_id": tenant_id, "metrics": out}
 
 
-@app.get("/api/v1/admin/overlay/{metric_id}")
-async def admin_get_overlay(
-    metric_id: str,
-    authorization: Optional[str] = Header(None),
-) -> dict:
-    """Return the current overlay for one metric, or null if none exists."""
+class OverlayWrite(BaseModel):
+    expr: Optional[str] = None
+    sql: Optional[str] = None
+    default_filters: Optional[list[str]] = None
+    description: str = ""
+    expected_version: int = 0
+
+
+class OverlayRevert(BaseModel):
+    version: int
+    expected_version: int
+
+
+def _admin_tenant(authorization: Optional[str]) -> tuple[dict, str]:
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    tenant_id = _require_admin_tenant(user)
-
-    from semantic_layer.engine import load_canonical
-    import tenant_store
-
-    canonical = load_canonical()
-    if metric_id not in canonical.metrics:
-        raise HTTPException(status_code=404, detail=f"Unknown metric: {metric_id}")
-    overlay = tenant_store.get_overlay(tenant_id, metric_id)
-    if overlay is None:
-        return {"tenant_id": tenant_id, "metric_id": metric_id, "overlay": None}
-    return {
-        "tenant_id": tenant_id,
-        "metric_id": metric_id,
-        "overlay": {
-            "owner": overlay.owner,
-            "last_reviewed": overlay.last_reviewed.isoformat(),
-            "diff_description": overlay.diff_description,
-            "measure_sql": overlay.measure_sql,
-        },
-    }
+    return user, _require_admin_tenant(user)
 
 
-@app.put("/api/v1/admin/overlay/{metric_id}")
-async def admin_put_overlay(
-    metric_id: str,
-    request: OverlayPutRequest,
-    authorization: Optional[str] = Header(None),
-) -> dict:
-    """Create or update this tenant's overlay for one metric.
-
-    Validates by compiling the overlay's SQL through the engine — same
-    SELECT-only + allowed-tables guard the canonical metrics get. Bad SQL
-    returns 400 with the validator's reason; nothing is persisted on failure.
-    """
-    user = _get_user_from_token(authorization)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    tenant_id = _require_admin_tenant(user)
-
-    from semantic_layer.engine import (
-        SqlSafetyError,
-        compile_sql,
-        load_canonical,
-        resolve,
-    )
-    from semantic_layer.models import OverlayMetric
-    from datetime import date
-    import tenant_store
-
-    canonical = load_canonical()
-    if metric_id not in canonical.metrics:
-        raise HTTPException(status_code=404, detail=f"Unknown metric: {metric_id}")
-
-    # Build a candidate Tenant with just this overlay to validate end-to-end.
-    candidate_overlay = OverlayMetric(
-        canonical_id=metric_id,
-        owner=request.owner or "Unknown",
-        last_reviewed=(
-            date.fromisoformat(request.last_reviewed)
-            if request.last_reviewed
-            else date.today()
-        ),
-        diff_description=request.diff_description,
-        measure_sql=request.measure_sql,
-    )
-    from semantic_layer.models import Glossary, Tenant
-    candidate_tenant = Tenant(
-        id=tenant_id,
-        display_name=tenant_id,
-        overlays={metric_id: candidate_overlay},
-        glossary=Glossary(synonyms={}),
-    )
+def _checked_target(target: str) -> str:
+    from semantic_layer.overlays import OverlayError, parse_target
 
     try:
-        merged = resolve(canonical, candidate_tenant, metric_id)
-        from chat_engine import _database
-        compile_sql(merged, filters=[], dimensions=[], database=_database)
-    except SqlSafetyError as e:
-        raise HTTPException(status_code=400, detail=f"SQL safety violation: {e}") from e
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to compile overlay: {e}") from e
-
-    # Validation passed — persist.
-    persisted = tenant_store.put_overlay(
-        tenant_id=tenant_id,
-        metric_id=metric_id,
-        measure_sql=request.measure_sql,
-        diff_description=request.diff_description,
-        owner=request.owner or "Unknown",
-        updated_by=user.get("sub", "unknown"),
-        last_reviewed=request.last_reviewed,
-    )
-    logger.info(
-        "Overlay saved: tenant=%s metric=%s by=%s", tenant_id, metric_id, user.get("sub")
-    )
-    return {
-        "tenant_id": tenant_id,
-        "metric_id": metric_id,
-        "overlay": {
-            "owner": persisted.owner,
-            "last_reviewed": persisted.last_reviewed.isoformat(),
-            "diff_description": persisted.diff_description,
-            "measure_sql": persisted.measure_sql,
-        },
-    }
+        parse_target(target)
+    except OverlayError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return target
 
 
-@app.delete("/api/v1/admin/overlay/{metric_id}")
-async def admin_delete_overlay(
-    metric_id: str,
-    authorization: Optional[str] = Header(None),
-) -> dict:
-    """Remove this tenant's overlay for one metric. Canonical applies after."""
-    user = _get_user_from_token(authorization)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    tenant_id = _require_admin_tenant(user)
+def _overlay_errors(tenant_id: str, target: str, candidate) -> list[str]:
+    """Problems with the tenant's overlays once target is replaced by candidate (None: removed)."""
+    import overlay_store
+    from semantic_layer.catalog import default_catalog
+    from semantic_layer.overlays import OverlayError, validate_overlay
+    from semantic_layer.validate import validate_metric
 
-    import tenant_store
-    tenant_store.delete_overlay(tenant_id, metric_id)
-    logger.info(
-        "Overlay deleted: tenant=%s metric=%s by=%s",
-        tenant_id, metric_id, user.get("sub"),
-    )
-    return {"tenant_id": tenant_id, "metric_id": metric_id, "overlay": None}
+    others = [o for o in overlay_store.list_overlays(tenant_id) if o.target != target]
+    base, _ = _apply_each(default_catalog(), others)
+    try:
+        if candidate is not None:
+            return validate_overlay(candidate, base)
+        return [e for m in base.metrics.values() for e in validate_metric(m, base)]
+    except OverlayError as e:
+        return [str(e)]
+
+
+def _save_checked(tenant_id: str, target: str, candidate, save) -> dict:
+    import overlay_store
+
+    errors = _overlay_errors(tenant_id, target, candidate)
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    try:
+        saved = save()
+    except overlay_store.OverlayConflict:
+        raise HTTPException(status_code=409, detail="This overlay changed since you loaded it; reload and try again.")
+    _overlay_cache.pop(tenant_id, None)
+    return {"tenant_id": tenant_id, "target": target, "overlay": saved.model_dump() if saved else None}
+
+
+@app.get("/api/v1/admin/overlays")
+async def admin_list_overlays(authorization: Optional[str] = Header(None)) -> dict:
+    """This tenant's current semantic-layer overlays."""
+    import overlay_store
+
+    _, tenant_id = _admin_tenant(authorization)
+    return {"tenant_id": tenant_id, "overlays": [o.model_dump() for o in overlay_store.list_overlays(tenant_id)]}
+
+
+@app.get("/api/v1/admin/overlay/{target}")
+async def admin_get_overlay(target: str, authorization: Optional[str] = Header(None)) -> dict:
+    import overlay_store
+
+    _, tenant_id = _admin_tenant(authorization)
+    overlay = overlay_store.get_overlay(tenant_id, _checked_target(target))
+    return {"tenant_id": tenant_id, "target": target, "overlay": overlay.model_dump() if overlay else None}
+
+
+@app.put("/api/v1/admin/overlay/{target}")
+async def admin_put_overlay(target: str, request: OverlayWrite, authorization: Optional[str] = Header(None)) -> dict:
+    """Validate, then save as the next version; 400 with reasons, 409 if expected_version is stale."""
+    import overlay_store
+    from pydantic import ValidationError
+    from semantic_layer.overlays import Overlay
+
+    user, tenant_id = _admin_tenant(authorization)
+    _checked_target(target)
+    try:
+        candidate = Overlay(target=target, **request.model_dump(exclude={"expected_version"}))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail={"errors": [err["msg"] for err in e.errors()]})
+    result = _save_checked(tenant_id, target, candidate, lambda: overlay_store.put_overlay(
+        tenant_id, candidate, user.get("sub", "unknown"), request.expected_version))
+    logger.info("Overlay saved: tenant=%s target=%s by=%s", tenant_id, target, user.get("sub"))
+    return result
+
+
+@app.delete("/api/v1/admin/overlay/{target}")
+async def admin_delete_overlay(target: str, authorization: Optional[str] = Header(None)) -> dict:
+    """Remove the overlay (its history stays); 400 if another overlay depends on it."""
+    import overlay_store
+
+    user, tenant_id = _admin_tenant(authorization)
+    _checked_target(target)
+    result = _save_checked(tenant_id, target, None, lambda: overlay_store.delete_overlay(tenant_id, target))
+    logger.info("Overlay deleted: tenant=%s target=%s by=%s", tenant_id, target, user.get("sub"))
+    return result
+
+
+@app.get("/api/v1/admin/overlay/{target}/history")
+async def admin_overlay_history(target: str, authorization: Optional[str] = Header(None)) -> dict:
+    import overlay_store
+
+    _, tenant_id = _admin_tenant(authorization)
+    history = overlay_store.history(tenant_id, _checked_target(target))
+    return {"tenant_id": tenant_id, "target": target, "history": [o.model_dump() for o in history]}
+
+
+@app.post("/api/v1/admin/overlay/{target}/revert")
+async def admin_revert_overlay(target: str, request: OverlayRevert, authorization: Optional[str] = Header(None)) -> dict:
+    """Save an earlier version's content as the newest version, after validating it."""
+    import overlay_store
+
+    user, tenant_id = _admin_tenant(authorization)
+    _checked_target(target)
+    old = next((o for o in overlay_store.history(tenant_id, target) if o.version == request.version), None)
+    if old is None:
+        raise HTTPException(status_code=404, detail=f"{target} has no version {request.version}")
+    return _save_checked(tenant_id, target, old, lambda: overlay_store.revert(
+        tenant_id, target, request.version, user.get("sub", "unknown"), request.expected_version))
 
 
 # =============================================================================

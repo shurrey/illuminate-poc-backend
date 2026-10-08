@@ -24,6 +24,7 @@ def test_compiles_a_metric(client):
         "datasets": ["dataset.course_filters.v1"],
         "metrics": ["metric.reportable_courses.v1"],
         "measures": ["dataset.course_filters.v1:courses"],
+        "overlays": [],
     }
 
 

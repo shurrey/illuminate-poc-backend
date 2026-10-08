@@ -80,6 +80,7 @@ class Provenance(BaseModel):
     datasets: list[str]
     metrics: list[str]
     measures: list[str]
+    overlays: list[str] = Field(default_factory=list, description="Tenant overlays applied, as '<target>@v<version>'")
 
 
 class CompiledQuery(BaseModel):

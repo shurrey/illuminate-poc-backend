@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import lambda_handler
+import overlay_store
 import tenant_store
 from semantic_layer.models import Glossary, Tenant
 
@@ -9,22 +10,28 @@ AUTH = {"Authorization": "Bearer test"}
 ADMIN = {"sub": "a1", "custom:tenant_id": "t1", "cognito:groups": ["illuminate-admins"]}
 MEMBER = {"sub": "u1", "custom:tenant_id": "t1"}
 
+TARGET = "measure:dataset.student_grade.v1:average_grade_percentage"
 ADMIN_ROUTES = [
     ("get", "/api/v1/admin/metrics", None),
-    ("get", "/api/v1/admin/overlay/metric.student_count.v1", None),
-    ("put", "/api/v1/admin/overlay/metric.student_count.v1",
-     {"measure_sql": "SELECT 1", "diff_description": "x"}),
-    ("delete", "/api/v1/admin/overlay/metric.student_count.v1", None),
+    ("get", "/api/v1/admin/overlays", None),
+    ("get", f"/api/v1/admin/overlay/{TARGET}", None),
+    ("put", f"/api/v1/admin/overlay/{TARGET}", {"expr": "1", "expected_version": 0}),
+    ("delete", f"/api/v1/admin/overlay/{TARGET}", None),
+    ("get", f"/api/v1/admin/overlay/{TARGET}/history", None),
+    ("post", f"/api/v1/admin/overlay/{TARGET}/revert", {"version": 1, "expected_version": 1}),
 ]
+
+
+def _never(*a, **k):
+    raise AssertionError("the overlay store must not be touched")
 
 
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(tenant_store, "load_tenant",
                         lambda tid: Tenant(id=tid, display_name=tid, overlays={}, glossary=Glossary(synonyms={})))
-    monkeypatch.setattr(tenant_store, "get_overlay", lambda tid, mid: None)
-    monkeypatch.setattr(tenant_store, "put_overlay", lambda *a, **k: None)
-    monkeypatch.setattr(tenant_store, "delete_overlay", lambda tid, mid: None)
+    for name in ("list_overlays", "get_overlay", "history", "put_overlay", "revert", "delete_overlay"):
+        monkeypatch.setattr(overlay_store, name, _never)
     return TestClient(lambda_handler.app)
 
 
