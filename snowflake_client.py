@@ -190,11 +190,9 @@ def validate_and_execute(sql: str, params: dict | None = None) -> dict:
     outer_select = stmt.find(exp.Select)
     if outer_select is not None:
         has_group_by = outer_select.args.get("group") is not None
-        # Check if any selected expression uses an aggregate function
-        _AGG_TYPES = (exp.Count, exp.Sum, exp.Avg, exp.Max, exp.Min, exp.Anonymous)
-
+        # Unknown functions (exp.Anonymous, e.g. a UDF) are not aggregates and must not unlock PII.
         def _has_aggregate(node):
-            return any(isinstance(n, _AGG_TYPES) for n in node.walk())
+            return any(isinstance(n, exp.AggFunc) for n in node.walk())
 
         has_aggregation = any(_has_aggregate(sel) for sel in outer_select.expressions)
 

@@ -33,3 +33,12 @@ def test_metric_is_valid_and_compiles(metric):
 
 def test_catalog_is_not_empty():
     assert CATALOG.datasets and CATALOG.metrics
+
+
+@pytest.mark.parametrize("metric", CATALOG.metrics.values(), ids=lambda m: m.id)
+def test_compiled_metric_passes_the_execution_guard(metric, monkeypatch):
+    import snowflake_client
+
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": [], "rows": []})
+    compiled = compile_query(QueryContract(metrics=[metric.id]), CATALOG, "DB")
+    assert snowflake_client.validate_and_execute(compiled.sql) == {"columns": [], "rows": []}
