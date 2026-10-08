@@ -34,8 +34,8 @@ def test_runs_the_compiled_sql_through_the_guard(client, executed):
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
     assert r.status_code == 200
     body = r.json()
-    assert body["rows"] == [{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3}]
-    assert body["columns"] == ["TERM_NAME", "REPORTABLE_COURSES"]
+    assert body["rows"] == [{"term_name": "Fall", "reportable_courses": 3}]
+    assert body["columns"] == ["term_name", "reportable_courses"]
     assert executed == [body["sql"]]
     assert body["provenance"]["metrics"] == ["metric.reportable_courses.v1"]
 
@@ -69,7 +69,8 @@ def test_numeric_and_date_results_serialise_as_json_numbers_and_iso_dates(client
     monkeypatch.setattr(snowflake_client, "query_sql",
                         lambda sql, params=None: {"columns": list(rows[0]), "rows": rows})
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
-    assert r.json()["rows"] == [{"TERM_NAME": "Fall", "SHARE": 0.25, "COURSES": 12, "START": "2026-08-01"}]
+    assert r.json()["rows"] == [{"term_name": "Fall", "share": 0.25, "courses": 12, "start": "2026-08-01"}]
+    assert r.json()["columns"] == ["term_name", "share", "courses", "start"]
 
 
 def test_guard_rejection_is_a_502_with_the_guard_message(client, monkeypatch):
@@ -95,14 +96,14 @@ def test_binary_values_serialise_as_hex(client, monkeypatch):
     monkeypatch.setattr(snowflake_client, "query_sql",
                         lambda sql, params=None: {"columns": ["B"], "rows": [{"B": b"\xff\x00"}]})
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
-    assert r.status_code == 200 and r.json()["rows"] == [{"B": "ff00"}]
+    assert r.status_code == 200 and r.json()["rows"] == [{"b": "ff00"}]
 
 
 def test_nan_and_infinite_values_serialise_as_null(client, monkeypatch):
     monkeypatch.setattr(snowflake_client, "query_sql",
                         lambda sql, params=None: {"columns": ["A", "B"], "rows": [{"A": float("nan"), "B": float("inf")}]})
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
-    assert r.status_code == 200 and r.json()["rows"] == [{"A": None, "B": None}]
+    assert r.status_code == 200 and r.json()["rows"] == [{"a": None, "b": None}]
 
 
 def test_query_runs_through_the_guard_as_compiled_sql(client, monkeypatch):

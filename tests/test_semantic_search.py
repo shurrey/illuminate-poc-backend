@@ -39,3 +39,8 @@ def test_internal_datasets_are_not_searchable():
     from tests.semantic_fixtures import dataset
     hidden = dataset(visibility="internal")
     assert search_catalog("enrollments", catalog(hidden, metrics=())) == []
+
+
+def test_hits_name_their_dataset():
+    hit = search_catalog("average grade", CATALOG)[0]
+    assert hit["dataset"] == CATALOG.metrics[hit["id"]].dataset_id

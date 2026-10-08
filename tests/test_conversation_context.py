@@ -37,8 +37,8 @@ def engine(monkeypatch):
     seen = []
 
     async def fake_stream(message, history):
-        seen.append(history)
-        yield {"type": "raw_complete", "text": f"answer to {message}", "messages": [], "artifacts": [SQL_ARTIFACT]}
+        seen.append((message, history))
+        yield {"type": "raw_complete", "text": f"answer {len(seen)}", "messages": [], "artifacts": [SQL_ARTIFACT]}
 
     monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
     return seen
@@ -60,13 +60,29 @@ def test_turns_keep_the_queries_behind_each_answer(table):
     assert history[1]["queries"] == [{"title": "t", "query": {"metrics": ["m"]}}]
 
 
-def test_follow_up_questions_see_the_previous_query_contract(client, engine):
+def test_follow_up_questions_see_the_previous_query_contract_in_the_new_user_turn(client, engine):
     client.post("/api/chat/stream", headers=AUTH, json={"message": "courses by term", "context_id": "c9"})
     client.post("/api/chat/stream", headers=AUTH, json={"message": "now by month", "context_id": "c9"})
-    previous = engine[1]
-    assistant_text = previous[1]["content"][0]["text"]
-    assert assistant_text.startswith("answer to courses by term")
-    assert '"metric.reportable_courses.v1"' in assistant_text and "Courses by term" in assistant_text
+    message, history = engine[1]
+    assert history[1]["content"][0]["text"] == "answer 1"
+    assert message.endswith("now by month")
+    assert message.startswith("<previous_queries>") and '"metric.reportable_courses.v1"' in message
+
+
+def test_earlier_queries_are_replayed_on_the_user_turn_that_followed_them(client, engine):
+    for q in ("one", "two", "three"):
+        client.post("/api/chat/stream", headers=AUTH, json={"message": q, "context_id": "c8"})
+    _, history = engine[2]
+    assert history[0]["content"][0]["text"] == "one"
+    assert history[2]["content"][0]["text"].startswith("<previous_queries>")
+    assert all("previous_queries" not in m["content"][0]["text"] for m in history if m["role"] == "assistant")
+
+
+def test_a_blank_saved_answer_does_not_send_blank_text_to_the_model(client, engine):
+    conversation_store.save_turn("c7", "bob", "q", "")
+    client.post("/api/chat/stream", headers=AUTH, json={"message": "again", "context_id": "c7"})
+    _, history = engine[0]
+    assert all(block["text"].strip() for m in history for block in m["content"])
 
 
 def test_a_new_conversation_gets_a_server_generated_id(client, engine):
@@ -78,5 +94,5 @@ def test_someone_elses_conversation_id_is_replaced(client, engine):
     conversation_store.save_turn("alice-ctx", "alice", "secret q", "secret a")
     data = _complete(client.post("/api/chat/stream", headers=AUTH, json={"message": "hi", "context_id": "alice-ctx"}))
     assert data["contextId"] != "alice-ctx"
-    assert engine[0] == []
+    assert engine[0] == ("hi", [])
     assert [m["content"] for m in conversation_store.load_history("alice-ctx", "alice")] == ["secret q", "secret a"]

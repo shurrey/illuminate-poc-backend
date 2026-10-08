@@ -73,8 +73,17 @@ def _tool_uses(message: dict) -> list[dict]:
     return [b["toolUse"] for b in message.get("content", []) if "toolUse" in b]
 
 
-def _run_tool(tool_use: dict, artifacts: list) -> dict:
-    result = _tools.dispatch(tool_use["name"], tool_use.get("input", {}))
+def _answer(message: dict, artifacts: list) -> str:
+    # Claude can end a turn after tool results with no text; blank text also breaks the next Converse call.
+    text = _text_of(message).strip()
+    if text:
+        return text
+    return "Here are the results." if artifacts else "I couldn't find an answer to that."
+
+
+def _run_tool(tool_use: dict, artifacts: list, called: list) -> dict:
+    result = _tools.dispatch(tool_use["name"], tool_use.get("input", {}), called)
+    called.append(tool_use["name"])
     if "error" in result.content:
         logger.warning("%s error: %s", tool_use["name"], result.content["error"])
     artifacts.extend(result.artifacts)
@@ -88,13 +97,14 @@ def send_message(user_message: str, history: list) -> tuple[str, list, list]:
     """Returns (response_text, updated_messages, artifacts)."""
     messages = list(history) + [{"role": "user", "content": [{"text": user_message}]}]
     artifacts: list = []
+    called: list = []
     for _ in range(_MAX_ROUNDS):
         output = _converse(messages)["output"]["message"]
         messages.append(output)
         uses = _tool_uses(output)
         if not uses:
-            return _text_of(output), messages, artifacts
-        messages.append({"role": "user", "content": [_run_tool(u, artifacts) for u in uses]})
+            return _answer(output, artifacts), messages, artifacts
+        messages.append({"role": "user", "content": [_run_tool(u, artifacts, called) for u in uses]})
     return "I was unable to complete the request.", messages, artifacts
 
 
@@ -103,18 +113,19 @@ async def send_message_streaming(user_message: str, history: list):
     loop = asyncio.get_running_loop()
     messages = list(history) + [{"role": "user", "content": [{"text": user_message}]}]
     artifacts: list = []
+    called: list = []
     for _ in range(_MAX_ROUNDS):
         response = await loop.run_in_executor(None, _converse, messages)
         output = response["output"]["message"]
         messages.append(output)
         uses = _tool_uses(output)
         if not uses:
-            yield {"type": "raw_complete", "text": _text_of(output), "messages": messages, "artifacts": artifacts}
+            yield {"type": "raw_complete", "text": _answer(output, artifacts), "messages": messages, "artifacts": artifacts}
             return
         results = []
         for use in uses:
             yield {"type": "status", "message": _STATUS.get(use["name"], "Working...")}
-            results.append(await loop.run_in_executor(None, _run_tool, use, artifacts))
+            results.append(await loop.run_in_executor(None, _run_tool, use, artifacts, called))
         messages.append({"role": "user", "content": results})
     yield {"type": "raw_complete", "text": "I was unable to complete the request.",
            "messages": messages, "artifacts": artifacts}
