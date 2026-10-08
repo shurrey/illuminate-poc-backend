@@ -36,6 +36,8 @@ def main() -> int:
         check("no VPC or NAT gateway (nothing runs in it)",
               not resources("IlluminateBase-dev", "AWS::EC2::VPC") and not resources("IlluminateBase-dev", "AWS::EC2::NatGateway")),
         check("no unattached WAF web ACL", not resources("IlluminateBase-dev", "AWS::WAFv2::WebACL")),
+        check("API cannot write the Snowflake secret (nothing in the API writes it)",
+              "secretsmanager:PutSecretValue" not in json.dumps(resources("IlluminateApi-dev", "AWS::IAM::Policy"))),
     ]
     return 0 if all(results) else 1
 
