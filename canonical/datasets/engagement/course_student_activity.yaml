@@ -124,6 +124,8 @@ measures:
   - {name: content_items_completed, agg: sum, expr: PERSON_COMPLETED_CONTENT_ITEMS_CNT, unit: items}
   - {name: course_content_items, agg: sum, expr: TOTAL_COURSE_CONTENT_ITEM_CNT, unit: items, description: "Available content items in each student's course, summed per student"}
   - {name: content_completion_rate, agg: ratio, numerator: content_items_completed, denominator: course_content_items, unit: ratio}
+  - {name: students_active_last_7_days, agg: count_distinct, expr: "IFF(LAST_ACCESSED_TIME >= DATEADD(day, -7, CURRENT_DATE()), PERSON_ID, NULL)", unit: students}
+  - {name: share_active_last_7_days, agg: ratio, numerator: students_active_last_7_days, denominator: students, unit: ratio}
 filters:
   - {name: active_only, sql: "ACTIVE = 1"}
 pii_columns: [PERSON_ID, PERSON_COURSE_ID, ALTERNATIVE_SOURCE_ID, PERSON_FIRST_NAME, PERSON_LAST_NAME, PERSON_EMAIL]
