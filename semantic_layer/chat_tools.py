@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from pydantic import ValidationError
 
 from .compiler import CompileError, compile_query
+from .dictionary import describe_table
 from .contract import QueryContract
 from .schema import Catalog
 from .search import search_catalog
@@ -77,6 +78,35 @@ SPECS = [
             },
         }},
     },
+    {
+        "name": "describe_cdm_table",
+        "description": (
+            "List the columns of a raw CDM table (schema like CDM_LMS). Only for writing execute_sql "
+            "when no governed metric, measure or dimension fits."
+        ),
+        "inputSchema": {"json": {
+            "type": "object",
+            "properties": {"schema": {"type": "string"}, "table": {"type": "string"}},
+            "required": ["schema", "table"],
+        }},
+    },
+    {
+        "name": "execute_sql",
+        "description": (
+            "Last resort: run read-only SQL against the CDM schemas when search_catalog and "
+            "query_semantic cannot answer. Results are shown to the user as ungoverned. `reason` must "
+            "say why no governed definition fits."
+        ),
+        "inputSchema": {"json": {
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string"},
+                "reason": {"type": "string", "description": "Why no governed metric or dataset answers the question"},
+                "title": {"type": "string"},
+            },
+            "required": ["sql", "reason"],
+        }},
+    },
 ]
 
 
@@ -98,8 +128,9 @@ def _artifact(kind: str, title: str, data, **extra) -> dict:
 
 class ChatTools:
     def __init__(self, catalog: Catalog, database: str,
-                 execute: Callable[[str, Optional[dict]], dict] = _default_execute):
-        self.catalog, self.database, self.execute = catalog, database, execute
+                 execute: Callable[[str, Optional[dict]], dict] = _default_execute,
+                 describe: Callable[[str, str], Optional[list[dict]]] = describe_table):
+        self.catalog, self.database, self.execute, self.describe = catalog, database, execute, describe
 
     @property
     def specs(self) -> list[dict]:
@@ -149,3 +180,30 @@ class ChatTools:
                     "x_axis": chart["x"], "y_axis": chart["y"], "data": rows,
                 }, **common))
         return ToolResult(content, artifacts)
+
+    def _tool_describe_cdm_table(self, tool_input: dict) -> ToolResult:
+        schema, table = tool_input.get("schema", ""), tool_input.get("table", "")
+        columns = self.describe(schema, table)
+        if not columns:
+            return ToolResult({"error": f"No dictionary entry for {schema.upper()}.{table.upper()}"})
+        return ToolResult({"table": f"{schema.upper()}.{table.upper()}", "columns": columns})
+
+    def _tool_execute_sql(self, tool_input: dict) -> ToolResult:
+        reason = (tool_input.get("reason") or "").strip()
+        if not reason:
+            return ToolResult({"error": "execute_sql needs a reason saying why no governed definition fits"})
+        sql = tool_input.get("sql", "")
+        result = self.execute(sql, None)
+        if "error" in result:
+            return ToolResult({"error": result["error"]})
+        rows, columns = result["rows"], result["columns"]
+        provenance = {"governed": False, "reason": reason}
+        title = tool_input.get("title") or "Ungoverned query result"
+        content = {
+            "columns": columns, "rows": rows[:MODEL_ROW_LIMIT], "row_count": len(rows),
+            "truncated": len(rows) > MODEL_ROW_LIMIT, "provenance": provenance,
+        }
+        return ToolResult(content, [
+            _artifact("table", title, {"columns": columns, "rows": rows}, sql=sql, provenance=provenance),
+            _artifact("sql", title, sql, sql=sql, provenance=provenance),
+        ])
