@@ -908,7 +908,7 @@ async def semantic_catalog(
 
 
 @app.post("/api/v1/semantic/query")
-async def semantic_query(contract: QueryContract, authorization: str = Header(...)) -> dict:
+async def semantic_query(contract: QueryContract, authorization: str = Header(...)):
     """Compile a semantic query contract and run it through the execution guard."""
     compiled = _compile_contract(contract, authorization)
 
@@ -920,7 +920,16 @@ async def semantic_query(contract: QueryContract, authorization: str = Header(..
     if "error" in result:
         logger.error("Semantic query failed: %s", result["error"])
         raise HTTPException(status_code=502, detail={"error": result["error"], "sql": compiled.sql})
-    return {**result, **compiled.model_dump()}
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+
+    # jsonable_encoder turns Snowflake's Decimal into numbers; response-model serialisation makes them strings.
+    return JSONResponse(jsonable_encoder({
+        "columns": result["columns"],
+        "rows": result["rows"],
+        "sql": compiled.sql,
+        "provenance": compiled.provenance,
+    }))
 
 
 # =============================================================================

@@ -1,12 +1,21 @@
-"""The catalog as callers see it: public datasets and metrics, without SQL or column names."""
+"""The catalog as callers see it: public datasets and metrics, without SQL or column names.
+
+Every published field is listed explicitly so fields added to the definitions later stay private.
+"""
 
 from __future__ import annotations
 
 from .schema import Catalog, Dataset
 
+_DIMENSION_FIELDS = {"name", "type", "description", "grains", "synonyms"}
+_MEASURE_FIELDS = {"name", "agg", "numerator", "denominator", "unit", "description", "synonyms"}
+_METRIC_FIELDS = {
+    "id", "display_name", "description", "owner", "authority", "last_reviewed",
+    "measure", "default_filters", "synonyms", "example_questions",
+}
+
 
 def _dataset_view(ds: Dataset) -> dict:
-    pii = set(ds.pii_columns)
     return {
         "id": ds.id,
         "display_name": ds.display_name,
@@ -14,10 +23,10 @@ def _dataset_view(ds: Dataset) -> dict:
         "grain": ds.grain,
         "domain": ds.domain,
         "dimensions": [
-            d.model_dump(exclude={"column"}) | {"selectable": d.column not in pii}
+            d.model_dump(include=_DIMENSION_FIELDS) | {"selectable": not ds.is_pii(d.column)}
             for d in ds.dimensions
         ],
-        "measures": [m.model_dump(exclude={"expr"}) for m in ds.measures],
+        "measures": [m.model_dump(include=_MEASURE_FIELDS) for m in ds.measures],
         "filters": [{"name": f.name, "description": f.description} for f in ds.filters],
     }
 
@@ -27,6 +36,7 @@ def public_catalog(catalog: Catalog) -> dict:
     return {
         "datasets": [_dataset_view(d) for d in public.values()],
         "metrics": [
-            m.model_dump(mode="json") for m in catalog.metrics.values() if m.dataset_id in public
+            m.model_dump(mode="json", include=_METRIC_FIELDS)
+            for m in catalog.metrics.values() if m.dataset_id in public
         ],
     }
