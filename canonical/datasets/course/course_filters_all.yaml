@@ -1,0 +1,101 @@
+id: dataset.course_filters_all.v1
+display_name: All courses by hierarchy level
+description: >
+  Every top-level course, including courses that have not started and courses with no
+  enrollments, with hierarchy levels 1-4 and the roles enrolled (preview and bbsupport test
+  users excluded). start_date and end_date are the Monday one week before the course or term
+  start/end week, as in bbd-analytics. Deviation: bbd-analytics drops courses with no
+  enrollments despite its "all courses" intent; they are kept here with a null course_role.
+grain: one row per course x institutional hierarchy node x course role
+domain: course
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_FILTERS_ALL_COURSES.sql
+base_sql: |
+  WITH real_enrollments AS (
+      SELECT pc.COURSE_ID, pc.COURSE_ROLE
+      FROM {{ database }}.CDM_LMS.PERSON_COURSE pc
+      JOIN {{ database }}.CDM_LMS.PERSON pe ON pc.PERSON_ID = pe.ID
+      WHERE pc.COURSE_ROLE IS NOT NULL
+        AND pe.LAST_NAME NOT LIKE '%PreviewUser'
+        AND pe.LAST_NAME NOT LIKE 'bbsupport%'
+  ),
+  course_start_end AS (
+      SELECT co.ID AS COURSE_ID, co.NAME AS COURSE_NAME, co.COURSE_NUMBER,
+             CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), co.CREATED_TIME)::DATE AS COURSE_CREATION_DATE,
+             te.NAME AS TERM_NAME,
+             CASE WHEN co.START_DATE IS NOT NULL THEN DATEADD(day, -7, DATE_TRUNC('week', co.START_DATE))
+                  WHEN te.START_DATE IS NOT NULL THEN DATEADD(day, -7, DATE_TRUNC('week', te.START_DATE))
+             END AS START_DATE,
+             IFF(COALESCE(co.END_DATE, te.END_DATE) IS NOT NULL, 'Fixed', 'Continuous') AS COURSE_DURATION,
+             IFF(COALESCE(co.END_DATE, te.END_DATE) <= CURRENT_DATE(), 1, 0) AS COURSE_ENDED
+      FROM {{ database }}.CDM_LMS.COURSE co
+      LEFT JOIN {{ database }}.CDM_LMS.TERM te ON te.ID = co.TERM_ID
+      LEFT JOIN {{ database }}.CDM_LMS.INSTANCE i ON i.ID = co.INSTANCE_ID
+      WHERE co.COURSE_PARENT_ID IS NULL
+  ),
+  course_institution_hierarchy AS (
+      SELECT c.ID AS COURSE_ID, NVL(ih.HIERARCHY_ID_SEQ, '||0||') AS HIERARCHY_ID_SEQ
+      FROM {{ database }}.CDM_LMS.COURSE c
+      LEFT JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc
+        ON c.ID = ihc.COURSE_ID
+       AND NOT (ihc.ROW_DELETED_TIME IS NOT NULL AND c.ROW_DELETED_TIME IS NULL)
+      LEFT JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+  ),
+  institution_hierarchy_nodes AS (
+      SELECT DISTINCT TRY_TO_NUMBER(node.VALUE) AS ID, cih.COURSE_ID
+      FROM course_institution_hierarchy cih, LATERAL SPLIT_TO_TABLE(cih.HIERARCHY_ID_SEQ, '||') node
+  ),
+  institution_hierarchy_all AS (
+      SELECT ihn.COURSE_ID,
+             COALESCE(IFF(ihn.ID = 0, '-', ih.HIERARCHY_NAME_SEQ), 'All Nodes') AS IH_NODE_NAME,
+             NVL(IFF(ihn.ID = 0, '||0||', ih.HIERARCHY_ID_SEQ), '||-1||') AS IH_PATH,
+             IFF(LEN(SPLIT_PART(IH_NODE_NAME, '||', 1)) > 0, SPLIT_PART(IH_NODE_NAME, '||', 1), SPLIT_PART(IH_NODE_NAME, '||', 2)) AS IH_LVL1,
+             NULLIF(SPLIT_PART(IH_NODE_NAME, '||', 3), '') AS IH_LVL2,
+             NULLIF(SPLIT_PART(IH_NODE_NAME, '||', 4), '') AS IH_LVL3,
+             TRIM(IFF(LEN(SPLIT_PART(IH_NODE_NAME, '||', 5)) > 0,
+                      RIGHT(IH_NODE_NAME, LEN(IH_NODE_NAME) - 6 - LEN(SPLIT_PART(IH_NODE_NAME, '||', 2))
+                            - LEN(SPLIT_PART(IH_NODE_NAME, '||', 3)) - LEN(SPLIT_PART(IH_NODE_NAME, '||', 4))),
+                      '-'), '||') AS IH_LVL4
+      FROM institution_hierarchy_nodes ihn
+      LEFT JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihn.ID
+  )
+  SELECT DISTINCT
+      co.COURSE_ID,
+      co.COURSE_NAME,
+      co.COURSE_NUMBER,
+      ih.IH_PATH,
+      ih.IH_NODE_NAME,
+      ih.IH_LVL1,
+      COALESCE(ih.IH_LVL2, '-') AS IH_LVL2,
+      COALESCE(ih.IH_LVL3, '-') AS IH_LVL3,
+      COALESCE(ih.IH_LVL4, '-') AS IH_LVL4,
+      IFF(YEAR(co.COURSE_CREATION_DATE) < 1970, TO_DATE('1970-01-01'), co.COURSE_CREATION_DATE) AS COURSE_CREATION_DATE,
+      NVL(co.TERM_NAME, '-') AS TERM_NAME,
+      co.COURSE_ENDED,
+      IFF(YEAR(co.START_DATE) < 1970, TO_DATE('1970-01-01'), co.START_DATE) AS START_DATE,
+      co.COURSE_DURATION,
+      re.COURSE_ROLE
+  FROM course_start_end co
+  LEFT JOIN real_enrollments re ON re.COURSE_ID = co.COURSE_ID
+  LEFT JOIN institution_hierarchy_all ih ON ih.COURSE_ID = co.COURSE_ID
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: course_name, column: COURSE_NAME, type: categorical, synonyms: [course, class]}
+  - {name: course_number, column: COURSE_NUMBER, type: categorical, synonyms: [course code]}
+  - {name: ih_node_name, column: IH_NODE_NAME, type: categorical}
+  - {name: ih_level_1, column: IH_LVL1, type: categorical, synonyms: [institution, campus]}
+  - {name: ih_level_2, column: IH_LVL2, type: categorical, synonyms: [college, school]}
+  - {name: ih_level_3, column: IH_LVL3, type: categorical, synonyms: [department]}
+  - {name: ih_level_4, column: IH_LVL4, type: categorical}
+  - {name: term_name, column: TERM_NAME, type: categorical, synonyms: [term, semester]}
+  - {name: course_role, column: COURSE_ROLE, type: categorical, description: "Null for a course with no enrollments", synonyms: [role]}
+  - {name: course_duration, column: COURSE_DURATION, type: categorical}
+  - {name: course_ended, column: COURSE_ENDED, type: numeric, description: "1 when the course or term end date has passed, else 0"}
+  - {name: course_creation_date, column: COURSE_CREATION_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: start_date, column: START_DATE, type: time, grains: [day, week, month, quarter, year], description: "Monday one week before the course start week"}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: courses_without_enrollments, agg: count_distinct, expr: "IFF(COURSE_ROLE IS NULL, COURSE_ID, NULL)", unit: courses}
+  - {name: courses_not_started, agg: count_distinct, expr: "IFF(START_DATE > CURRENT_DATE(), COURSE_ID, NULL)", unit: courses}
+filters:
+  - {name: ongoing, sql: "COURSE_ENDED = 0"}
