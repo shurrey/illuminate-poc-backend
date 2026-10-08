@@ -45,7 +45,14 @@ Found while planning: the backend has no `/api/v1/config/snowflake` route, so 3f
 | 3g | PII scrubber: stop redacting every 9- or 10-digit number; key redaction to PII patterns | A count of 123456789 survives; an SSN is still redacted |
 | 3h (F) | Hide admin routes and the Settings Snowflake editor for non-admins (reads the `cognito:groups` claim) | Non-admins can't see them in the browser |
 
-## Phase 4: Core datasets (B)
+## Phase 4: Core datasets (B), detailed plan: `2026-10-08-semantic-layer-phase-4-core-datasets.md`
+
+Decisions from planning:
+- Dashboard metrics are re-expressed as the measure they count; the period-over-period comparison arrives with the metric `comparison` field in 6c.
+- Instructor grading engagement waits for datasets 22–23 in Phase 7.
+- Rolling-window retention can't be expressed as a single measure and has no bbd-analytics product; decide in 6c whether it gets a dedicated dataset or the card is dropped.
+- Legacy `course_completion_rate` reads `PERSON_COURSE.STATUS`, which the CDM doesn't have, so it is not re-expressed.
+- The dictionary-snapshot supplement now exists (`tests/fixtures/cdm_dictionary_supplement.json`).
 
 | Unit | Scope | Done when |
 |---|---|---|

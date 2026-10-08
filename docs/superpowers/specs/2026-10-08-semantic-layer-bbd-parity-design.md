@@ -265,6 +265,9 @@ in the same PR.
 | `PLATFORM_LMS_SESSION_ACTIVITY`, `PLATFORM_CLB_SESSION_BY_DAY…`, `STUDENT_COURSE_MINUTES_PER_CONTENT_ITEMS` | Joins on `login_source_id`, `session_id` or `course_id` without `tenant_id` | Same reasoning as above; joins use the complete natural key available in the POC CDM |
 | `PLATFORM_CLB_STORAGE_CUMULATIVE_SUM` | Output has no tenant key | Same reasoning as above |
 | `MAP_ITEM_TOOL` | Hard-coded copy of flags that `CDM_META.BBD_CALCULATION_DETAIL` also holds; the two can disagree | Dataset 24 derives the flags from `BBD_CALCULATION_DETAIL`; the hard-coded list is not ported |
+| `TFV_FILTERS_ALL_COURSES` | INNER JOIN to person after LEFT JOIN to person_course drops courses with no enrollments, contradicting the view's include-all-courses intent | Dataset 3 filters test users inside the enrollment join; courses with no enrollments are kept with a null course_role |
+| `TFV_COURSE_FILTER` | Design mode is looked up by joining canon_definition.canon_code to the course's source code (design_mode_source_code) instead of its canonical code; identical in current data, wrong in general | Dataset 4 joins on COURSE.DESIGN_MODE |
+| `TFV_FILTERS`, `TFV_FILTERS_IH` (as views) | `start_week`/`end_week` are TIMESTAMP_TZ in the view; the materialized tables store DATE, which downstream week arithmetic (`end_week + 7`) relies on | Datasets 1 and 2 cast both columns to DATE |
 
 The existing 18 metrics are re-expressed over these datasets, with their broken column references
 fixed. Each is re-added as soon as the dataset it needs exists. The `metric.dashboard.*` IDs are
