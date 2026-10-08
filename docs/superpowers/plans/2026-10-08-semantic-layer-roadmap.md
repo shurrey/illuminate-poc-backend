@@ -45,7 +45,7 @@ Found while planning: the backend has no `/api/v1/config/snowflake` route, so 3f
 | 3g | PII scrubber: stop redacting every 9- or 10-digit number; key redaction to PII patterns | A count of 123456789 survives; an SSN is still redacted |
 | 3h (F) | Hide admin routes and the Settings Snowflake editor for non-admins (reads the `cognito:groups` claim) | Non-admins can't see them in the browser |
 
-## Phase 4: Core datasets (B), detailed plan: `2026-10-08-semantic-layer-phase-4-core-datasets.md`
+## Phase 4: Core datasets (B), complete (#30–#39)
 
 Decisions from planning:
 - Dashboard metrics are re-expressed as the measure they count; the period-over-period comparison arrives with the metric `comparison` field in 6c.
@@ -60,7 +60,9 @@ Decisions from planning:
 | 4b–4h | One dataset per PR, ported from bbd-analytics with its source file cited: `course_filters_ih`, `course_filters_all`, `course_catalog`, `active_students`, `course_role_activity`, `course_student_activity`, `student_grade` | Parametrised definition tests pass; live smoke run recorded; spec §4.1 updated if a source defect is found |
 | 4i | Metrics PR: re-express the six dashboard metrics and the legacy enrollment and grade metrics over these datasets (new `metric.<name>.v1` ids) | Each metric compiles and runs live |
 
-## Phase 5: Chat grounded in the layer (B)
+## Phase 5: Chat grounded in the layer (B), detailed plan: `2026-10-08-semantic-layer-phase-5-chat.md`
+
+Units as built: 5a search, 5b query_semantic tool, 5d fallback tools, 5c+5e engine wiring with artifacts (one PR, since removing the markers and adding tool artifacts must land together), 5f history and server-side conversation ids, 5g error hygiene. `/api/chat/cancel` stays per instance; the frontend aborts its own fetch, so a cross-instance cancel returning 404 is harmless.
 
 | Unit | Scope | Done when |
 |---|---|---|
@@ -139,3 +141,9 @@ Before the first dataset that reads `CDM_META` or `CDM_TLM` columns missing from
 | Phase 3 review | `/docs`, `/redoc` and `/openapi.json` are public; disable them outside dev | 9b |
 | Phase 3 review | `_validate_token` accepts both ID and access tokens; check `token_use` | 9b |
 | Phase 3 review | Developer page shows an error for non-admins' table preview; hide the button instead | 6h |
+| Phase 4 review | `active_students` and the activity datasets describe the window as ending a week after the end week; it ends with the end week (`END_WEEK + 7` is the next Monday at 00:00); week boundaries use the tenant timezone but access times are compared raw | 7 (activity datasets) |
+| Phase 4 review | `course_catalog`/`courses` count deleted courses; say so or filter them in the course metrics | 6c |
+| Phase 4 review | `course_filters_ih` description: no-node courses appear as both '-' and 'All Nodes'; multiple SIS sections repeat rows | 7 |
+| Phase 4 review | A base dimension silently beats a joined one with the same name; two qualified refs with the same name collide; a grain suffix on `time_range.dimension` is ignored | 6c |
+| Phase 4 review | Multi-dataset joins on time dimensions of different types (DATE vs TIMESTAMP_TZ) rely on implicit casts | 6c |
+| Phase 4 review | Synonym collisions ("course count" on both `reportable_courses` and `courses`) | 5a follow-up in 6d |
