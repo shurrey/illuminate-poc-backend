@@ -863,9 +863,8 @@ def _semantic_database() -> str:
     return _database
 
 
-@app.post("/api/v1/semantic/compile")
-async def semantic_compile(contract: QueryContract, authorization: str = Header(...)) -> dict:
-    """Compile a semantic query contract to SQL without executing it."""
+def _compile_contract(contract: QueryContract, authorization: str):
+    """Authenticate, then compile; raises the HTTP error the caller should return."""
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
@@ -874,10 +873,31 @@ async def semantic_compile(contract: QueryContract, authorization: str = Header(
     from semantic_layer.compiler import CompileError, compile_query
 
     try:
-        compiled = compile_query(contract, default_catalog(), _semantic_database())
+        return compile_query(contract, default_catalog(), _semantic_database())
     except CompileError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return compiled.model_dump()
+
+
+@app.post("/api/v1/semantic/compile")
+async def semantic_compile(contract: QueryContract, authorization: str = Header(...)) -> dict:
+    """Compile a semantic query contract to SQL without executing it."""
+    return _compile_contract(contract, authorization).model_dump()
+
+
+@app.post("/api/v1/semantic/query")
+async def semantic_query(contract: QueryContract, authorization: str = Header(...)) -> dict:
+    """Compile a semantic query contract and run it through the execution guard."""
+    compiled = _compile_contract(contract, authorization)
+
+    import asyncio
+    from snowflake_client import validate_and_execute
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, lambda: validate_and_execute(compiled.sql))
+    if "error" in result:
+        logger.error("Semantic query failed: %s", result["error"])
+        raise HTTPException(status_code=502, detail={"error": result["error"], "sql": compiled.sql})
+    return {**result, **compiled.model_dump()}
 
 
 # =============================================================================
