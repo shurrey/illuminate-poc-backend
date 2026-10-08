@@ -884,6 +884,29 @@ async def semantic_compile(contract: QueryContract, authorization: str = Header(
     return _compile_contract(contract, authorization).model_dump()
 
 
+@app.get("/api/v1/semantic/catalog")
+async def semantic_catalog(
+    authorization: str = Header(...),
+    if_none_match: Optional[str] = Header(default=None),
+):
+    """Public datasets, dimensions, measures and metrics; supports If-None-Match."""
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    import hashlib
+    from fastapi import Response
+    from fastapi.responses import JSONResponse
+    from semantic_layer.catalog import default_catalog
+    from semantic_layer.catalog_view import public_catalog
+
+    body = public_catalog(default_catalog())
+    etag = '"' + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:32] + '"'
+    if if_none_match == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    return JSONResponse(body, headers={"ETag": etag})
+
+
 @app.post("/api/v1/semantic/query")
 async def semantic_query(contract: QueryContract, authorization: str = Header(...)) -> dict:
     """Compile a semantic query contract and run it through the execution guard."""
