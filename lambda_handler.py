@@ -340,7 +340,8 @@ app.add_middleware(
     allow_origins=origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "If-None-Match"],
+    expose_headers=["ETag"],
 )
 
 # Track cancelled request IDs
@@ -813,9 +814,10 @@ async def semantic_catalog(
 
     body = public_catalog(default_catalog())
     etag = '"' + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:32] + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
     if if_none_match == etag:
-        return Response(status_code=304, headers={"ETag": etag})
-    return JSONResponse(body, headers={"ETag": etag})
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(body, headers=headers)
 
 
 @app.post("/api/v1/semantic/query")

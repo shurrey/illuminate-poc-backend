@@ -39,3 +39,22 @@ def test_etag_changes_when_the_catalog_changes(client, monkeypatch):
     monkeypatch.setattr(catalog_module, "default_catalog", lambda: catalog())
     after = client.get("/api/v1/semantic/catalog", headers=AUTH).headers["etag"]
     assert before != after
+
+
+ORIGIN = {"Origin": "http://localhost:3000"}
+
+
+def test_browsers_can_send_if_none_match_and_read_the_etag(client):
+    pre = client.options("/api/v1/semantic/catalog", headers=ORIGIN | {
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization,if-none-match",
+    })
+    assert pre.status_code == 200
+    assert "if-none-match" in pre.headers["access-control-allow-headers"].lower()
+    r = client.get("/api/v1/semantic/catalog", headers=AUTH | ORIGIN)
+    assert "etag" in r.headers["access-control-expose-headers"].lower()
+
+
+def test_catalog_responses_must_be_revalidated(client):
+    r = client.get("/api/v1/semantic/catalog", headers=AUTH)
+    assert r.headers["cache-control"] == "private, no-cache"
