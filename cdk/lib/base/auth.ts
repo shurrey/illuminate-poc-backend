@@ -60,6 +60,9 @@ export class Auth extends Construct {
         userPassword: true,
         userSrp: true,
       },
+      // Without an explicit list every attribute is user-writable, which would let a user
+      // re-tenant themselves via UpdateUserAttributes. custom:tenant_id is admin-only.
+      writeAttributes: new cognito.ClientAttributes().withStandardAttributes({ fullname: true }),
     });
 
     // Create initial admin user on first deploy (idempotent — ignores if user exists)
