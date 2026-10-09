@@ -199,11 +199,12 @@ def _resolve(base: Dataset, ref: str, catalog: Catalog, joins: dict) -> tuple[Da
     return target, dim, grain
 
 
-def _semi_join(base: Dataset, ref: str, catalog: Catalog) -> Optional[tuple[Dataset, DatasetDimension, str, str]]:
-    """For a filter only: a qualified dataset sharing an entity with base -> (dataset, dim, base col, its col).
+def _semi_join(base: Dataset, ref: str, catalog: Catalog) -> Optional[tuple[Dataset, DatasetDimension, list[tuple[str, str]]]]:
+    """For a filter only: a qualified dataset sharing entities with base -> (dataset, dim, [(base col, its col)]).
 
-    Filtering as `<base col> IN (SELECT <its col> ...)` cannot multiply base rows. The entity primary in
-    the target is preferred, so an enrollment filter narrows enrollments rather than whole courses.
+    Filtering as `(<base cols>) IN (SELECT <its cols> ...)` cannot multiply base rows. The target's primary
+    entity alone is used when base has it; otherwise every shared entity, so an enrollment filter narrows
+    to that course and person rather than to whole courses.
     """
     ds_id, name, _ = _split_ref(ref)
     target = catalog.datasets.get(ds_id) if ds_id else None
@@ -213,8 +214,8 @@ def _semi_join(base: Dataset, ref: str, catalog: Catalog) -> Optional[tuple[Data
     shared = [(mine, theirs) for theirs in target.entities for mine in base.entities if mine.name == theirs.name]
     if not shared:
         return None
-    mine, theirs = next(((m, t) for m, t in shared if t.type == "primary"), shared[0])
-    return target, dim, mine.column, theirs.column
+    primary = [(m, t) for m, t in shared if t.type == "primary"]
+    return target, dim, [(m.column, t.column) for m, t in (primary or shared)]
 
 
 def _qualified(node: exp.Expression, table: Optional[str]) -> exp.Expression:
@@ -378,12 +379,14 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
         if dim.type == "time":
             col = exp.Cast(this=col, to=exp.DataType.build("DATE"))
         where.append(_condition(col, f))
-    for f, target, dim, mine, theirs in semi:
+    for f, target, dim, keys in semi:
         col = exp.column(dim.column)
         if dim.type == "time":
             col = exp.Cast(this=col, to=exp.DataType.build("DATE"))
-        subquery = exp.select(exp.column(theirs)).from_(cte_name(target.id)).where(_condition(col, f))
-        where.append(exp.In(this=exp.column(mine, table=alias[base.id]), query=exp.Subquery(this=subquery)))
+        subquery = exp.select(*[exp.column(theirs) for _, theirs in keys]).from_(cte_name(target.id)).where(_condition(col, f))
+        mine = [exp.column(m, table=alias[base.id]) for m, _ in keys]
+        lhs = mine[0] if len(mine) == 1 else exp.Tuple(expressions=mine)
+        where.append(exp.In(this=lhs, query=exp.Subquery(this=subquery)))
     if time_range:
         day = exp.Cast(this=column(*time_range[:1], time_range[1].column), to=exp.DataType.build("DATE"))
         if contract.time_range.start:
@@ -401,7 +404,7 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
         query = query.where(exp.and_(*where))
     if contract.dimensions:
         query = query.group_by(*[exp.Literal.number(i + 1) for i in range(len(contract.dimensions))])
-    return query, [base.id] + joined + [t.id for _, t, _, _, _ in semi if t.id not in joined]
+    return query, [base.id] + joined + [t.id for _, t, _, _ in semi if t.id not in joined]
 
 
 def _combine(groups: list[str], contract: QueryContract, measure_names: list[list[str]]) -> exp.Select:
