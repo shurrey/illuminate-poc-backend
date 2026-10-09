@@ -101,3 +101,11 @@ def test_deleting_a_filter_that_a_metric_overlay_uses_is_refused(client):
 
 def test_a_malformed_target_is_a_400(client):
     assert client.get("/api/v1/admin/overlay/widget:x", headers=AUTH).status_code == 400
+
+
+def test_get_returns_the_canonical_definition_beside_the_overlay(client):
+    body = client.get(URL, headers=AUTH).json()
+    assert body["canonical"] == {"expr": "GRADE_PERCENTAGE"}
+    assert client.get("/api/v1/admin/overlay/filter:dataset.student_grade.v1:honours", headers=AUTH).json()["canonical"] is None
+    metric = client.get("/api/v1/admin/overlay/metric:metric.courses.v1", headers=AUTH).json()
+    assert metric["canonical"] == {"default_filters": ["top_level", "live"]}

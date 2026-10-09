@@ -1039,6 +1039,23 @@ def _checked_target(target: str) -> str:
     return target
 
 
+def _canonical_value(target: str) -> Optional[dict]:
+    """The canonical field an overlay on target replaces; None when the target has no canonical definition."""
+    from semantic_layer.catalog import default_catalog
+    from semantic_layer.overlays import parse_target
+
+    catalog = default_catalog()
+    kind, owner, name = parse_target(target)
+    if kind == "metric":
+        metric = catalog.metrics.get(owner)
+        return {"default_filters": list(metric.default_filters)} if metric else None
+    ds = catalog.datasets.get(owner)
+    found = ds and (ds.measure(name) if kind == "measure" else ds.filter(name))
+    if not found:
+        return None
+    return {"expr": found.expr} if kind == "measure" else {"sql": found.sql}
+
+
 def _overlay_errors(tenant_id: str, target: str, candidate) -> list[str]:
     """Problems with the tenant's overlays once target is replaced by candidate (None: removed)."""
     import overlay_store
@@ -1085,7 +1102,8 @@ async def admin_get_overlay(target: str, authorization: Optional[str] = Header(N
 
     _, tenant_id = _admin_tenant(authorization)
     overlay = overlay_store.get_overlay(tenant_id, _checked_target(target))
-    return {"tenant_id": tenant_id, "target": target, "overlay": overlay.model_dump() if overlay else None}
+    return {"tenant_id": tenant_id, "target": target, "overlay": overlay.model_dump() if overlay else None,
+            "canonical": _canonical_value(target)}
 
 
 @app.put("/api/v1/admin/overlay/{target}")
