@@ -56,6 +56,10 @@ export class LambdaProxy extends Construct {
       actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:DeleteItem'],
       resources: [props.conversationTableArn],
     }));
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:Query'],
+      resources: [`${props.conversationTableArn}/index/owner-updated`],
+    }));
 
     // DynamoDB per-tenant overlays (read for query path, read+write for admin)
     role.addToPolicy(new iam.PolicyStatement({

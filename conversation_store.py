@@ -19,6 +19,9 @@ logger = logging.getLogger("API-PROXY")
 _TABLE_NAME = os.environ.get("CONVERSATION_TABLE", "illuminate-conversations-dev")
 _TTL_SECONDS = int(os.environ.get("CONVERSATION_TTL", str(30 * 24 * 3600)))  # 30 days
 _MAX_MESSAGES = int(os.environ.get("CONVERSATION_MAX_MESSAGES", "50"))
+# GSI (owner_sub HASH, updated_at RANGE) projecting title; defined in cdk/lib/api/conversation-table.ts.
+OWNER_INDEX = "owner-updated"
+_TITLE_LENGTH = 80
 
 _table = None
 
@@ -85,6 +88,8 @@ def save_turn(context_id: str, owner: str, user_message: str, assistant_message:
     if not context_id:
         return
     try:
+        existing = _item(context_id)
+        title = (existing or {}).get("title") if (existing or {}).get("owner_sub") == owner else None
         history = load_history(context_id, owner)
         history.append({"role": "user", "content": user_message})
         assistant = {"role": "assistant", "content": assistant_message}
@@ -98,6 +103,7 @@ def save_turn(context_id: str, owner: str, user_message: str, assistant_message:
                 "context_id": context_id,
                 "owner_sub": owner,
                 "messages": json.dumps(history),
+                "title": title or user_message[:_TITLE_LENGTH],
                 "updated_at": int(time.time()),
                 "ttl": int(time.time()) + _TTL_SECONDS,
             },
@@ -110,6 +116,15 @@ def save_turn(context_id: str, owner: str, user_message: str, assistant_message:
             logger.warning(f"Failed to save conversation history: {e}")
     except Exception as e:
         logger.warning(f"Failed to save conversation history: {e}")
+
+
+def list_conversations(owner: str, limit: int = 30) -> list[dict]:
+    """The owner's conversations, most recently updated first: context_id, title, updated_at."""
+    items = _get_table().query(
+        IndexName=OWNER_INDEX, KeyConditionExpression=Key("owner_sub").eq(owner),
+        ScanIndexForward=False, Limit=limit,
+    ).get("Items", [])
+    return [{"context_id": i["context_id"], "title": i.get("title", ""), "updated_at": int(i["updated_at"])} for i in items]
 
 
 def clear_history(context_id: str, owner: str) -> bool:
