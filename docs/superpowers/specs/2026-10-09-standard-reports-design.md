@@ -45,7 +45,8 @@ Out of scope:
 | Identity (PII) | **Viewers** see counts only: PII may be filtered and counted, never selected. **Admins, Authors and Developers** see everything, including roster tables. Details are in §6. |
 | Fidelity | Same content in our style: the same pages, visuals, filters and data points, drawn with the POC's components. We don't copy QuickSight's grid. |
 | Date defaults | The current term, where a report has a Term filter. Otherwise the last 30 days. Users can change either. |
-| Help-text panels | Kept, as text visuals carrying the QuickSight English copy, with the dataset-specific wording corrected where our definitions differ. |
+| Help-text panels | Kept, as text visuals carrying the QuickSight English copy, with the wording corrected where our definitions differ. |
+| What users see | Reports, and nothing about how they were built. No product surface refers to QuickSight, bbd-analytics, this gap analysis, or C/P numbers: not report text, not visual titles, not measure and metric descriptions (they appear in Info panels and the chat catalog), not errors. Descriptions say what a number is. Comparisons with the shipped reports stay in PR descriptions and these docs. |
 
 ## 3. Architecture
 
@@ -167,8 +168,9 @@ These are the pieces the reports need, ranked and sized in the companion as P1�
 - Instructor-scoped measures (P10).
 - The per-dataset measures and dimensions listed in the companion's §2, "Remaining definitions".
 
-Each new measure that matches a QuickSight data point uses our corrected maths and documents the difference in its
-description. Examples:
+Each new measure that matches a QuickSight data point uses our corrected maths. Its description says what it
+measures, in user terms, and never how it differs from another product (§2, "What users see"); differences are
+recorded only in the companion. Examples:
 - `students_active_last_7_days` keeps its definition, and gains a sibling `share_recently_active_5min` for the
   QuickSight data point.
 - "Instructor" data points use `teaching_staff` (all non-student roles) as a named role group beside `instructor`.
@@ -234,8 +236,9 @@ removed in the first report PR.
   - Unit tests for the transforms, the first frontend unit tests. This adds Vitest to the POC.
   - Type checks for definitions, which come from the endpoint.
   - A manual check of each report on the test deployment.
-- **Parity check.** For each report, a short note in its PR comparing a few headline numbers against the QuickSight
-  report on the same tenant where possible. Each note also explains any difference by C-number.
+- **Parity check (reviewers only).** Each report's PR description compares a few headline numbers with the shipped
+  report on the same tenant, where possible, and explains any difference by its C number. This is a pre-merge check
+  for the reviewer. Nothing in it reaches the product.
 
 ## 9. Risks
 
