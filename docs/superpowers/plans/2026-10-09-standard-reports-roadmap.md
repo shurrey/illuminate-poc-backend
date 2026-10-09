@@ -21,7 +21,26 @@ plan when it starts, written against the code the earlier phases actually produc
 | 1.8 | B | P2: course-grain dimensions on `courses.v1` |
 | 1.9 | B | P9: grading and platform definitions |
 
+Phase 1 is complete: B #109–#117, F #28–#33. After the whole-phase review, fixes landed for:
+- report results outliving sign-out;
+- semi-join scope;
+- filter reachability, value types and validation;
+- cleared filters reverting to their defaults.
+
+Deferred minors from that review:
+- `/run` ignores `truncated` in the UI, and the default limit (100) can cut long daily lines;
+- `_current_terms` caps at 1,000 terms with no order;
+- `course_weeks` can be negative;
+- filter options fail silently on datasets needing a time range, and on identity dimensions for Viewers;
+- `top_n_other` mishandles a bad `n`;
+- Info omits ignored filters and repeats titles on multi-query visuals;
+- a test that PII dimension names stay unique;
+- the pool can briefly exceed its limit.
+
 ## Phase 2: Quick reports
+
+The first unit is **comparison periods**. A visual query declares `period: comparison` (the previous period of
+equal length), and the date-range filter shifts it accordingly. Without it, period-over-period KPIs show 0%.
 
 Each report is one PR in B (its definition) and is verified live in F. Datasets and definitions it needs land first,
 in their own PRs.
