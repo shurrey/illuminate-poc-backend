@@ -113,7 +113,7 @@ dimensions:
 measures:
   - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students}
   - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
-  - {name: minutes_in_course, agg: sum, expr: TOTAL_MIN_IN_COURSE, unit: minutes, synonyms: [time in course]}
+  - {name: minutes_in_course, agg: sum, expr: TOTAL_MIN_IN_COURSE, unit: minutes}
   - {name: avg_minutes_per_enrollment, agg: avg, expr: TOTAL_MIN_IN_COURSE, unit: minutes}
   - {name: interactions, agg: sum, expr: INTERACTION_COUNT, unit: interactions}
   - {name: submissions, agg: sum, expr: SUBMISSION_COUNT, unit: submissions}

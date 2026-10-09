@@ -4,8 +4,8 @@ description: >
   Per enrollment, course role and item or tool type used inside the course window: interactions,
   minutes, distinct items or tools accessed, and the course's total, new-or-updated and available
   items or tools of that type. Students come from active_students; other roles are every non-student
-  enrollment. Only types students used in the course are kept. Deviation: bbd-analytics groups by the
-  person's STAGE student_id, so everyone without one in a course and role collapses into a single
+  enrollment except preview and support users. Only types students used in the course are kept.
+  Deviation: bbd-analytics groups by the person's STAGE student_id, so everyone without one in a course and role collapses into a single
   row; here rows are per enrollment.
 grain: one row per enrollment x item-or-tool x type used in the course window
 domain: tools
@@ -22,7 +22,9 @@ base_sql: |
       SELECT p.ID, p.PERSON_ID, p.COURSE_ID, p.COURSE_ROLE, w.START_WEEK, w.END_WEEK
       FROM {{ database }}.CDM_LMS.PERSON_COURSE p
       JOIN course_windows w ON w.COURSE_ID = p.COURSE_ID
+      JOIN {{ database }}.CDM_LMS.PERSON pe ON pe.ID = p.PERSON_ID
       WHERE p.COURSE_ROLE <> 'S'
+        AND pe.LAST_NAME NOT LIKE '%PreviewUser' AND pe.LAST_NAME NOT LIKE 'bbsupport%'
   ),
   item_and_tool_use AS (
       SELECT pe.COURSE_ID, pe.PERSON_COURSE_ID, pe.PERSON_ID, pe.COURSE_ROLE, 'ITEM' AS ITEM_OR_TOOL,

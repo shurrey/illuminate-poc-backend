@@ -1,6 +1,6 @@
 id: dataset.safeassign_originality_reports_basic.v1
 display_name: SafeAssign basic originality reports
-description: One row per a basic SafeAssign originality report returned, with its date and time.
+description: One row per basic SafeAssign originality report returned, with its date and time. Tenants that do not emit this event type have no rows.
 grain: one row per returned report
 domain: safeassign
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_SAFEASSIGN_ORIGINALITY_REPORT_BASIC.sql
@@ -12,4 +12,4 @@ dimensions:
   - {name: event_date, column: EVENT_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: event_time, column: EVENT_TIME, type: time, grains: [hour, day]}
 measures:
-  - {name: reports, agg: count, expr: "*", unit: reports, synonyms: [plagiarism checks, originality checks]}
+  - {name: reports, agg: count, expr: "*", unit: reports, synonyms: [basic originality reports]}

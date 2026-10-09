@@ -4,7 +4,7 @@ description: >
   Per enrollment, course and item type that takes submissions in the CDM: the course's items of the
   type, how many the person accessed, interacted with and submitted to, their access rows and
   submissions, and the last access and submission. Every enrollment in the course appears, including
-  ones with no activity. Deviation: bbd-analytics has no course role, so students and instructors
+  ones with no activity, except preview and support users. Deviation: bbd-analytics has no course role, so students and instructors
   can't be told apart; here course_role is included.
 grain: one row per enrollment x item type with submissions in the course
 domain: tools
@@ -59,6 +59,8 @@ base_sql: |
   JOIN {{ ref('dataset.item_tool_map.v1') }} m
     ON m.ITEM_TYPE = IFF(ct.ITEM_TYPE IN ('SCORM_ENGINE', 'CONTENT_PACKAGE_SCORM', 'SCORM'), 'SCORM PACKAGE', ct.ITEM_TYPE)
   JOIN {{ database }}.CDM_LMS.PERSON_COURSE p ON p.COURSE_ID = ct.COURSE_ID
+  JOIN {{ database }}.CDM_LMS.PERSON pe
+    ON pe.ID = p.PERSON_ID AND pe.LAST_NAME NOT LIKE '%PreviewUser' AND pe.LAST_NAME NOT LIKE 'bbsupport%'
   LEFT JOIN used u ON u.PERSON_COURSE_ID = p.ID AND u.ITEM_TYPE = ct.ITEM_TYPE
   LEFT JOIN accesses a ON a.PERSON_COURSE_ID = p.ID AND a.ITEM_TYPE = ct.ITEM_TYPE
   LEFT JOIN submissions s ON s.PERSON_COURSE_ID = p.ID AND s.ITEM_TYPE = ct.ITEM_TYPE

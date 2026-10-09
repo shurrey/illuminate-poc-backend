@@ -40,6 +40,6 @@ measures:
   - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
   - {name: grades, agg: sum, expr: GRADES, unit: grades}
   - {name: total_hours, agg: sum, expr: TOTAL_HOURS, unit: hours}
-  - {name: avg_hours_to_grade, agg: ratio, numerator: total_hours, denominator: grades, unit: hours, synonyms: [grading turnaround]}
+  - {name: avg_hours_to_grade, agg: ratio, numerator: total_hours, denominator: grades, unit: hours, synonyms: [hours from attempt to grade]}
   - {name: min_hours_to_grade, agg: min, expr: MIN_HOURS, unit: hours}
   - {name: max_hours_to_grade, agg: max, expr: MAX_HOURS, unit: hours}
