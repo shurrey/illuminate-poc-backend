@@ -5,7 +5,8 @@ description: >
   gradebook items with a due date: items available, interacted with and submitted; submissions on
   time, late, overdue and upcoming; time and interactions on those items; and the last access and
   submission. Deviation: bbd-analytics reports 1970-01-01 as the last access when the student never
-  opened an item; here it is NULL. Standalone grade center columns take no submissions, so past their
+  opened an item, and counts deleted grade rows as submissions; here the last access is NULL and only
+  live grades count. Standalone grade center columns take no submissions, so past their
   due date they always count as overdue (as in bbd-analytics); the submittable filter leaves them out.
 grain: one row per active student enrollment x item type x counts-towards-grade flag
 domain: grades
@@ -37,6 +38,7 @@ base_sql: |
         ON gr.GRADEBOOK_ID = gb.ID
        AND gr.PERSON_COURSE_ID = s.PERSON_COURSE_ID
        AND (gr.ATTEMPTED_TIME > '1970-01-01'::DATE OR gr.ATTEMPTED_TIME IS NULL)
+       AND gr.ROW_DELETED_TIME IS NULL
       WHERE gb.DUE_TIME IS NOT NULL AND gb.COURSE_ITEM_ID IS NOT NULL
       GROUP BY gb.COURSE_ITEM_ID, s.PERSON_COURSE_ID, gb.USED_IN_CALCULATIONS_IND
   )

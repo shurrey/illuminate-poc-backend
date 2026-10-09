@@ -4,7 +4,8 @@ description: >
   Every LMS activity, submission and Ultra click in the last year, one row per event: when, who
   (by person id only), the course, the item or tool, the event type (Login, Logout, Item Access,
   Tool Access, Course Access, Session Continuation, Submission, Ultra Click), a readable context and
-  seconds spent. Queries must give a time_range start on event_time, because the log is large.
+  seconds spent. Ultra clicks carry the clicked UI object as item type and tool and the content id as
+  item, and are counted once per event id. Queries must give a time_range start on event_time.
 grain: one row per event in the last year
 domain: activity
 source: bbdata-bbd-analytics procedures/orchestration/activityLog/
@@ -60,16 +61,16 @@ base_sql: |
   ),
   ultra_clicks AS (
       SELECT 'TLM', ue.DATA:eventId::STRING, p.ID, ue.EVENT_TIME, c.ID,
-             ue.DATA:interactionContextValue::STRING, ue.DATA:objectId::STRING, ue.DATA:objectId::STRING, 'Ultra Click',
-             CONCAT('Ultra Click: ', ue.DATA:interactionContextValue::STRING), 0
+             ue.DATA:interactionContext:content:id::STRING, ue.DATA:objectId::STRING, ue.DATA:objectId::STRING, 'Ultra Click',
+             CONCAT('Ultra Click: ', ue.DATA:objectId::STRING), 0
       FROM {{ database }}.CDM_TLM.ULTRA_EVENTS ue
       JOIN people_by_uuid p ON p.PERSON_UUID = ue.DATA:userId::STRING
       LEFT JOIN {{ database }}.CDM_LMS.COURSE c
         ON CONCAT('_', c.SOURCE_ID, '_1') = ue.DATA:contextId::STRING AND ue.DATA:contextType::STRING = 'COURSE'
-      WHERE ue.EVENT_TYPE = 'click'
+      WHERE UPPER(ue.EVENT_TYPE) = 'CLICK'
         AND ue.DATA:objectId::STRING <> 'bb-close.course.outline.tab.title'
-        AND (ue.DATA:interactionContextValue::STRING IS NULL OR ue.DATA:interactionContextValue::STRING NOT IN ('ROOT', 'INTERACTIVE'))
         AND ue.EVENT_TIME >= DATEADD(year, -1, CURRENT_TIMESTAMP())
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY ue.DATA:eventId ORDER BY ue.EVENT_TIME) = 1
   )
   SELECT * FROM lms_activity
   UNION ALL SELECT * FROM lms_submissions
@@ -92,10 +93,10 @@ measures:
   - {name: logins, agg: count, expr: "IFF(EVENT_TYPE = 'Login', 1, NULL)", unit: logins}
 pii_columns: [PERSON_ID]
 pii_exempt:
-  ITEM: "Course item name, or DATA:interactionContextValue for Ultra clicks; ULTRA_EVENTS.DATA is flagged as a whole for its user ids"
+  ITEM: "Course item name, or the content id DATA:interactionContext.content.id for Ultra clicks; ULTRA_EVENTS.DATA is flagged as a whole for its user ids and IP addresses"
   ITEM_TYPE: "Item type, or DATA:objectId for Ultra clicks"
   TOOL: "Tool name, or DATA:objectId for Ultra clicks"
-  CONTEXT: "Readable context built from item, tool and course names, or DATA:interactionContextValue for Ultra clicks"
+  CONTEXT: "Readable context built from item, tool and course names, or the clicked UI object DATA:objectId for Ultra clicks"
   EVENT_ID: "Event id, or DATA:eventId for Ultra clicks"
   EVENT_TYPE: "Event category; uses only the login and logout flags from ACTIVITY.STAGE, which is flagged as a whole"
   COURSE_ID: "LMS course id; Ultra clicks are matched to it through DATA:contextId"
