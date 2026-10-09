@@ -540,6 +540,18 @@ async def cancel_chat(
     return {"success": True, "request_id": request_id}
 
 
+@app.get("/api/conversations")
+async def list_conversations(authorization: Optional[str] = Header(None)):
+    """The caller's recent conversations, newest first."""
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    import asyncio
+    from conversation_store import list_conversations as list_for
+    loop = asyncio.get_running_loop()
+    return {"conversations": await loop.run_in_executor(None, list_for, user["sub"])}
+
+
 @app.get("/api/conversations/{context_id}")
 async def get_conversation(
     context_id: str,

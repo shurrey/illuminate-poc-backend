@@ -20,6 +20,14 @@ export class ConversationTable extends Construct {
       timeToLiveAttribute: 'ttl',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+    // Read by conversation_store.list_conversations (OWNER_INDEX).
+    this.table.addGlobalSecondaryIndex({
+      indexName: 'owner-updated',
+      partitionKey: { name: 'owner_sub', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'updated_at', type: dynamodb.AttributeType.NUMBER },
+      projectionType: dynamodb.ProjectionType.INCLUDE,
+      nonKeyAttributes: ['title'],
+    });
 
     this.tableName = this.table.tableName;
   }
