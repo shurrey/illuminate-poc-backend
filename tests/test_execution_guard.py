@@ -134,3 +134,28 @@ def test_bounded_generator_and_lateral_functions_are_allowed(executed):
         "SELECT SEQ4() AS N FROM TABLE(GENERATOR(ROWCOUNT => 10)) "
         "UNION ALL SELECT s.VALUE FROM CDM_LMS.COURSE c, LATERAL SPLIT_TO_TABLE(c.NAME, ',') s")
     assert "error" not in result
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT v FROM CDM_LMS.PERSON UNPIVOT(v FOR c IN (first_name, last_name))",
+    "SELECT f.value AS v FROM CDM_LMS.PERSON p, LATERAL FLATTEN(input => ARRAY_CONSTRUCT(p.first_name, p.email)) f",
+    "SELECT \"'x'\" AS n FROM CDM_LMS.PERSON PIVOT(MAX(first_name) FOR a IN ('x'))",
+    "SELECT f AS v FROM CDM_LMS.PERSON MATCH_RECOGNIZE(ORDER BY id MEASURES first_name AS f "
+    "ONE ROW PER MATCH PATTERN (x) DEFINE x AS TRUE)",
+    "SELECT ID FROM CDM_LMS.PERSON ORDER BY LAST_NAME",
+    "SELECT ID FROM CDM_LMS.PERSON GROUP BY ID, EMAIL",
+])
+def test_freehand_pii_outside_a_count_or_filter_is_blocked_anywhere_in_the_statement(sql, executed):
+    result = snowflake_client.validate_and_execute(sql)
+    assert "personally identifiable" in result["error"]
+    assert executed == []
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT_IF(EMAIL LIKE '%@example.edu') AS n FROM CDM_LMS.PERSON",
+    "SELECT COUNT(*) AS n FROM CDM_LMS.PERSON HAVING MAX(EMAIL) = 'a@b.c'",
+    "SELECT ID FROM CDM_LMS.PERSON QUALIFY ROW_NUMBER() OVER (PARTITION BY EMAIL ORDER BY ID) = 1",
+    "SELECT p.ID FROM CDM_LMS.PERSON p JOIN CDM_LMS.PERSON q ON p.EMAIL = q.EMAIL",
+])
+def test_freehand_pii_in_a_count_or_filter_is_allowed(sql, executed):
+    assert "error" not in snowflake_client.validate_and_execute(sql)

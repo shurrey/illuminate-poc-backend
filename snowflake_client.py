@@ -101,13 +101,26 @@ def query_preview(schema: str, table: str, limit: int = 20) -> dict:
         cursor.close()
 
 
+def _in_filter(node) -> bool:
+    """True when node sits in a WHERE, HAVING, QUALIFY or JOIN ON condition, which filters rows but returns no values."""
+    import sqlglot.expressions as exp
+
+    while node.parent is not None:
+        if isinstance(node.parent, (exp.Where, exp.Having, exp.Qualify)):
+            return True
+        if isinstance(node.parent, exp.Join) and node.arg_key == "on":
+            return True
+        node = node.parent
+    return False
+
+
 def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool = False) -> dict:
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
     Allowed statement types: SELECT, WITH (CTE), SHOW, DESCRIBE.
     Blocked: DML/DDL in any subquery, non-CDM/INFORMATION_SCHEMA references, LIMIT > 1000, and
-    PII columns outside counting aggregates: in every projection and with no star projections, or
-    with compiled=True (semantic-layer SQL, PII-checked at definition time) the outermost only.
+    PII columns outside counting aggregates: anywhere and with no star projections, or with
+    compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
 
     Returns:
         {"columns": [...], "rows": [...]} on success
@@ -194,26 +207,29 @@ def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool
                 )
             }
 
-    # PII columns in the outermost SELECT must sit inside a counting aggregate. Value-returning
-    # aggregates (MIN, ARRAY_AGG, LISTAGG, ANY_VALUE, MEDIAN...) and window functions return raw
-    # values, and GROUP BY on a PII column returns one row per value, so neither unlocks PII.
-    if not compiled:
+    # PII columns must sit inside a counting aggregate. Value-returning aggregates (MIN, ARRAY_AGG,
+    # LISTAGG, ANY_VALUE, MEDIAN...) and window functions return raw values, and GROUP BY on a PII
+    # column returns one row per value, so neither unlocks PII. Compiled SQL is checked on its
+    # outermost projection. Freehand SQL is checked everywhere except filter conditions, since
+    # UNPIVOT, FLATTEN, PIVOT and MATCH_RECOGNIZE move PII values out of the projections.
+    if compiled:
+        outer = stmt.find(exp.Select)
+        scopes = [(col, sel) for sel in (outer.expressions if outer else []) for col in sel.find_all(exp.Column)]
+    else:
         for star in stmt.find_all(exp.Star):
             if not isinstance(star.parent, exp.Count):
                 return {"error": "Star projections are not allowed in freehand SQL; name the columns you need."}
-    selects = [stmt.find(exp.Select)] if compiled else list(stmt.find_all(exp.Select))
-    for select in filter(None, selects):
-        for sel in select.expressions:
-            for col_node in sel.find_all(exp.Column):
-                col_name = col_node.name.upper().strip('"').strip("'")
-                if col_name in PII_COLUMN_NAMES and not inside_counting_aggregate(col_node, sel):
-                    return {
-                        "error": (
-                            f"Column '{col_name}' contains personally identifiable information (PII). "
-                            "FERPA rules allow PII columns in the result only inside COUNT, COUNT_IF "
-                            "or APPROX_COUNT_DISTINCT. Please revise your query to count this data."
-                        )
-                    }
+        scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
+    for col_node, scope in scopes:
+        col_name = col_node.name.upper().strip('"').strip("'")
+        if col_name in PII_COLUMN_NAMES and not inside_counting_aggregate(col_node, scope):
+            return {
+                "error": (
+                    f"Column '{col_name}' contains personally identifiable information (PII). "
+                    "FERPA rules allow PII columns only inside COUNT, COUNT_IF or "
+                    "APPROX_COUNT_DISTINCT. Please revise your query to count this data."
+                )
+            }
 
     # Enforce LIMIT <= 1000
     for limit_node in stmt.find_all(exp.Limit):
