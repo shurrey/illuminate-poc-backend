@@ -52,6 +52,15 @@ def test_a_valid_overlay_has_no_errors():
     ("metric:metric.average_grade.v1", "default_filters", ["no_such_filter"], "no filter"),
     ("measure:dataset.nope.v1:x", "expr", "1", "unknown dataset"),
     ("widget:x", "expr", "1", "target"),
+    (f"measure:{GRADE}:average_grade_percentage", "expr", "ASCII(SUBSTR(IDENTIFIER('PERSON_ID'), 1, 1))", "not allowed"),
+    (f"measure:{GRADE}:average_grade_percentage", "expr", "LENGTH(GET(OBJECT_CONSTRUCT(*), 'PERSON_ID'))", "not allowed"),
+    (f"measure:{GRADE}:average_grade_percentage", "expr", "$3", "not allowed"),
+    (f"measure:{GRADE}:average_grade_percentage", "expr", "HASH(*)", "not allowed"),
+    (f"measure:{GRADE}:average_grade_percentage", "expr", "OTHERDB.PUBLIC.MYUDF(GRADE_PERCENTAGE)", "not allowed"),
+    (f"measure:{GRADE}:average_grade_percentage", "expr", "AVG(GRADE_PERCENTAGE)", "aggregate"),
+    (f"measure:{GRADE}:average_grade_percentage", "expr", "RANK() OVER (ORDER BY GRADE_PERCENTAGE)", "aggregate"),
+    (f"filter:{GRADE}:graded_only", "sql", "IDENTIFIER('PERSON_ID') > 0", "not allowed"),
+    (f"filter:{GRADE}:2024_terms", "sql", "GRADE_PERCENTAGE > 0", "name"),
 ])
 def test_invalid_overlays_are_rejected(target, field, value, message):
     try:
@@ -69,3 +78,9 @@ def test_a_measure_overlay_may_not_return_pii_values():
 def test_an_overlay_must_set_the_field_its_target_needs():
     with pytest.raises(ValueError):
         Overlay(target="metric:metric.average_grade.v1", expr="1")
+
+
+@pytest.mark.parametrize("expr", ["IFF(GRADE_PERCENTAGE > 100, 100, GRADE_PERCENTAGE)", "TRY_TO_NUMBER(GRADE_PERCENTAGE::STRING)",
+                                  "ZEROIFNULL(GRADE_PERCENTAGE)", "DIV0(GRADE_PERCENTAGE, 2)"])
+def test_ordinary_row_level_expressions_are_allowed(expr):
+    assert validate_overlay(Overlay(target=f"measure:{GRADE}:average_grade_percentage", expr=expr), CATALOG) == []

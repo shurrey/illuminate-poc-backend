@@ -819,35 +819,44 @@ def _semantic_database() -> str:
 
 
 _OVERLAY_TTL_SECONDS = 60
-_overlay_cache: dict[str, tuple[float, list]] = {}
+_overlay_cache: dict[str, tuple[float, tuple]] = {}
 
 
-def _tenant_overlays(tenant_id: str) -> list:
-    """The tenant's overlays, cached briefly per instance; admin writes on this instance invalidate it."""
+def _apply_each(catalog, overlays: list) -> tuple:
+    """Apply overlays one at a time, skipping any that no longer validate against the definitions.
+
+    Returns (catalog, applied overlays, {target: problems} for those skipped).
+    """
+    from pydantic import ValidationError
+    from semantic_layer.overlays import OverlayError, apply_overlays, validate_overlay
+
+    applied, skipped = [], {}
+    for ov in overlays:
+        try:
+            problems = validate_overlay(ov, catalog)
+            if not problems:
+                catalog = apply_overlays(catalog, [ov])
+                applied.append(ov)
+        except (OverlayError, ValidationError) as e:
+            problems = [str(e)]
+        if problems:
+            logger.warning("Skipping overlay %s: %s", ov.target, problems)
+            skipped[ov.target] = problems
+    return catalog, applied, skipped
+
+
+def _tenant_state(tenant_id: str) -> tuple:
+    """(catalog, applied, skipped) for the tenant, cached briefly per instance; admin writes here invalidate it."""
     import time
     import overlay_store
+    from semantic_layer.catalog import default_catalog
 
     hit = _overlay_cache.get(tenant_id)
     if hit and time.monotonic() - hit[0] < _OVERLAY_TTL_SECONDS:
         return hit[1]
-    overlays = overlay_store.list_overlays(tenant_id)
-    _overlay_cache[tenant_id] = (time.monotonic(), overlays)
-    return overlays
-
-
-def _apply_each(catalog, overlays: list) -> tuple:
-    """Apply overlays one at a time, skipping any that no longer fit the canonical definitions."""
-    from pydantic import ValidationError
-    from semantic_layer.overlays import OverlayError, apply_overlays
-
-    applied = []
-    for ov in overlays:
-        try:
-            catalog = apply_overlays(catalog, [ov])
-            applied.append(ov)
-        except (OverlayError, ValidationError) as e:
-            logger.warning("Skipping overlay %s: %s", ov.target, e)
-    return catalog, applied
+    state = _apply_each(default_catalog(), overlay_store.list_overlays(tenant_id))
+    _overlay_cache[tenant_id] = (time.monotonic(), state)
+    return state
 
 
 def _catalog_for(user: Optional[dict]) -> tuple:
@@ -857,7 +866,8 @@ def _catalog_for(user: Optional[dict]) -> tuple:
     tenant_id = _tenant_id_from_user(user)
     if not tenant_id:
         return default_catalog(), []
-    return _apply_each(default_catalog(), _tenant_overlays(tenant_id))
+    catalog, applied, _ = _tenant_state(tenant_id)
+    return catalog, applied
 
 
 def _compile_contract(contract: QueryContract, authorization: str):
@@ -1060,17 +1070,21 @@ def _overlay_errors(tenant_id: str, target: str, candidate) -> list[str]:
     """Problems with the tenant's overlays once target is replaced by candidate (None: removed)."""
     import overlay_store
     from semantic_layer.catalog import default_catalog
-    from semantic_layer.overlays import OverlayError, validate_overlay
-    from semantic_layer.validate import validate_metric
+    from semantic_layer.overlays import OverlayError, parse_target, validate_overlay
 
     others = [o for o in overlay_store.list_overlays(tenant_id) if o.target != target]
-    base, _ = _apply_each(default_catalog(), others)
-    try:
-        if candidate is not None:
+    base, _, _ = _apply_each(default_catalog(), others)
+    if candidate is not None:
+        try:
             return validate_overlay(candidate, base)
-        return [e for m in base.metrics.values() for e in validate_metric(m, base)]
-    except OverlayError as e:
-        return [str(e)]
+        except OverlayError as e:
+            return [str(e)]
+    kind, owner, name = parse_target(target)
+    if kind != "filter" or base.datasets.get(owner) is None or base.datasets[owner].filter(name) is not None:
+        return []
+    users = [o.target for o in others if o.kind == "metric" and o.target.split(":", 1)[1] in base.metrics
+             and base.metrics[o.target.split(":", 1)[1]].dataset_id == owner and name in (o.default_filters or [])]
+    return [f"{t} uses filter {name!r}; change it first" for t in users]
 
 
 def _save_checked(tenant_id: str, target: str, candidate, save) -> dict:
@@ -1092,8 +1106,15 @@ async def admin_list_overlays(authorization: Optional[str] = Header(None)) -> di
     """This tenant's current semantic-layer overlays."""
     import overlay_store
 
+    from semantic_layer.catalog import default_catalog
+
     _, tenant_id = _admin_tenant(authorization)
-    return {"tenant_id": tenant_id, "overlays": [o.model_dump() for o in overlay_store.list_overlays(tenant_id)]}
+    overlays = overlay_store.list_overlays(tenant_id)
+    _, _, skipped = _apply_each(default_catalog(), overlays)
+    return {"tenant_id": tenant_id, "overlays": [
+        o.model_dump() | {"status": "skipped" if o.target in skipped else "active", "problems": skipped.get(o.target, [])}
+        for o in overlays
+    ]}
 
 
 @app.get("/api/v1/admin/overlay/{target}")
