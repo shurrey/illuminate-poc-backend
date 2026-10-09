@@ -1,0 +1,105 @@
+id: dataset.course_item_tool_activity.v1
+display_name: Course item and tool use by enrollment
+description: >
+  Per enrollment, course role and item or tool type used inside the course window: interactions,
+  minutes, distinct items or tools accessed, and the course's total, new-or-updated and available
+  items or tools of that type. Students come from active_students; other roles are every non-student
+  enrollment. Only types students used in the course are kept. Deviation: bbd-analytics groups by the
+  person's STAGE student_id, so everyone without one in a course and role collapses into a single
+  row; here rows are per enrollment.
+grain: one row per enrollment x item-or-tool x type used in the course window
+domain: tools
+source: bbdata-bbd-analytics procedures/orchestration/courseItemToolActivity/processCourseItemToolActivity.ts
+depends_on: [dataset.active_students.v1, dataset.course_filters.v1, dataset.item_tool.v1]
+base_sql: |
+  WITH course_windows AS (
+      SELECT DISTINCT COURSE_ID, START_WEEK, END_WEEK FROM {{ ref('dataset.course_filters.v1') }}
+  ),
+  people AS (
+      SELECT PERSON_COURSE_ID, PERSON_ID, COURSE_ID, COURSE_ROLE, START_WEEK, END_WEEK
+      FROM {{ ref('dataset.active_students.v1') }}
+      UNION
+      SELECT p.ID, p.PERSON_ID, p.COURSE_ID, p.COURSE_ROLE, w.START_WEEK, w.END_WEEK
+      FROM {{ database }}.CDM_LMS.PERSON_COURSE p
+      JOIN course_windows w ON w.COURSE_ID = p.COURSE_ID
+      WHERE p.COURSE_ROLE <> 'S'
+  ),
+  item_and_tool_use AS (
+      SELECT pe.COURSE_ID, pe.PERSON_COURSE_ID, pe.PERSON_ID, pe.COURSE_ROLE, 'ITEM' AS ITEM_OR_TOOL,
+             it.ITEM_TYPE AS TYPE, it.ITEM_TYPE_NAME AS TYPE_NAME, it.COURSE_ITEM_ID AS ITEM_OR_TOOL_ID,
+             it.INTERACTION_CNT, it.MINUTES, it.LAST_ACCESSED_DATE
+      FROM people pe
+      JOIN {{ ref('dataset.item_tool.v1') }} it
+        ON it.PERSON_COURSE_ID = pe.PERSON_COURSE_ID
+       AND it.FIRST_ACCESSED_DATE BETWEEN pe.START_WEEK AND pe.END_WEEK + 7
+      UNION ALL
+      SELECT pe.COURSE_ID, pe.PERSON_COURSE_ID, pe.PERSON_ID, pe.COURSE_ROLE, 'TOOL',
+             t.SOURCE_ID, NVL(tr.TRANSLATION_VALUE, t.NAME), t.ID,
+             cta.INTERACTION_CNT, NVL(cta.DURATION_SUM, 0) / 60, cta.LAST_ACCESSED_TIME::DATE
+      FROM people pe
+      JOIN {{ database }}.CDM_LMS.COURSE_TOOL_ACTIVITY cta
+        ON cta.PERSON_COURSE_ID = pe.PERSON_COURSE_ID
+       AND cta.FIRST_ACCESSED_TIME BETWEEN pe.START_WEEK AND pe.END_WEEK + 7
+      JOIN {{ database }}.CDM_LMS.TOOL t ON t.ID = cta.TOOL_ID
+      LEFT JOIN {{ database }}.CDM_LMS.TRANSLATION tr ON tr.TRANSLATION_KEY = t.NAME AND tr.LOCALE = 'en_US'
+  ),
+  student_types AS (
+      SELECT DISTINCT COURSE_ID, ITEM_OR_TOOL, TYPE FROM item_and_tool_use WHERE COURSE_ROLE = 'S'
+  ),
+  course_inventory AS (
+      SELECT COURSE_ID, ITEM_OR_TOOL, TYPE,
+             COUNT(DISTINCT ITEM_OR_TOOL_ID) AS COURSE_TOTAL,
+             SUM(NEW_UPDATED_IND) AS COURSE_NEW_OR_UPDATED,
+             SUM(AVAILABLE_IND) AS COURSE_AVAILABLE
+      FROM (
+          SELECT ci.COURSE_ID, 'ITEM' AS ITEM_OR_TOOL,
+                 IFF(ci.ITEM_TYPE IN ('SCORM_ENGINE', 'CONTENT_PACKAGE_SCORM', 'SCORM'), 'SCORM PACKAGE', ci.ITEM_TYPE) AS TYPE,
+                 ci.ID AS ITEM_OR_TOOL_ID,
+                 IFF(c.CREATED_TIME < ci.MODIFIED_TIME OR c.CREATED_TIME < ci.CREATED_TIME, 1, 0) AS NEW_UPDATED_IND,
+                 IFF(ci.AVAILABLE_IND, 1, 0) AS AVAILABLE_IND
+          FROM {{ database }}.CDM_LMS.COURSE_ITEM ci
+          JOIN {{ database }}.CDM_LMS.COURSE c ON c.ID = ci.COURSE_ID
+          UNION ALL
+          SELECT ct.COURSE_ID, 'TOOL', t.SOURCE_ID, t.ID, 0, IFF(ct.AVAILABLE_IND, 1, 0)
+          FROM {{ database }}.CDM_LMS.TOOL t
+          JOIN {{ database }}.CDM_LMS.COURSE_TOOL ct ON ct.TOOL_ID = t.ID
+      )
+      GROUP BY COURSE_ID, ITEM_OR_TOOL, TYPE
+  )
+  SELECT u.COURSE_ID, u.PERSON_COURSE_ID, ANY_VALUE(u.PERSON_ID) AS PERSON_ID, u.COURSE_ROLE, u.ITEM_OR_TOOL, u.TYPE,
+         ANY_VALUE(u.TYPE_NAME) AS TYPE_NAME,
+         SUM(u.INTERACTION_CNT) AS INTERACTION_CNT,
+         SUM(u.MINUTES) AS MINUTES,
+         COUNT(DISTINCT u.ITEM_OR_TOOL_ID) AS ACCESSED,
+         MAX(u.LAST_ACCESSED_DATE) AS LAST_ACCESSED_DATE,
+         ANY_VALUE(inv.COURSE_TOTAL) AS COURSE_TOTAL,
+         ANY_VALUE(inv.COURSE_NEW_OR_UPDATED) AS COURSE_NEW_OR_UPDATED,
+         ANY_VALUE(inv.COURSE_AVAILABLE) AS COURSE_AVAILABLE
+  FROM item_and_tool_use u
+  JOIN student_types st ON st.COURSE_ID = u.COURSE_ID AND st.ITEM_OR_TOOL = u.ITEM_OR_TOOL AND st.TYPE = u.TYPE
+  JOIN course_inventory inv ON inv.COURSE_ID = u.COURSE_ID AND inv.ITEM_OR_TOOL = u.ITEM_OR_TOOL AND inv.TYPE = u.TYPE
+  GROUP BY u.COURSE_ID, u.PERSON_COURSE_ID, u.COURSE_ROLE, u.ITEM_OR_TOOL, u.TYPE
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person_course, column: PERSON_COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: course_role, column: COURSE_ROLE, type: categorical, description: "S student, I instructor, and so on"}
+  - {name: item_or_tool, column: ITEM_OR_TOOL, type: categorical, description: "'ITEM' (course content) or 'TOOL'"}
+  - {name: type, column: TYPE, type: categorical, description: "Item type, or the tool's source id"}
+  - {name: type_name, column: TYPE_NAME, type: categorical, synonyms: [tool, content type]}
+  - {name: last_access, column: LAST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year]}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
+  - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
+  - {name: interactions, agg: sum, expr: INTERACTION_CNT, unit: interactions}
+  - {name: minutes, agg: sum, expr: MINUTES, unit: minutes}
+  - {name: accessed, agg: sum, expr: ACCESSED, unit: items, description: "Distinct items or tools each enrollment accessed, summed"}
+  - {name: course_total, agg: sum, expr: COURSE_TOTAL, unit: items, description: "The course's items or tools of the type, summed per enrollment"}
+  - {name: coverage, agg: ratio, numerator: accessed, denominator: course_total, unit: ratio, description: "Share of the course's items of the type that enrollments accessed; each tool type is one tool, so tools are 0 or 1"}
+  - {name: avg_accessed, agg: avg, expr: ACCESSED, unit: items}
+filters:
+  - {name: students, sql: "COURSE_ROLE = 'S'"}
+  - {name: instructors, sql: "COURSE_ROLE = 'I'"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]
