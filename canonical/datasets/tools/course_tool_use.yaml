@@ -1,0 +1,67 @@
+id: dataset.course_tool_use.v1
+display_name: Course tool use events
+description: >
+  When each top-level course's tools were used: one row per course, tool and activity hour (from
+  course_tool_activity, last three years) and per course, tool and distinct submission timestamps,
+  with the course's start and end dates (term dates, then course dates, then its first and last
+  activity or submission). Deviation: bbd-analytics treats a missing submission timestamp as
+  1970-01-01 when finding a course's first activity; here missing timestamps are ignored.
+grain: one row per course x tool x activity hour or submission event
+domain: tools
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_COURSE_TOOL_USE.sql
+depends_on: [dataset.course_tool_activity.v1]
+base_sql: |
+  WITH events AS (
+      SELECT COURSE_ID, TOOL_NAME, 'activity' AS EVENT_TYPE, ACTIVITY_HOUR AS ACTIVITY_TIME,
+             NULL::TIMESTAMP_LTZ AS CREATED_TIME, NULL::TIMESTAMP_LTZ AS MODIFIED_TIME, NULL::TIMESTAMP_LTZ AS SUBMITTED_TIME
+      FROM {{ ref('dataset.course_tool_activity.v1') }}
+      GROUP BY COURSE_ID, TOOL_NAME, ACTIVITY_HOUR
+      UNION ALL
+      SELECT su.COURSE_ID, NVL(tr.TRANSLATION_VALUE, t.NAME), 'submission', NULL,
+             su.CREATED_TIME, su.MODIFIED_TIME, su.SUBMITTED_TIME
+      FROM {{ database }}.CDM_LMS.SUBMISSION su
+      JOIN {{ database }}.CDM_LMS.COURSE c ON c.ID = su.COURSE_ID AND c.COURSE_PARENT_ID IS NULL
+      JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = su.COURSE_ITEM_ID
+      JOIN {{ database }}.CDM_LMS.COURSE_TOOL ct ON ct.ID = ci.COURSE_TOOL_ID
+      JOIN {{ database }}.CDM_LMS.TOOL t ON t.ID = ct.TOOL_ID
+      LEFT JOIN {{ database }}.CDM_LMS.TRANSLATION tr ON tr.TRANSLATION_KEY = t.NAME AND tr.LOCALE = 'en_US'
+      GROUP BY su.COURSE_ID, NVL(tr.TRANSLATION_VALUE, t.NAME), su.CREATED_TIME, su.MODIFIED_TIME, su.SUBMITTED_TIME
+  ),
+  course_span AS (
+      SELECT COURSE_ID,
+             MIN(LEAST_IGNORE_NULLS(ACTIVITY_TIME, CREATED_TIME, MODIFIED_TIME, SUBMITTED_TIME)) AS FIRST_TIME,
+             MAX(GREATEST_IGNORE_NULLS(ACTIVITY_TIME, CREATED_TIME, MODIFIED_TIME, SUBMITTED_TIME)) AS LAST_TIME
+      FROM events
+      GROUP BY COURSE_ID
+  ),
+  course_dates AS (
+      SELECT c.ID AS COURSE_ID,
+             COALESCE(te.START_DATE, c.START_DATE, CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), cs.FIRST_TIME)::DATE) AS COURSE_START_DATE,
+             COALESCE(te.END_DATE, c.END_DATE, CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), cs.LAST_TIME)::DATE) AS COURSE_END_DATE
+      FROM {{ database }}.CDM_LMS.COURSE c
+      LEFT JOIN {{ database }}.CDM_LMS.TERM te ON te.ID = c.TERM_ID
+      LEFT JOIN course_span cs ON cs.COURSE_ID = c.ID
+      JOIN {{ database }}.CDM_LMS.INSTANCE i ON i.ID = c.INSTANCE_ID
+  )
+  SELECT e.COURSE_ID, e.TOOL_NAME, e.EVENT_TYPE,
+         e.ACTIVITY_TIME, e.CREATED_TIME, e.MODIFIED_TIME, e.SUBMITTED_TIME,
+         COALESCE(e.ACTIVITY_TIME, e.SUBMITTED_TIME, e.MODIFIED_TIME, e.CREATED_TIME) AS EVENT_TIME,
+         IFF(YEAR(cd.COURSE_START_DATE) < 1970, '1970-01-01'::DATE, cd.COURSE_START_DATE) AS COURSE_START_DATE,
+         IFF(YEAR(cd.COURSE_END_DATE) < 1970, '1970-01-01'::DATE, cd.COURSE_END_DATE) AS COURSE_END_DATE
+  FROM events e
+  LEFT JOIN course_dates cd ON cd.COURSE_ID = e.COURSE_ID
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: tool_name, column: TOOL_NAME, type: categorical, synonyms: [tool]}
+  - {name: event_type, column: EVENT_TYPE, type: categorical, description: "'activity' (an hour with tool activity) or 'submission'"}
+  - {name: event_time, column: EVENT_TIME, type: time, grains: [hour, day, week, month, quarter, year]}
+  - {name: course_start_date, column: COURSE_START_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: course_end_date, column: COURSE_END_DATE, type: time, grains: [day, week, month, quarter, year]}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: tools, agg: count_distinct, expr: TOOL_NAME, unit: tools}
+  - {name: events, agg: count, expr: "*", unit: events}
+filters:
+  - {name: activity_events, sql: "EVENT_TYPE = 'activity'"}
+  - {name: submission_events, sql: "EVENT_TYPE = 'submission'"}
