@@ -1,0 +1,80 @@
+id: dataset.student_risk_success.v1
+display_name: Student risk and success indicators
+description: >
+  Per graded student enrollment with course activity, in courses where someone has a grade above
+  zero: the grade (capped at 100) beside the student's time in the course, days active, Collaborate
+  minutes, time in content items and social interactions, each scaled 0-100 against the course's
+  highest value, for comparing engagement with outcomes. Collaborate minutes are scaled against the
+  most session time any student in the course could have attended.
+grain: one row per graded student enrollment with course activity
+domain: grades
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__STUDENT_RISK_SUCCESS.sql
+depends_on: [dataset.student_grade.v1, dataset.course_student_activity.v1, dataset.collab_session_student_activity.v1, dataset.student_item_tool_activity.v1, dataset.item_tool_map.v1]
+base_sql: |
+  WITH course_activity AS (
+      SELECT PERSON_COURSE_ID,
+             IFF(MAX(TOTAL_MIN_IN_COURSE) OVER (PARTITION BY COURSE_ID) > 0,
+                 TOTAL_MIN_IN_COURSE * 100 / MAX(TOTAL_MIN_IN_COURSE) OVER (PARTITION BY COURSE_ID), NULL)::FLOAT AS MINUTES_IN_COURSE,
+             IFF(MAX(CNT_DAYS) OVER (PARTITION BY COURSE_ID) > 0,
+                 CNT_DAYS * 100 / MAX(CNT_DAYS) OVER (PARTITION BY COURSE_ID), NULL)::FLOAT AS DAYS_IN_COURSE
+      FROM {{ ref('dataset.course_student_activity.v1') }}
+  ),
+  collab AS (
+      SELECT PERSON_COURSE_ID, COURSE_ID, SUM(ATTENDED_MIN) AS ATTENDED_MIN, SUM(SESSION_MIN) AS SESSION_MIN
+      FROM {{ ref('dataset.collab_session_student_activity.v1') }}
+      GROUP BY PERSON_COURSE_ID, COURSE_ID
+  ),
+  collab_scaled AS (
+      SELECT PERSON_COURSE_ID,
+             IFF(MAX(SESSION_MIN) OVER (PARTITION BY COURSE_ID) > 0,
+                 ATTENDED_MIN * 100 / MAX(SESSION_MIN) OVER (PARTITION BY COURSE_ID), NULL)::FLOAT AS MINUTES_IN_COLLAB
+      FROM collab
+  ),
+  tools AS (
+      SELECT s.PERSON_COURSE_ID, ANY_VALUE(s.COURSE_ID) AS COURSE_ID,
+             SUM(IFF(m.SOCIAL_INTERACTIONS_IND = 1, s.INTERACTION_CNT, 0)) AS INTERACTIONS,
+             SUM(IFF(m.CONTENT_TIME_IND = 1, s.MINUTES, 0)) AS CONTENT_MINUTES
+      FROM {{ ref('dataset.student_item_tool_activity.v1') }} s
+      JOIN {{ ref('dataset.item_tool_map.v1') }} m
+        ON m.ITEM_TYPE = s.TYPE AND (m.SOCIAL_INTERACTIONS_IND = 1 OR m.CONTENT_TIME_IND = 1)
+      GROUP BY s.PERSON_COURSE_ID
+  ),
+  tools_scaled AS (
+      SELECT PERSON_COURSE_ID,
+             IFF(MAX(CONTENT_MINUTES) OVER (PARTITION BY COURSE_ID) > 0,
+                 CONTENT_MINUTES * 100 / MAX(CONTENT_MINUTES) OVER (PARTITION BY COURSE_ID), 0)::FLOAT AS MINUTES_IN_TOOLS,
+             IFF(MAX(INTERACTIONS) OVER (PARTITION BY COURSE_ID) > 0,
+                 INTERACTIONS * 100 / MAX(INTERACTIONS) OVER (PARTITION BY COURSE_ID), 0)::FLOAT AS INTERACTIONS_SCALED
+      FROM tools
+  ),
+  graded_courses AS (
+      SELECT COURSE_ID FROM {{ ref('dataset.student_grade.v1') }} GROUP BY COURSE_ID HAVING MAX(GRADE_PERCENTAGE) > 0
+  )
+  SELECT sg.COURSE_ID, sg.PERSON_COURSE_ID, sg.PERSON_ID,
+         LEAST(sg.GRADE_PERCENTAGE, 100) AS GRADE,
+         ca.MINUTES_IN_COURSE, ca.DAYS_IN_COURSE, co.MINUTES_IN_COLLAB,
+         ts.MINUTES_IN_TOOLS, ts.INTERACTIONS_SCALED AS INTERACTIONS
+  FROM {{ ref('dataset.student_grade.v1') }} sg
+  JOIN graded_courses gc ON gc.COURSE_ID = sg.COURSE_ID
+  JOIN course_activity ca ON ca.PERSON_COURSE_ID = sg.PERSON_COURSE_ID
+  LEFT JOIN tools_scaled ts ON ts.PERSON_COURSE_ID = sg.PERSON_COURSE_ID
+  LEFT JOIN collab_scaled co ON co.PERSON_COURSE_ID = sg.PERSON_COURSE_ID
+  WHERE ca.DAYS_IN_COURSE > 0
+entities:
+  - {name: person_course, column: PERSON_COURSE_ID, type: primary}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: grade_value, column: GRADE, type: numeric, description: "Grade percentage capped at 100; NULL when not graded"}
+  - {name: minutes_in_course_score, column: MINUTES_IN_COURSE, type: numeric, description: "0-100 against the course's most"}
+  - {name: days_in_course_score, column: DAYS_IN_COURSE, type: numeric, description: "0-100 against the course's most"}
+measures:
+  - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students}
+  - {name: avg_grade, agg: avg, expr: GRADE, unit: percent}
+  - {name: avg_minutes_in_course_score, agg: avg, expr: MINUTES_IN_COURSE, unit: score}
+  - {name: avg_days_in_course_score, agg: avg, expr: DAYS_IN_COURSE, unit: score}
+  - {name: avg_collab_score, agg: avg, expr: MINUTES_IN_COLLAB, unit: score}
+  - {name: avg_content_time_score, agg: avg, expr: MINUTES_IN_TOOLS, unit: score}
+  - {name: avg_interactions_score, agg: avg, expr: INTERACTIONS, unit: score}
+  - {name: students_at_risk, agg: count_distinct, expr: "IFF(GRADE < 60 AND DAYS_IN_COURSE < 25, PERSON_ID, NULL)", unit: students, description: "Graded below 60% and active on under a quarter of the days the course's most active student was"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]
