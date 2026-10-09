@@ -27,18 +27,23 @@ _bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
 
 
 def _resolve_database() -> str:
-    """SNOWFLAKE_DATABASE if set, else the database in the Snowflake secret, else ILLUMINATE."""
+    """SNOWFLAKE_DATABASE if set, else the Snowflake secret's database.
+
+    Raises rather than guessing: this runs at import, and a failed import is retried on the next
+    request, so the process recovers once the secret is set.
+    """
     db = os.environ.get("SNOWFLAKE_DATABASE", "")
     if db:
         return db
+    secret_name = os.environ.get("SNOWFLAKE_SECRET_NAME", "illuminate/dev/snowflake")
+    sm = boto3.client("secretsmanager", region_name=AWS_REGION)
     try:
-        secret_name = os.environ.get("SNOWFLAKE_SECRET_NAME", "illuminate/dev/snowflake")
-        sm = boto3.client("secretsmanager", region_name=AWS_REGION)
-        creds = json.loads(sm.get_secret_value(SecretId=secret_name)["SecretString"])
-        return creds.get("database", "ILLUMINATE")
-    except Exception as exc:
-        logger.warning("Could not resolve database name from Secrets Manager: %s", exc)
-        return "ILLUMINATE"
+        db = json.loads(sm.get_secret_value(SecretId=secret_name)["SecretString"]).get("database", "")
+    except (ValueError, AttributeError):
+        db = ""
+    if not db:
+        raise RuntimeError(f"Snowflake secret {secret_name} has no database; run scripts/set-snowflake-secret.sh")
+    return db
 
 
 _database = _resolve_database()
