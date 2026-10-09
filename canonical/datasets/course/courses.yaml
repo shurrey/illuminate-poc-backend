@@ -1,7 +1,7 @@
 id: dataset.courses.v1
 display_name: Courses (conformed course dimension)
 description: >
-  Every course exactly once, with its term, design mode, dates and status. Course-grain datasets and
+  Every course exactly once, with its term, design mode, dates, duration, delivery method and status. Course-grain datasets and
   enrollment-grain datasets take their course and term dimensions from here, so a grouping by term
   or course never depends on which students had activity. Not a bbd-analytics product; it applies
   the course and term logic of COURSE_FILTER at course grain.
@@ -21,9 +21,21 @@ base_sql: |
          IFF(COALESCE(co.END_DATE, te.END_DATE) <= CURRENT_DATE(), 1, 0) AS COURSE_ENDED,
          IFF(co.COURSE_PARENT_ID IS NULL, 0, 1) AS CHILD_COURSE_IND,
          co.ROW_DELETED_TIME IS NOT NULL AS COURSE_DELETED_IND,
-         co.AVAILABLE_IND
+         co.AVAILABLE_IND,
+         IFF(COALESCE(co.END_TIME, te.END_TIME) IS NOT NULL, 'Fixed', 'Continuous') AS COURSE_DURATION,
+         IFF(YEAR(co.CREATED_TIME) < 1970, TO_DATE('1970-01-01'), co.CREATED_TIME::DATE) AS COURSE_CREATION_DATE,
+         NVL(sis.DELIVERY_METHOD, '-') AS DELIVERY_METHOD,
+         CEIL(DATEDIFF(day, COALESCE(co.START_TIME, te.START_TIME),
+                       LEAST(COALESCE(co.END_TIME, te.END_TIME, CURRENT_TIMESTAMP()), CURRENT_TIMESTAMP())) / 7) AS COURSE_WEEKS
   FROM {{ database }}.CDM_LMS.COURSE co
   LEFT JOIN {{ database }}.CDM_LMS.TERM te ON te.ID = co.TERM_ID
+  -- A course mapped to several SIS sections takes the first delivery method alphabetically.
+  LEFT JOIN (
+    SELECT c_map.LMS_COURSE_ID AS COURSE_ID, MIN(sis_s.DELIVERY_METHOD_SOURCE_DESC) AS DELIVERY_METHOD
+    FROM {{ database }}.CDM_MAP.COURSE c_map
+    JOIN {{ database }}.CDM_SIS.CLASS_SECTION sis_s ON sis_s.ID = c_map.SIS_CLASS_SECTION_ID
+    GROUP BY c_map.LMS_COURSE_ID
+  ) sis ON sis.COURSE_ID = co.ID
   LEFT JOIN {{ database }}.CDM_META.CANON_DEFINITION cd
     ON cd.CANON_CODE = co.DESIGN_MODE AND cd.SOURCE_DOMAIN = 'LMS' AND cd.NAME = 'DESIGN_MODE'
 entities:
@@ -40,6 +52,10 @@ dimensions:
   - {name: course_available, column: AVAILABLE_IND, type: boolean}
   - {name: course_start, column: COURSE_START_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: course_end, column: COURSE_END_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: course_duration, column: COURSE_DURATION, type: categorical, description: "Fixed when the course or its term has an end date, otherwise Continuous"}
+  - {name: course_creation_date, column: COURSE_CREATION_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: delivery_method, column: DELIVERY_METHOD, type: categorical, description: "The SIS delivery method of the course's section; '-' when unmapped", synonyms: [modality, delivery mode]}
+  - {name: course_weeks, column: COURSE_WEEKS, type: numeric, description: "Weeks from the course start to its end, or to today while it runs"}
 measures:
   - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
 filters:
