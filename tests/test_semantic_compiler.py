@@ -249,3 +249,24 @@ def test_generator_is_the_only_table_function_allowed():
     _check_tables("SELECT SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 10))", "DB")
     with pytest.raises(CompileError):
         _check_tables("SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "DB")
+
+
+def test_a_dataset_can_require_a_time_range_on_one_of_its_dimensions():
+    from tests.semantic_fixtures import dataset
+
+    ds = dataset(required_time_range="enrolled_at")
+    cat = catalog(ds)
+    with pytest.raises(CompileError, match="time_range on enrolled_at"):
+        _compile(cat, measures=["dataset.enrollments.v1:enrollments"])
+    with pytest.raises(CompileError, match="start"):
+        _compile(cat, measures=["dataset.enrollments.v1:enrollments"], time_range={"dimension": "enrolled_at", "end": "2026-06-30"})
+    assert _compile(cat, measures=["dataset.enrollments.v1:enrollments"],
+                    time_range={"dimension": "enrolled_at", "start": "2026-01-01"}).sql
+
+
+def test_a_required_time_range_must_name_a_time_dimension():
+    from pydantic import ValidationError
+    from tests.semantic_fixtures import dataset
+
+    with pytest.raises(ValidationError):
+        dataset(required_time_range="course_role")

@@ -30,6 +30,7 @@ def _dataset_view(ds: Dataset, joins: list[str]) -> dict:
         "measures": [m.model_dump(include=_MEASURE_FIELDS) for m in ds.measures],
         "filters": [{"name": f.name, "description": f.description} for f in ds.filters],
         "joins": joins,
+        "required_time_range": ds.required_time_range,
     }
 
 

@@ -21,7 +21,8 @@ def test_dataset_is_valid(ds):
 @pytest.mark.parametrize("ds", PUBLIC, ids=lambda d: d.id)
 def test_every_measure_and_dimension_compiles(ds):
     dims = [d.name for d in ds.dimensions if d.column not in ds.pii_columns]
-    compile_query(QueryContract(measures=[f"{ds.id}:{m.name}" for m in ds.measures], dimensions=dims),
+    time_range = {"dimension": ds.required_time_range, "start": "2026-01-01"} if ds.required_time_range else None
+    compile_query(QueryContract(measures=[f"{ds.id}:{m.name}" for m in ds.measures], dimensions=dims, time_range=time_range),
                   CATALOG, "DB")
 
 

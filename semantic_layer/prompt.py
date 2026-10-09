@@ -60,6 +60,8 @@ def build_system_prompt(catalog: Catalog, database: str) -> str:
             "Dimensions: " + ", ".join(_dimension(d) for d in ds["dimensions"]),
             "Measures: " + ", ".join(m["name"] for m in ds["measures"]),
         ]
+        if ds["required_time_range"]:
+            lines.append(f"Every query needs a time_range with a start on `{ds['required_time_range']}`.")
         if ds["joins"]:
             lines.append("Also uses dimensions from: " + ", ".join(f"`{j}`" for j in ds["joins"]))
         if ds["filters"]:

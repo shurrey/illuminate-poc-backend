@@ -266,6 +266,12 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
                 f"filter dimension {f.dimension!r} has a grain suffix; filters take the plain dimension name"
             )
         filters.append((f, *_resolve(base, f.dimension, catalog, joins)[:2]))
+    if base.required_time_range:
+        tr = contract.time_range
+        if tr is None or tr.dimension.rpartition(":")[2] != base.required_time_range:
+            raise CompileError(f"{base.id} needs a time_range on {base.required_time_range}")
+        if tr.start is None:
+            raise CompileError(f"{base.id} needs a time_range start on {base.required_time_range}")
     time_range = None
     if contract.time_range:
         if "__" in contract.time_range.dimension.rpartition(":")[2]:
