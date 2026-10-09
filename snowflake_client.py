@@ -15,6 +15,7 @@ import os
 
 import boto3
 
+from semantic_layer.compiler import is_bounded_generator
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
 
 logger = logging.getLogger("API-PROXY")
@@ -171,6 +172,12 @@ def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool
                     "Only read-only queries are permitted."
                 )
             }
+
+    # TABLE(...) sources carry no schema, so the whitelist below would pass RESULT_SCAN and friends.
+    for table_node in stmt.find_all(exp.Table):
+        if not isinstance(table_node.this, exp.Identifier) and not is_bounded_generator(table_node):
+            return {"error": "Only the GENERATOR table function, with a literal ROWCOUNT, is allowed."
+                             " Other table functions are not permitted."}
 
     # Schema whitelist — only CDM_* schemas and INFORMATION_SCHEMA
     for table_node in stmt.find_all(exp.Table):

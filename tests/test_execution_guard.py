@@ -115,3 +115,22 @@ def test_results_are_capped_at_max_rows_and_marked_truncated(monkeypatch):
     result = snowflake_client.query_sql("SELECT N FROM CDM_LMS.T")
     assert len(result["rows"]) == snowflake_client.MAX_ROWS
     assert result["truncated"] is True
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT 1 AS N FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+    "SELECT QUERY_TEXT FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())",
+    "SELECT 1 AS N FROM TABLE(GENERATOR(ROWCOUNT => 100000000))",
+])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_table_functions_other_than_a_bounded_generator_are_blocked(sql, compiled, executed):
+    result = snowflake_client.validate_and_execute(sql, compiled=compiled)
+    assert "table function" in result["error"]
+    assert executed == []
+
+
+def test_bounded_generator_and_lateral_functions_are_allowed(executed):
+    result = snowflake_client.validate_and_execute(
+        "SELECT SEQ4() AS N FROM TABLE(GENERATOR(ROWCOUNT => 10)) "
+        "UNION ALL SELECT s.VALUE FROM CDM_LMS.COURSE c, LATERAL SPLIT_TO_TABLE(c.NAME, ',') s")
+    assert "error" not in result
