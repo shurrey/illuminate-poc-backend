@@ -36,6 +36,7 @@ def main() -> int:
         check("required attributes are writable (Cognito rejects the client otherwise)",
               writable is not None and all(a["Name"] in writable for a in required)),
         check("illuminate-admins group exists", "illuminate-admins" in groups),
+        check("author and developer role groups exist", {"illuminate-authors", "illuminate-developers"} <= set(groups)),
         check("initial user is added to the admin group", "adminAddUserToGroup" in base_text),
         check("a deleted initial user does not fail the deploy",
               any("adminAddUserToGroup" in json.dumps(r) and "UserNotFoundException" in json.dumps(r)

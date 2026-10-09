@@ -283,7 +283,8 @@ def _selections(contract: QueryContract, catalog: Catalog) -> list[tuple[str, Da
     return out
 
 
-def _group_query(base: Dataset, selections: list, contract: QueryContract, catalog: Catalog) -> tuple[exp.Select, list[str]]:
+def _group_query(base: Dataset, selections: list, contract: QueryContract, catalog: Catalog,
+                 allow_identity: bool = False) -> tuple[exp.Select, list[str]]:
     """One aggregate SELECT over base (plus many-to-one joins) and the dataset ids it reads."""
     joins = _joins_from(base, catalog)
     dims = [(ref, *_resolve(base, ref, catalog, joins)) for ref in contract.dimensions]
@@ -323,7 +324,7 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
 
     select: list[exp.Expression] = []
     for ref, target, dim, grain in dims:
-        if target.is_pii(dim.column):
+        if target.is_pii(dim.column) and not allow_identity:
             raise CompileError(f"dimension {dim.name!r} is personally identifiable and cannot be selected")
         col = column(target, dim.column)
         node = col
@@ -394,7 +395,8 @@ def _combine(groups: list[str], contract: QueryContract, measure_names: list[lis
     return query
 
 
-def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> CompiledQuery:
+def compile_query(contract: QueryContract, catalog: Catalog, database: str, allow_identity: bool = False) -> CompiledQuery:
+    """allow_identity: personally identifiable dimensions may be selected (never for Viewers or chat)."""
     selections = _selections(contract, catalog)
     aliases = [_output_name(d) for d in contract.dimensions] + [name for name, _, _, _ in selections]
     if len({a.lower() for a in aliases}) != len(aliases):
@@ -403,7 +405,8 @@ def compile_query(contract: QueryContract, catalog: Catalog, database: str) -> C
     bases: dict[str, list] = {}
     for sel in selections:
         bases.setdefault(sel[1].id, []).append(sel)
-    groups = [(_group_query(catalog.datasets[ds_id], sels, contract, catalog), sels) for ds_id, sels in bases.items()]
+    groups = [(_group_query(catalog.datasets[ds_id], sels, contract, catalog, allow_identity), sels)
+              for ds_id, sels in bases.items()]
 
     read = list(dict.fromkeys(ds_id for (_, used), _ in groups for ds_id in used))
     ctes = build_ctes(catalog, read, database)
