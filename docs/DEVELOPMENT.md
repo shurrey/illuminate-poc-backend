@@ -21,7 +21,7 @@ whose shape changes between releases, so upgrade it only together with a full te
 ## Tests
 
 ```bash
-python -m pytest                                   # everything (pytest.ini: testpaths = tests, -q)
+python -m pytest                                   # everything; pytest.ini already adds -q, so no extra -q
 python -m pytest tests/test_semantic_definitions.py  # validate and compile every canonical definition
 python -m pytest -k overlay                        # a subset by name
 ```

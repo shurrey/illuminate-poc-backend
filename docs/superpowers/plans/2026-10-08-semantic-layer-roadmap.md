@@ -208,3 +208,31 @@ Rewriting the docs turned up these findings. All are fixed except where marked d
 | The dev default origin `https://dm5zbussw00dg.cloudfront.net` is hard-coded and may no longer be live | Deferred: drop it once the frontend stack has been redeployed with #19 |
 | `truststore` is not wired in, contrary to the local-machine convention | Deferred: the API makes outbound HTTPS calls only from Lambda; add it if local runs against live services fail on corporate CAs |
 | `sqlglot` upgrade path (keyword renames, `TableFromRows`, `Generator` node) | Deferred: port the guards, then move the pin |
+
+## Phase 8–9 review (2026-10-09)
+
+A fresh review of backend #86–#99 and frontend #13–#19 found:
+
+| Finding | Outcome |
+|---|---|
+| C1. Freehand PII guard bypassed by UNPIVOT, LATERAL FLATTEN, PIVOT and MATCH_RECOGNIZE | Checked everywhere except filter conditions (#100) |
+| I1. The first base deploy after #96 replaces existing credentials; database resolution fell back silently to `ILLUMINATE` | Fails loudly and recovers once set (#102); upgrade step documented |
+| I2. Mock numbers (What Changed, notifications, reports) shown unlabelled | Badged "Sample data" (frontend #21) |
+| I3. Chat provenance never listed tenant overlays | Filled in (#101), shown in the chat bar (frontend #20) |
+| M8. `ACCOUNT_ID` still set by CDK | Removed (#102) |
+| M4, M10. Docs said SHOW/DESCRIBE run; the test command doubled `-q` | Docs corrected |
+
+Deferred minors:
+
+| Item | Note |
+|---|---|
+| M1. `DELETE /admin/overlay/metric:<id>%23v000001` deletes a history row; the next put reuses the version | Reject `#` in targets, or validate the metric id |
+| M2. `GENERATOR(ROWCOUNT => 1e3)` raises in `is_bounded_generator`; `_run_tool` doesn't catch tool exceptions, so the turn fails | Catch and return an error `toolResult` |
+| M3. Freehand SQL isn't pinned to the configured database (`OTHERDB.CDM_*`, unqualified tables) | Matters only if the role can see other databases |
+| M4. The SHOW/DESCRIBE branch in `validate_and_execute` is unreachable through `query_sql` | Remove the branch |
+| M5. The model can call `search_catalog` and `execute_sql` in the same round, so the gate holds only by order | Require a governed tool in an earlier round |
+| M6. Text written alongside a tool call is dropped | Carried from Phase 5 |
+| M7. A 409 reload discards the admin's unsaved edit; a 404 doesn't reload | Keep the draft and offer a re-apply |
+| M9. The non-streaming `/api/chat` path makes blocking DynamoDB calls on the event loop | Move them to the executor, like the streaming path |
+| Ruling | Freehand PII may appear in filter conditions; a filter is an oracle, as `COUNT_IF` and compiled PII filters already are |
+| Frontend | Move What Changed, notifications and Reporting onto semantic contracts |
