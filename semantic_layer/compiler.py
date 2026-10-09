@@ -199,6 +199,24 @@ def _resolve(base: Dataset, ref: str, catalog: Catalog, joins: dict) -> tuple[Da
     return target, dim, grain
 
 
+def _semi_join(base: Dataset, ref: str, catalog: Catalog) -> Optional[tuple[Dataset, DatasetDimension, str, str]]:
+    """For a filter only: a qualified dataset sharing an entity with base -> (dataset, dim, base col, its col).
+
+    Filtering as `<base col> IN (SELECT <its col> ...)` cannot multiply base rows. The entity primary in
+    the target is preferred, so an enrollment filter narrows enrollments rather than whole courses.
+    """
+    ds_id, name, _ = _split_ref(ref)
+    target = catalog.datasets.get(ds_id) if ds_id else None
+    dim = target.dimension(name) if target else None
+    if target is None or dim is None or target.id == base.id:
+        return None
+    shared = [(mine, theirs) for theirs in target.entities for mine in base.entities if mine.name == theirs.name]
+    if not shared:
+        return None
+    mine, theirs = next(((m, t) for m, t in shared if t.type == "primary"), shared[0])
+    return target, dim, mine.column, theirs.column
+
+
 def _qualified(node: exp.Expression, table: Optional[str]) -> exp.Expression:
     if table:
         for col in node.find_all(exp.Column):
@@ -288,13 +306,21 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
     """One aggregate SELECT over base (plus many-to-one joins) and the dataset ids it reads."""
     joins = _joins_from(base, catalog)
     dims = [(ref, *_resolve(base, ref, catalog, joins)) for ref in contract.dimensions]
-    filters = []
+    filters, semi = [], []
     for f in contract.filters:
         if "__" in f.dimension.rpartition(":")[2]:
             raise CompileError(
                 f"filter dimension {f.dimension!r} has a grain suffix; filters take the plain dimension name"
             )
-        target, dim, _ = _resolve(base, f.dimension, catalog, joins)
+        try:
+            target, dim, _ = _resolve(base, f.dimension, catalog, joins)
+        except CompileError:
+            via = _semi_join(base, f.dimension, catalog)
+            if via is None:
+                raise
+            _check_filter_values(f, via[1])
+            semi.append((f, *via))
+            continue
         _check_filter_values(f, dim)
         filters.append((f, target, dim))
     if base.required_time_range:
@@ -352,6 +378,12 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
         if dim.type == "time":
             col = exp.Cast(this=col, to=exp.DataType.build("DATE"))
         where.append(_condition(col, f))
+    for f, target, dim, mine, theirs in semi:
+        col = exp.column(dim.column)
+        if dim.type == "time":
+            col = exp.Cast(this=col, to=exp.DataType.build("DATE"))
+        subquery = exp.select(exp.column(theirs)).from_(cte_name(target.id)).where(_condition(col, f))
+        where.append(exp.In(this=exp.column(mine, table=alias[base.id]), query=exp.Subquery(this=subquery)))
     if time_range:
         day = exp.Cast(this=column(*time_range[:1], time_range[1].column), to=exp.DataType.build("DATE"))
         if contract.time_range.start:
@@ -369,7 +401,7 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
         query = query.where(exp.and_(*where))
     if contract.dimensions:
         query = query.group_by(*[exp.Literal.number(i + 1) for i in range(len(contract.dimensions))])
-    return query, [base.id] + joined
+    return query, [base.id] + joined + [t.id for _, t, _, _, _ in semi if t.id not in joined]
 
 
 def _combine(groups: list[str], contract: QueryContract, measure_names: list[list[str]]) -> exp.Select:
