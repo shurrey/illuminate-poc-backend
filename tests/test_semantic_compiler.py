@@ -321,3 +321,41 @@ def test_a_required_time_range_must_be_on_the_dataset_itself():
     with pytest.raises(CompileError, match="time_range"):
         _compile(catalog(ds), measures=["dataset.enrollments.v1:enrollments"],
                  time_range={"dimension": "dataset.other.v1:enrolled_at", "start": "2026-01-01"})
+
+
+def _real(**contract):
+    from semantic_layer.catalog import load_catalog
+    return compile_query(QueryContract(**contract), load_catalog(), "DB").sql
+
+
+CSA_STUDENTS = ["dataset.course_student_activity.v1:students"]
+
+
+def _flat(sql: str) -> str:
+    return " ".join(sql.replace("(", "( ").split()).replace("( ", "(")
+
+
+def test_a_filter_on_a_dataset_that_cannot_join_compiles_as_a_semi_join():
+    sql = _real(measures=CSA_STUDENTS,
+                filters=[{"dimension": "dataset.course_filters_ih.v1:ih_level_1", "op": "eq", "values": ["Nursing"]}])
+    outer = _outer(sql)
+    assert "COURSE_ID IN (SELECT COURSE_ID FROM DS_COURSE_FILTERS_IH_V1" in _flat(outer)
+    assert "JOIN DS_COURSE_FILTERS_IH_V1" not in outer
+    assert "DS_COURSE_FILTERS_IH_V1 AS (" in sql
+
+
+def test_a_semi_join_uses_the_entity_that_is_primary_in_the_filtered_dataset():
+    sql = _flat(_outer(_real(measures=CSA_STUDENTS,
+        filters=[{"dimension": "dataset.sis_enrollment_attributes.v1:program", "op": "in", "values": ["BSN"]}])))
+    assert "PERSON_COURSE_ID IN (SELECT PERSON_COURSE_ID FROM DS_SIS_ENROLLMENT_ATTRIBUTES_V1" in sql
+
+
+def test_a_dataset_that_cannot_join_still_cannot_supply_a_dimension():
+    with pytest.raises(CompileError, match="cannot supply dimensions|cannot be reached"):
+        _real(measures=CSA_STUDENTS, dimensions=["dataset.course_filters_ih.v1:ih_level_1"])
+
+
+def test_a_filter_on_a_dataset_sharing_no_entity_is_still_refused():
+    with pytest.raises(CompileError, match="cannot be reached"):
+        _real(measures=CSA_STUDENTS,
+              filters=[{"dimension": "dataset.collab_sessions_by_slot.v1:slot_label", "op": "eq", "values": ["8 AM"]}])
