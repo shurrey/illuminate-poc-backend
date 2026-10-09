@@ -1,0 +1,40 @@
+id: dataset.ally_instructor_feedback.v1
+display_name: Ally instructor feedback views
+description: >
+  One row per time an instructor opened Ally accessibility feedback on a content object: the date, the object, the course, and the course's institution hierarchy nodes as a ';'-separated list (filter with contains). Deviation: bbd-analytics also emits a row with no date for every day without events; here
+  only events appear.
+grain: one row per instructor feedback event
+domain: ally
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_ALLY_INSTRUCTOR_FEEDBACK.sql
+base_sql: |
+  WITH course_ih AS (
+      SELECT ihc.COURSE_ID,
+             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+      FROM {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+      GROUP BY ihc.COURSE_ID
+  ),
+  events AS (
+      SELECT ae.EVENT_TIME,
+             ae.EVENT_TIME::DATE AS EVENT_DATE,
+             ae.DATA:objectId::STRING AS OBJECT_ID,
+             TRY_TO_NUMBER(REGEXP_SUBSTR(ae.DATA:contextId::STRING, '^_(\\d.*)_', 1, 1, 'e', 1)) AS COURSE_SOURCE_NUMBER
+      FROM {{ database }}.CDM_TLM.ALLY_EVENTS ae
+      WHERE ae.EVENT_TYPE = 'ENGAGE_INSTRUCTOR_FEEDBACK'
+  )
+  SELECT e.*, c.ID AS COURSE_ID, ci.IH_NODES
+  FROM events e
+  LEFT JOIN {{ database }}.CDM_LMS.COURSE c ON TRY_TO_NUMBER(c.SOURCE_ID) = e.COURSE_SOURCE_NUMBER
+  LEFT JOIN course_ih ci ON ci.COURSE_ID = c.ID
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: event_date, column: EVENT_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+measures:
+  - {name: feedback_events, agg: count, expr: "*", unit: events}
+  - {name: content_objects, agg: count_distinct, expr: OBJECT_ID, unit: objects}
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+pii_exempt:
+  OBJECT_ID: "DATA:objectId, a content object id; ALLY_EVENTS.DATA is flagged as a whole for its user ids"
+  COURSE_SOURCE_NUMBER: "Course number parsed from DATA:contextId"

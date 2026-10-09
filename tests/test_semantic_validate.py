@@ -122,3 +122,21 @@ def test_measures_may_only_count_pii_columns():
                             {"name": "emails", "agg": "count_distinct", "expr": "EMAIL"}])
     errors = "\n".join(validate_dataset(bad, catalog(bad), SNAPSHOT, PII))
     assert "latest_email" in errors and "emails" not in errors
+
+
+def test_a_reviewed_exemption_clears_a_traced_pii_output():
+    reviewed = dataset(pii_columns=["ID", "EMAIL"], pii_exempt={"PERSON_ID": "test: reviewed"})
+    assert validate_dataset(reviewed, catalog(reviewed), SNAPSHOT, PII) == []
+
+
+def test_known_pii_column_names_cannot_be_exempted():
+    bad = dataset(pii_columns=["ID", "PERSON_ID"], pii_exempt={"EMAIL": "it is fine"})
+    assert any("EMAIL" in e and "exempt" in e for e in validate_dataset(bad, catalog(bad), SNAPSHOT, PII))
+
+
+def test_an_exemption_needs_a_reason():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        dataset(pii_exempt={"PERSON_ID": " "})
