@@ -10,9 +10,7 @@ export interface ApiStackProps extends cdk.StackProps {
   environment: string;
   userPoolId: string;
   userPoolClientId: string;
-  artifactsBucketName: string;
   snowflakeSecretArn: string;
-  frontendOrigin?: string;
 }
 
 export class ApiStack extends cdk.Stack {
@@ -39,9 +37,7 @@ export class ApiStack extends cdk.Stack {
       overlayTableName: overlayTable.tableName,
       userPoolId: props.userPoolId,
       userPoolClientId: props.userPoolClientId,
-      artifactsBucketName: props.artifactsBucketName,
       snowflakeSecretArn: props.snowflakeSecretArn,
-      frontendOrigin: props.frontendOrigin,
     });
 
     this.functionUrl = proxy.functionUrl;

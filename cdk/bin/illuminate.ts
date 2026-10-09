@@ -51,7 +51,6 @@ const api = new ApiStack(app, `IlluminateApi-${environment}`, {
   environment,
   userPoolId: base.userPool.userPoolId,
   userPoolClientId: base.userPoolClient.userPoolClientId,
-  artifactsBucketName: base.artifactsBucket.bucketName,
   snowflakeSecretArn: base.snowflakeSecret.secretArn,
 });
 api.addDependency(base);

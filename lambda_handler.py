@@ -80,7 +80,6 @@ def _scrub_pii(text: str) -> str:
 USER_POOL_ID = os.environ.get("USER_POOL_ID", "")
 USER_POOL_CLIENT_ID = os.environ.get("USER_POOL_CLIENT_ID", "")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-ACCOUNT_ID = os.environ.get("ACCOUNT_ID", "442606396405")
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
 SNOWFLAKE_SECRET_NAME = os.environ.get("SNOWFLAKE_SECRET_NAME", "illuminate/dev/snowflake")
 
@@ -404,7 +403,7 @@ async def health_check():
     """Health check endpoint."""
     return HealthResponse(
         status="healthy",
-        version="0.3.0",
+        version="0.4.0",
         mode="chat_engine"
     )
 
@@ -454,10 +453,8 @@ async def chat_stream(
     authorization: Optional[str] = Header(None)
 ):
     """
-    Send a message and receive streaming response via Server-Sent Events.
-
-    The request is forwarded to the Orchestrator AgentCore runtime, and
-    streaming events are relayed back to the frontend.
+    Send a message and receive the reply as Server-Sent Events: status events while the chat
+    engine works, then one complete (or error) event.
     """
     user = _get_user_from_token(authorization)
     if not user:
