@@ -1,0 +1,18 @@
+id: dataset.calendar_day.v1
+display_name: Calendar days
+description: Every day from 1970-01-01 to today, for filling gaps in daily series.
+grain: one row per day
+domain: reference
+visibility: internal
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__0002_PLATFORM_DATE.sql
+base_sql: |
+  SELECT DAY_DATE
+  FROM (
+      SELECT DATEADD(day, ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1, '1970-01-01'::DATE)::DATE AS DAY_DATE
+      FROM TABLE(GENERATOR(ROWCOUNT => 200000))
+  )
+  WHERE DAY_DATE <= CURRENT_DATE()
+entities:
+  - {name: day, column: DAY_DATE, type: primary}
+dimensions:
+  - {name: day, column: DAY_DATE, type: time, grains: [day, week, month, quarter, year]}

@@ -1,0 +1,31 @@
+id: dataset.item_tool_map.v1
+display_name: Item and tool calculation flags
+description: >
+  One row per course item type with the calculations it takes part in, from
+  CDM_META.BBD_CALCULATION_DETAIL. Deviation: bbd-analytics' MAP_ITEM_TOOL is a hard-coded copy of
+  some of these flags that can disagree with the table; here every flag comes from the table.
+grain: one row per item type
+domain: reference
+visibility: internal
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__MAP_ITEM_TOOL.sql
+base_sql: |
+  SELECT cd.NAME AS ITEM_TYPE,
+         cd.DISPLAY_NAME,
+         IFF(ARRAY_CONTAINS('minutes_per_content_items'::VARIANT, NVL(cd.CALCULATION_LIST, ARRAY_CONSTRUCT())), 1, 0) AS CONTENT_TIME_IND,
+         IFF(ARRAY_CONTAINS('social_interactions'::VARIANT, NVL(cd.CALCULATION_LIST, ARRAY_CONSTRUCT())), 1, 0) AS SOCIAL_INTERACTIONS_IND,
+         IFF(ARRAY_CONTAINS('social_collaborate_interactions'::VARIANT, NVL(cd.CALCULATION_LIST, ARRAY_CONSTRUCT())), 1, 0) AS SOCIAL_COLLABORATE_IND,
+         IFF(ARRAY_CONTAINS('grade_response'::VARIANT, NVL(cd.CALCULATION_LIST, ARRAY_CONSTRUCT())), 1, 0) AS GRADE_RESPONSE_IND,
+         IFF(ARRAY_CONTAINS('assignment_with_due_dates'::VARIANT, NVL(cd.CALCULATION_LIST, ARRAY_CONSTRUCT())), 1, 0) AS ASSIGNMENT_DUE_DATE_IND,
+         IFF(ARRAY_CONTAINS('count_of_tools_per_course'::VARIANT, NVL(cd.CALCULATION_LIST, ARRAY_CONSTRUCT())), 1, 0) AS TOOL_COUNT_IND
+  FROM {{ database }}.CDM_META.BBD_CALCULATION_DETAIL cd
+entities:
+  - {name: item_type, column: ITEM_TYPE, type: primary}
+dimensions:
+  - {name: item_type, column: ITEM_TYPE, type: categorical}
+  - {name: item_type_name, column: DISPLAY_NAME, type: categorical}
+  - {name: content_time, column: CONTENT_TIME_IND, type: numeric, description: "1 when the type counts towards time in content"}
+  - {name: social_interactions, column: SOCIAL_INTERACTIONS_IND, type: numeric}
+  - {name: social_collaborate, column: SOCIAL_COLLABORATE_IND, type: numeric}
+  - {name: grade_response, column: GRADE_RESPONSE_IND, type: numeric, description: "1 when the type counts towards grade response time"}
+  - {name: assignment_due_dates, column: ASSIGNMENT_DUE_DATE_IND, type: numeric}
+  - {name: tool_count, column: TOOL_COUNT_IND, type: numeric, description: "1 when the type counts towards tools per course"}
