@@ -1,0 +1,65 @@
+id: dataset.collab_session_student_activity.v1
+display_name: Student Collaborate session attendance
+description: >
+  Per active student enrollment and Collaborate session in a room linked to the course, run by at
+  least one non-student, non-guest participant: minutes attended, the session's attended length and
+  the share of it the student attended, and the last join. Every active student enrollment appears;
+  one with no session has a single row with no session and zero minutes.
+grain: one row per active student enrollment x Collaborate session (or one row with no session)
+domain: collaborate
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__COLLAB_SESSION_STUDENT_ACTIVITY.sql
+depends_on: [dataset.active_students.v1]
+base_sql: |
+  WITH staffed_sessions AS (
+      SELECT DISTINCT att.SESSION_ID
+      FROM {{ database }}.CDM_CLB.ATTENDANCE att
+      JOIN {{ database }}.CDM_CLB.SESSION se ON se.ID = att.SESSION_ID
+      JOIN {{ database }}.CDM_MAP.COURSE_ROOM cr ON cr.CLB_ROOM_ID = se.ROOM_ID
+      JOIN {{ database }}.CDM_MAP.PERSON mp ON mp.CLB_PERSON_ID = att.PERSON_ID
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE p ON p.PERSON_ID = mp.LMS_PERSON_ID AND p.COURSE_ID = cr.LMS_COURSE_ID
+      WHERE p.COURSE_ROLE NOT IN ('S', 'G')
+  ),
+  attended AS (
+      SELECT cr.LMS_COURSE_ID AS COURSE_ID, p.ID AS PERSON_COURSE_ID, att.SESSION_ID,
+             CEIL(SUM(att.DURATION) / 60, 0) AS ATTENDED_MIN,
+             ANY_VALUE(CEIL(se.ATTENDED_DURATION / 60)) AS SESSION_MIN,
+             MAX(att.FIRST_JOIN_TIME) AS LAST_JOIN_TIME
+      FROM {{ database }}.CDM_CLB.ATTENDANCE att
+      JOIN staffed_sessions ss ON ss.SESSION_ID = att.SESSION_ID
+      JOIN {{ database }}.CDM_CLB.SESSION se ON se.ID = att.SESSION_ID
+      JOIN {{ database }}.CDM_MAP.COURSE_ROOM cr ON cr.CLB_ROOM_ID = se.ROOM_ID
+      JOIN {{ database }}.CDM_MAP.PERSON mp ON mp.CLB_PERSON_ID = att.PERSON_ID
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE p
+        ON p.PERSON_ID = mp.LMS_PERSON_ID AND p.COURSE_ID = cr.LMS_COURSE_ID AND p.COURSE_ROLE = 'S'
+      GROUP BY cr.LMS_COURSE_ID, p.ID, att.SESSION_ID
+  ),
+  students AS (
+      SELECT DISTINCT PERSON_COURSE_ID, PERSON_ID, COURSE_ID, COURSE_WEEKS, START_WEEK
+      FROM {{ ref('dataset.active_students.v1') }}
+  )
+  SELECT s.COURSE_ID, s.PERSON_COURSE_ID, s.PERSON_ID, s.COURSE_WEEKS, s.START_WEEK,
+         a.SESSION_ID,
+         NVL(a.ATTENDED_MIN, 0) AS ATTENDED_MIN,
+         NVL(a.SESSION_MIN, 0) AS SESSION_MIN,
+         IFF(a.SESSION_ID IS NULL OR a.SESSION_MIN = 0, 0, a.ATTENDED_MIN / a.SESSION_MIN) AS SHARE_OF_SESSION,
+         a.LAST_JOIN_TIME
+  FROM students s
+  LEFT JOIN attended a ON a.PERSON_COURSE_ID = s.PERSON_COURSE_ID AND a.COURSE_ID = s.COURSE_ID
+entities:
+  - {name: person_course, column: PERSON_COURSE_ID, type: foreign}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+  - {name: collab_session, column: SESSION_ID, type: foreign}
+dimensions:
+  - {name: course_weeks, column: COURSE_WEEKS, type: numeric}
+  - {name: course_start_week, column: START_WEEK, type: time, grains: [week, month, quarter, year]}
+  - {name: last_join, column: LAST_JOIN_TIME, type: time, grains: [day, week, month]}
+measures:
+  - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students}
+  - {name: students_who_attended, agg: count_distinct, expr: "IFF(SESSION_ID IS NOT NULL, PERSON_ID, NULL)", unit: students}
+  - {name: share_who_attended, agg: ratio, numerator: students_who_attended, denominator: students, unit: ratio, synonyms: [collaborate participation]}
+  - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions}
+  - {name: attended_minutes, agg: sum, expr: ATTENDED_MIN, unit: minutes}
+  - {name: session_minutes, agg: sum, expr: SESSION_MIN, unit: minutes}
+  - {name: share_of_session_time, agg: ratio, numerator: attended_minutes, denominator: session_minutes, unit: ratio, description: "Attended minutes over the attended length of the sessions"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]
