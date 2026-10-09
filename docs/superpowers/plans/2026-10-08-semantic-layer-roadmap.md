@@ -186,3 +186,25 @@ Before the first dataset that reads `CDM_META` or `CDM_TLM` columns missing from
 | Phase 7 review | `TABLE(GENERATOR(ROWCOUNT => n))` has no size cap (canonical YAML only) | 9b |
 | Phase 7 review | Preview and support users stay in `social_interactions_by_type` and non-student `course_item_tool_activity` denominators (as in the source) | 9b |
 | Phase 7 review | Enrollment metrics over `course_role_activity` include deleted courses (about 2%), like the other course_filters-based metrics | 9b |
+
+## Phase 9 close-out
+
+9a to 9e are complete: backend #98, frontend #16 to #19.
+
+Rewriting the docs turned up these findings. All are fixed except where marked deferred.
+
+| Finding | Outcome |
+|---|---|
+| `sqlglot>=26.0.0` would install 30.x on deploy. From 27.x, `TABLE(fn(...))` parses as `TableFromRows`, so `_check_tables` stops seeing it (fails open). From 28.x, `with` is renamed `with_` and CTE scope breaks (186 tests fail). | Pinned `sqlglot==26.0.0`, with a test that the installed version matches (#94) |
+| Freehand `TABLE(RESULT_SCAN(...))` and `TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())` passed the schema whitelist on every version | The guard rejects every table function except a bounded `GENERATOR` (#94) |
+| Chat replies were scrubbed for the client but stored unscrubbed | Scrubbed before storage (#95) |
+| The Snowflake password was in the CloudFormation template, and the secret was overwritten on every base deploy | Secret created with a placeholder; `scripts/set-snowflake-secret.sh` writes it (#96) |
+| The frontend `AddCorsOrigin` resource never re-ran after an API deploy reset `ALLOWED_ORIGINS` | Carries a per-synth timestamp (frontend #19) |
+| Stale `/health` version, unused `ACCOUNT_ID`, `ARTIFACTS_BUCKET`, S3 grant and `frontendOrigin`, AgentCore leftovers, stale comments | Removed or updated (#97) |
+| The 1000-row `truncated` flag is dropped by the chat tools | No change: the tools' own 200-row model limit already reports truncation whenever the 1000 cap is hit |
+| Both DynamoDB tables use `RemovalPolicy.DESTROY` | No change, documented: deliberate for a POC teardown |
+| The initial Cognito user's password is in the template (`AwsCustomResource` parameters) | Deferred: replace it with a post-deploy script, as for the Snowflake secret |
+| `DATA_DICTIONARY_URL` affects only `describe_cdm_table`; the `/api/v1/dictionary/*` routes use a fixed URL | Deferred |
+| The dev default origin `https://dm5zbussw00dg.cloudfront.net` is hard-coded and may no longer be live | Deferred: drop it once the frontend stack has been redeployed with #19 |
+| `truststore` is not wired in, contrary to the local-machine convention | Deferred: the API makes outbound HTTPS calls only from Lambda; add it if local runs against live services fail on corporate CAs |
+| `sqlglot` upgrade path (keyword renames, `TableFromRows`, `Generator` node) | Deferred: port the guards, then move the pin |
