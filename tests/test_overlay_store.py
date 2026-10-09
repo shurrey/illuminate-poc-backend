@@ -78,3 +78,17 @@ def test_list_returns_current_overlays_only_for_that_tenant(table):
     overlay_store.put_overlay("t2", _ov("C"), "zed", expected_version=0)
     table.put_item(Item={"tenant_id": "t1", "metric_id": "metric.dashboard.legacy.v1", "measure_sql": "SELECT 1"})
     assert [(o.target, o.expr) for o in overlay_store.list_overlays("t1")] == [(TARGET, "B")]
+
+
+def test_history_reads_are_consistent(table, monkeypatch):
+    calls = []
+    real = table.query
+    monkeypatch.setattr(table, "query", lambda **kw: calls.append(kw) or real(**kw))
+    overlay_store.history("t1", TARGET)
+    assert calls and all(c.get("ConsistentRead") for c in calls)
+
+
+def test_an_existing_history_version_is_never_overwritten(table):
+    table.put_item(Item={"tenant_id": "t1", "metric_id": f"{TARGET}#v000001", "target": TARGET, "expr": "OLD", "version": 1})
+    overlay_store.put_overlay("t1", _ov("NEW"), "alice", expected_version=0)
+    assert [(h.version, h.expr) for h in overlay_store.history("t1", TARGET)] == [(2, "NEW"), (1, "OLD")]

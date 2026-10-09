@@ -75,8 +75,10 @@ def test_chat_queries_use_the_callers_tenant_overlays(client, monkeypatch, path)
 
     target = "measure:dataset.student_grade.v1:average_grade_percentage"
     monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "u1", "custom:tenant_id": "t1"})
-    monkeypatch.setattr(lambda_handler, "_tenant_overlays",
+    import overlay_store
+    monkeypatch.setattr(overlay_store, "list_overlays",
                         lambda tid: [Overlay(target=target, expr="ROUND(GRADE_PERCENTAGE, 0)", version=2)])
+    lambda_handler._overlay_cache.clear()
     seen = {}
 
     async def fake_stream(message, history, **kw):

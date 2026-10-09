@@ -2,7 +2,7 @@
 
 Shares the overlay table (tenant_id HASH, metric_id RANGE) with the legacy metric overlays. The
 current overlay's sort key is its target (`measure:...`, `filter:...`, `metric:...`); every saved
-version is also kept under `<target>#v<version>`. Saves are conditional on the caller's version.
+version is also kept under `<target>#v<version>`. Saves are conditional on the caller's version and write both rows in one transaction.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import boto3
-from boto3.dynamodb.conditions import Attr, Key
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from semantic_layer.overlays import Overlay
@@ -47,7 +47,8 @@ def _from_item(item: dict) -> Overlay:
 
 def _query(tenant_id: str, prefix: str = "") -> list[dict]:
     cond = Key("tenant_id").eq(tenant_id) & Key("metric_id").begins_with(prefix) if prefix else Key("tenant_id").eq(tenant_id)
-    items, kwargs = [], {"KeyConditionExpression": cond}
+    # Version numbers come from these reads, so they must see the latest write.
+    items, kwargs = [], {"KeyConditionExpression": cond, "ConsistentRead": True}
     while True:
         resp = _get_table().query(**kwargs)
         items += resp.get("Items", [])
@@ -80,14 +81,26 @@ def put_overlay(tenant_id: str, overlay: Overlay, updated_by: str, expected_vers
         "version": version, "updated_by": updated_by, "updated_at": datetime.now(timezone.utc).isoformat(),
     })
     item = {k: v for k, v in saved.model_dump().items() if v is not None}
-    condition = Attr("metric_id").not_exists() if expected_version == 0 else Attr("version").eq(expected_version)
+    current = {"Put": {
+        "TableName": _get_table().name,
+        "Item": {**item, "tenant_id": tenant_id, "metric_id": overlay.target},
+        **({"ConditionExpression": "attribute_not_exists(metric_id)"} if expected_version == 0 else {
+            "ConditionExpression": "version = :expected",
+            "ExpressionAttributeValues": {":expected": expected_version},
+        }),
+    }}
+    archived = {"Put": {
+        "TableName": _get_table().name,
+        "Item": {**item, "tenant_id": tenant_id, "metric_id": _history_key(overlay.target, version)},
+        "ConditionExpression": "attribute_not_exists(metric_id)",
+    }}
     try:
-        _get_table().put_item(Item={**item, "tenant_id": tenant_id, "metric_id": overlay.target}, ConditionExpression=condition)
+        # The resource's client serialises plain Python values itself.
+        _get_table().meta.client.transact_write_items(TransactItems=[current, archived])
     except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+        if e.response["Error"]["Code"] in ("TransactionCanceledException", "ConditionalCheckFailedException"):
             raise OverlayConflict(overlay.target) from e
         raise
-    _get_table().put_item(Item={**item, "tenant_id": tenant_id, "metric_id": _history_key(overlay.target, version)})
     return saved
 
 

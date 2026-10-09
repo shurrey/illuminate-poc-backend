@@ -109,3 +109,27 @@ def test_get_returns_the_canonical_definition_beside_the_overlay(client):
     assert client.get("/api/v1/admin/overlay/filter:dataset.student_grade.v1:honours", headers=AUTH).json()["canonical"] is None
     metric = client.get("/api/v1/admin/overlay/metric:metric.courses.v1", headers=AUTH).json()
     assert metric["canonical"] == {"default_filters": ["top_level", "live"]}
+
+
+def _stale(table, target, **fields):
+    table.put_item(Item={"tenant_id": "t1", "metric_id": target, "target": target, "version": 1, "description": "", **fields})
+
+
+def test_an_overlay_that_no_longer_validates_is_skipped_reported_and_does_not_block_other_edits(client):
+    table = overlay_store._get_table()
+    _stale(table, TARGET, expr="REMOVED_COLUMN")
+    lambda_handler._overlay_cache.clear()
+    compiled = client.post("/api/v1/semantic/compile", headers=AUTH, json={"metrics": ["metric.average_grade.v1"]}).json()
+    assert "REMOVED_COLUMN" not in compiled["sql"] and compiled["provenance"]["overlays"] == []
+    listed = client.get("/api/v1/admin/overlays", headers=AUTH).json()["overlays"]
+    assert listed[0]["status"] == "skipped" and listed[0]["problems"]
+    other = "filter:dataset.student_grade.v1:honours"
+    r = client.put(f"/api/v1/admin/overlay/{other}", headers=AUTH, json={"sql": "GRADE_PERCENTAGE >= 90", "expected_version": 0})
+    assert r.status_code == 200, r.text
+
+
+def test_deleting_an_unrelated_overlay_is_not_blocked_by_a_stale_metric_overlay(client):
+    table = overlay_store._get_table()
+    _stale(table, "metric:metric.average_grade.v1", default_filters=["gone"])
+    _put(client)
+    assert client.delete(URL, headers=AUTH).status_code == 200

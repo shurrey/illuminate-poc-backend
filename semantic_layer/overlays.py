@@ -7,6 +7,7 @@ the same validator and compiler as canonical definitions.
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Iterable, Literal, Optional
 
@@ -23,6 +24,15 @@ from .validate import load_pii_columns, load_snapshot, validate_dataset, validat
 Kind = Literal["measure", "filter", "metric"]
 _FIELD = {"measure": "expr", "filter": "sql", "metric": "default_filters"}
 _FORBIDDEN = (exp.Query, exp.Subquery, exp.Table, exp.DML, exp.DDL, exp.Command)
+# Forms that reach columns or data without naming a column: *, $n, IDENTIFIER(), qualified UDFs.
+_HIDDEN_ACCESS = (exp.Star, exp.StarMap, exp.Parameter, exp.Placeholder, exp.Dot, exp.CurrentUser)
+# Functions sqlglot doesn't model; anything else untyped (IDENTIFIER, GET, HASH, UDFs...) is refused.
+_UNTYPED_ALLOWED = frozenset({
+    "TRY_TO_NUMBER", "TRY_TO_DECIMAL", "TRY_TO_DOUBLE", "TRY_TO_DATE", "TRY_TO_TIMESTAMP", "TRY_TO_BOOLEAN",
+    "DIV0", "DIV0NULL", "NULLIFZERO", "NVL2", "EQUAL_NULL", "LEAST_IGNORE_NULLS", "GREATEST_IGNORE_NULLS",
+    "CONTAINS", "STARTSWITH", "ENDSWITH", "REGEXP_LIKE", "DATE_FROM_PARTS", "TRUNCATE", "SIGN", "DATE_TRUNC",
+})
+_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 class OverlayError(ValueError):
@@ -35,9 +45,12 @@ def parse_target(target: str) -> tuple[Kind, str, Optional[str]]:
     if kind == "metric" and rest:
         return "metric", rest, None
     owner, _, name = rest.rpartition(":")
-    if kind in ("measure", "filter") and owner and name:
+    if kind in ("measure", "filter") and owner and _NAME.match(name):
         return kind, owner, name
-    raise OverlayError(f"invalid overlay target {target!r}; use measure:<dataset>:<name>, filter:<dataset>:<name> or metric:<id>")
+    raise OverlayError(
+        f"invalid overlay target {target!r}; use measure:<dataset>:<name>, filter:<dataset>:<name> or metric:<id>, "
+        "where name is lowercase letters, digits and underscores, starting with a letter"
+    )
 
 
 class Overlay(BaseModel):
@@ -76,8 +89,13 @@ def check_expression(sql: str, what: str) -> None:
         raise OverlayError(f"{what}: {e}") from e
     if len(parsed) != 1:
         raise OverlayError(f"{what}: must be exactly one expression")
-    if any(isinstance(node, _FORBIDDEN) for node in parsed[0].walk()):
-        raise OverlayError(f"{what}: may not contain queries or tables")
+    for node in parsed[0].walk():
+        if isinstance(node, _FORBIDDEN):
+            raise OverlayError(f"{what}: may not contain queries or tables")
+        if isinstance(node, (exp.AggFunc, exp.Window)):
+            raise OverlayError(f"{what}: may not contain aggregate or window functions; the measure's agg is applied for you")
+        if isinstance(node, _HIDDEN_ACCESS) or (isinstance(node, exp.Anonymous) and str(node.this).upper() not in _UNTYPED_ALLOWED):
+            raise OverlayError(f"{what}: {node.sql(dialect='snowflake')[:60]} is not allowed; reference the dataset's columns by name")
 
 
 def _with_dataset(catalog: Catalog, ds: Dataset, **changes) -> Catalog:
