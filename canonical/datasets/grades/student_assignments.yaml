@@ -1,0 +1,92 @@
+id: dataset.student_assignments.v1
+display_name: Student assignments with due dates
+description: >
+  Per active student enrollment, item type and whether the items count towards the grade, over
+  gradebook items with a due date: items available, interacted with and submitted; submissions on
+  time, late, overdue and upcoming; time and interactions on those items; and the last access and
+  submission. Deviation: bbd-analytics reports 1970-01-01 as the last access when the student never
+  opened an item; here it is NULL. Standalone grade center columns take no submissions, so past their
+  due date they always count as overdue (as in bbd-analytics); the submittable filter leaves them out.
+grain: one row per active student enrollment x item type x counts-towards-grade flag
+domain: grades
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_STUDENT_ASSIGNMENTS.sql
+depends_on: [dataset.active_students.v1]
+base_sql: |
+  WITH students AS (
+      SELECT DISTINCT PERSON_COURSE_ID, PERSON_ID, COURSE_ID, ACTIVE FROM {{ ref('dataset.active_students.v1') }}
+  ),
+  access_time AS (
+      SELECT cia.PERSON_COURSE_ID, cia.COURSE_ITEM_ID,
+             SUM(cia.DURATION_SUM) AS DURATION_SUM, SUM(cia.INTERACTION_CNT) AS INTERACTION_CNT,
+             MAX(cia.LAST_ACCESSED_TIME) AS LAST_ACCESSED_TIME
+      FROM students s
+      JOIN {{ database }}.CDM_LMS.COURSE_ITEM_ACTIVITY cia ON cia.PERSON_COURSE_ID = s.PERSON_COURSE_ID
+      GROUP BY cia.PERSON_COURSE_ID, cia.COURSE_ITEM_ID
+  ),
+  grade_time AS (
+      SELECT gb.COURSE_ITEM_ID, s.PERSON_COURSE_ID, gb.USED_IN_CALCULATIONS_IND,
+             SUM(IFF(gr.ATTEMPTED_TIME <= gb.DUE_TIME, 1, 0)) AS ON_TIME,
+             SUM(IFF(gr.ATTEMPTED_TIME > gb.DUE_TIME, 1, 0)) AS LATE,
+             SUM(IFF(gr.ATTEMPTED_TIME IS NULL AND gb.DUE_TIME <= CURRENT_TIMESTAMP(), 1, 0)) AS OVERDUE,
+             SUM(IFF(gr.ATTEMPTED_TIME IS NULL AND gb.DUE_TIME > CURRENT_TIMESTAMP(), 1, 0)) AS UPCOMING,
+             SUM(IFF(gr.ATTEMPTED_TIME IS NULL, 0, 1)) AS TOTAL_SUBMISSIONS,
+             MAX(gr.ATTEMPTED_TIME) AS LAST_SUBMISSION_TIME
+      FROM students s
+      JOIN {{ database }}.CDM_LMS.GRADEBOOK gb ON gb.COURSE_ID = s.COURSE_ID
+      LEFT JOIN {{ database }}.CDM_LMS.GRADE gr
+        ON gr.GRADEBOOK_ID = gb.ID
+       AND gr.PERSON_COURSE_ID = s.PERSON_COURSE_ID
+       AND (gr.ATTEMPTED_TIME > '1970-01-01'::DATE OR gr.ATTEMPTED_TIME IS NULL)
+      WHERE gb.DUE_TIME IS NOT NULL AND gb.COURSE_ITEM_ID IS NOT NULL
+      GROUP BY gb.COURSE_ITEM_ID, s.PERSON_COURSE_ID, gb.USED_IN_CALCULATIONS_IND
+  )
+  SELECT s.COURSE_ID, s.PERSON_ID, s.PERSON_COURSE_ID, s.ACTIVE,
+         NVL(IFF(ci.ITEM_TYPE IN ('SCORM_ENGINE', 'CONTENT_PACKAGE_SCORM', 'SCORM'), 'SCORM PACKAGE', ci.ITEM_TYPE), 'OTHER') AS ITEM_TYPE,
+         gt.USED_IN_CALCULATIONS_IND,
+         COUNT(DISTINCT gt.COURSE_ITEM_ID) AS AVAILABLE_ITEMS,
+         SUM(IFF(at.INTERACTION_CNT IS NULL, 0, 1)) AS INTERACTED_ITEMS,
+         SUM(NVL(at.DURATION_SUM / 60, 0)) AS MINUTES,
+         MAX(at.LAST_ACCESSED_TIME) AS LAST_ACCESSED_TIME,
+         SUM(NVL(at.INTERACTION_CNT, 0)) AS INTERACTIONS,
+         SUM(IFF(gt.TOTAL_SUBMISSIONS > 0, 1, 0)) AS SUBMITTED_ITEMS,
+         SUM(gt.ON_TIME) AS ON_TIME,
+         SUM(gt.LATE) AS LATE,
+         SUM(gt.OVERDUE) AS OVERDUE,
+         SUM(gt.UPCOMING) AS UPCOMING,
+         SUM(gt.TOTAL_SUBMISSIONS) AS SUBMISSIONS,
+         MAX(gt.LAST_SUBMISSION_TIME) AS LAST_SUBMISSION_TIME,
+         SUM(gt.ON_TIME + gt.LATE + gt.OVERDUE + gt.UPCOMING) AS DUE_ITEMS
+  FROM students s
+  JOIN grade_time gt ON gt.PERSON_COURSE_ID = s.PERSON_COURSE_ID
+  LEFT JOIN access_time at ON at.PERSON_COURSE_ID = gt.PERSON_COURSE_ID AND at.COURSE_ITEM_ID = gt.COURSE_ITEM_ID
+  LEFT JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = gt.COURSE_ITEM_ID
+  GROUP BY s.COURSE_ID, s.PERSON_ID, s.PERSON_COURSE_ID, s.ACTIVE, 5, gt.USED_IN_CALCULATIONS_IND
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person_course, column: PERSON_COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: item_type, column: ITEM_TYPE, type: categorical, synonyms: [assignment type]}
+  - {name: counts_towards_grade, column: USED_IN_CALCULATIONS_IND, type: boolean}
+  - {name: active, column: ACTIVE, type: numeric, description: "1 when the enrollment is available, enabled and not deleted"}
+  - {name: last_access, column: LAST_ACCESSED_TIME, type: time, grains: [day, week, month]}
+  - {name: last_submission, column: LAST_SUBMISSION_TIME, type: time, grains: [day, week, month]}
+measures:
+  - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students}
+  - {name: due_items, agg: sum, expr: DUE_ITEMS, unit: items, description: "Items with a due date, per enrollment, summed"}
+  - {name: submitted_items, agg: sum, expr: SUBMITTED_ITEMS, unit: items}
+  - {name: on_time, agg: sum, expr: ON_TIME, unit: submissions}
+  - {name: late, agg: sum, expr: LATE, unit: submissions}
+  - {name: overdue, agg: sum, expr: OVERDUE, unit: items, description: "Past due with no submission"}
+  - {name: upcoming, agg: sum, expr: UPCOMING, unit: items}
+  - {name: share_on_time, agg: ratio, numerator: on_time, denominator: due_items, unit: ratio}
+  - {name: share_late, agg: ratio, numerator: late, denominator: due_items, unit: ratio}
+  - {name: share_overdue, agg: ratio, numerator: overdue, denominator: due_items, unit: ratio, synonyms: [missing assignments]}
+  - {name: students_with_overdue, agg: count_distinct, expr: "IFF(OVERDUE > 0, PERSON_ID, NULL)", unit: students}
+  - {name: minutes, agg: sum, expr: MINUTES, unit: minutes}
+  - {name: interactions, agg: sum, expr: INTERACTIONS, unit: interactions}
+filters:
+  - {name: active_only, sql: "ACTIVE = 1"}
+  - {name: graded_items, sql: "USED_IN_CALCULATIONS_IND"}
+  - {name: submittable, sql: "ITEM_TYPE NOT IN ('STANDALONE_GRADE_CENTER_COLUMN', 'OTHER')", description: "Item types students submit to"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]
