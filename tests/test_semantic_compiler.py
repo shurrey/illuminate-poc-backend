@@ -385,3 +385,9 @@ def test_grading_definitions_compile_and_has_due_date_filters():
 def test_platform_definitions_compile():
     assert "LAST_ACCESSED_DATE" in _outer(_real(measures=["dataset.lms_sessions.v1:sessions"], dimensions=["session_end_date__day"]))
     assert "COUNT(*)" in _outer(_real(measures=["dataset.collab_sessions_by_slot.v1:session_slots"], dimensions=["slot_label"]))
+
+
+def test_a_semi_join_matches_every_shared_entity_when_the_targets_key_is_not_shared():
+    sql = _flat(_outer(_real(measures=["dataset.lms_course_logins.v1:people"],
+        filters=[{"dimension": "dataset.sis_enrollment_attributes.v1:program", "op": "in", "values": ["BSN"]}])))
+    assert "(COURSE_ID, PERSON_ID) IN (SELECT COURSE_ID, PERSON_ID FROM DS_SIS_ENROLLMENT_ATTRIBUTES_V1" in sql
