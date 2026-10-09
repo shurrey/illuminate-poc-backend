@@ -26,11 +26,15 @@ def check(name: str, ok: bool) -> bool:
 def main() -> int:
     [client] = resources("IlluminateBase-dev", "AWS::Cognito::UserPoolClient")
     writable = client["Properties"].get("WriteAttributes")
+    [pool] = resources("IlluminateBase-dev", "AWS::Cognito::UserPool")
+    required = [a for a in pool["Properties"].get("Schema", []) if a.get("Required")]
     groups = [g["Properties"]["GroupName"] for g in resources("IlluminateBase-dev", "AWS::Cognito::UserPoolGroup")]
     base_text = (OUT / "IlluminateBase-dev.template.json").read_text()
     results = [
         check("user pool client declares its writable attributes", writable is not None),
         check("users cannot write custom:tenant_id", writable is not None and "custom:tenant_id" not in writable),
+        check("required attributes are writable (Cognito rejects the client otherwise)",
+              writable is not None and all(a["Name"] in writable for a in required)),
         check("illuminate-admins group exists", "illuminate-admins" in groups),
         check("initial user is added to the admin group", "adminAddUserToGroup" in base_text),
         check("a deleted initial user does not fail the deploy",
