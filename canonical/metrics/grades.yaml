@@ -28,7 +28,7 @@ metrics:
     last_reviewed: 2026-10-08
     measure: dataset.grade_response_time.v1:courses_graded_recently
     default_filters: [graded_only]
-    synonyms: [instructor engagement, grading activity, instructors grading]
+    synonyms: [grading activity, courses graded recently]
     example_questions: ["How many courses had grading activity this week?"]
 
   - id: metric.grade_response_days.v1

@@ -1,8 +1,8 @@
 id: dataset.student_risk_success.v1
 display_name: Student risk and success indicators
 description: >
-  Per graded student enrollment with course activity, in courses where someone has a grade above
-  zero: the grade (capped at 100) beside the student's time in the course, days active, Collaborate
+  Per student enrollment with course activity, in courses where someone has a grade above zero
+  (grade is NULL for enrollments not yet graded): the grade (capped at 100) beside the student's time in the course, days active, Collaborate
   minutes, time in content items and social interactions, each scaled 0-100 against the course's
   highest value, for comparing engagement with outcomes. Collaborate minutes are scaled against the
   most session time any student in the course could have attended.
@@ -76,5 +76,5 @@ measures:
   - {name: avg_collab_score, agg: avg, expr: MINUTES_IN_COLLAB, unit: score}
   - {name: avg_content_time_score, agg: avg, expr: MINUTES_IN_TOOLS, unit: score}
   - {name: avg_interactions_score, agg: avg, expr: INTERACTIONS, unit: score}
-  - {name: students_at_risk, agg: count_distinct, expr: "IFF(GRADE < 60 AND DAYS_IN_COURSE < 25, PERSON_ID, NULL)", unit: students, description: "Graded below 60% and active on under a quarter of the days the course's most active student was"}
+  - {name: students_at_risk, agg: count_distinct, expr: "IFF(GRADE < 60 AND DAYS_IN_COURSE < 25, PERSON_ID, NULL)", unit: students, description: "Not in bbd-analytics: graded below 60% and active on under a quarter of the days the course's most active student was"}
 pii_columns: [PERSON_ID, PERSON_COURSE_ID]

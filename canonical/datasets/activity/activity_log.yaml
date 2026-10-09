@@ -5,7 +5,8 @@ description: >
   (by person id only), the course, the item or tool, the event type (Login, Logout, Item Access,
   Tool Access, Course Access, Session Continuation, Submission, Ultra Click), a readable context and
   seconds spent. Ultra clicks carry the clicked UI object as item type and tool and the content id as
-  item, and are counted once per event id. Queries must give a time_range start on event_time.
+  item, and are counted once per event id. Deviation: bbd-analytics puts the item's "type: name" in
+  the tool column for submissions; here it is the tool's name. Queries must give a time_range start on event_time.
 grain: one row per event in the last year
 domain: activity
 source: bbdata-bbd-analytics procedures/orchestration/activityLog/
@@ -41,7 +42,7 @@ base_sql: |
   ),
   lms_submissions AS (
       SELECT 'LMS', CONCAT('2', su.ID), pc.PERSON_ID, su.SUBMITTED_TIME, su.COURSE_ID,
-             it.NAME, it.ITEM_TYPE, CONCAT(it.ITEM_TYPE, ': ', it.NAME), 'Submission',
+             it.NAME, it.ITEM_TYPE, INITCAP(REPLACE(REPLACE(t.NAME, '_', ' '), '.label', '')), 'Submission',
              COALESCE(CONCAT(it.ITEM_TYPE, ': ', it.NAME),
                       CONCAT('Tool: ', INITCAP(REPLACE(REPLACE(t.NAME, '_', ' '), '.label', ''))),
                       CONCAT('Course: ', c.NAME), 'Session'),

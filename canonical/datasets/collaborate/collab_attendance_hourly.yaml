@@ -29,5 +29,5 @@ dimensions:
   - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
 measures:
   - {name: attendees, agg: count_distinct, expr: PERSON_ID, unit: people, synonyms: [concurrent attendees]}
-  - {name: attendee_hours, agg: count, expr: "*", unit: hours}
+  - {name: attendee_hours, agg: count_distinct, expr: "DATE_HOUR::STRING || '|' || PERSON_ID::STRING", unit: hours, description: "Distinct hour and person pairs"}
 pii_columns: [PERSON_ID]

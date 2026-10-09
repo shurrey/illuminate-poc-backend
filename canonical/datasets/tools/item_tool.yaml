@@ -50,7 +50,7 @@ measures:
   - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
   - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
   - {name: interactions, agg: sum, expr: INTERACTION_CNT, unit: interactions}
-  - {name: minutes, agg: sum, expr: MINUTES, unit: minutes, synonyms: [time in content]}
+  - {name: minutes, agg: sum, expr: MINUTES, unit: minutes, synonyms: [time in items]}
   - {name: minutes_per_person, agg: ratio, numerator: minutes, denominator: people, unit: minutes}
 filters:
   - {name: students, sql: "COURSE_ROLE = 'S'"}

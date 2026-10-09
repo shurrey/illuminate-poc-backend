@@ -89,7 +89,7 @@ dimensions:
   - {name: start_date, column: START_DATE, type: time, grains: [day, week, month, quarter, year], synonyms: [course start]}
   - {name: end_date, column: END_DATE, type: time, grains: [day, week, month, quarter, year], synonyms: [course end]}
 measures:
-  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses, synonyms: [number of courses, course count]}
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses, synonyms: [reportable course count]}
   - {name: ended_courses, agg: count_distinct, expr: "IFF(COURSE_ENDED = 1, COURSE_ID, NULL)", unit: courses}
   - {name: share_ended, agg: ratio, numerator: ended_courses, denominator: courses, unit: ratio}
 filters:

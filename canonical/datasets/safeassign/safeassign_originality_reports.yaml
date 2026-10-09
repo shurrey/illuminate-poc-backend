@@ -1,6 +1,6 @@
 id: dataset.safeassign_originality_reports.v1
 display_name: SafeAssign originality reports
-description: One row per a full SafeAssign originality report returned, with its date and time.
+description: One row per full SafeAssign originality report returned, with its date and time.
 grain: one row per returned report
 domain: safeassign
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_SAFEASSIGN_ORIGINALITY_REPORT.sql

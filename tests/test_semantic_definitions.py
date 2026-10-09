@@ -89,3 +89,18 @@ def test_sis_students_measure_counts_students_and_instructor_names_are_gone():
 def test_the_grade_distribution_counts_enrollments():
     m = CATALOG.metrics["metric.graded_enrollments.v1"]
     assert m.measure == "dataset.student_grade.v1:graded_enrollments"
+
+
+def test_no_synonym_names_two_different_concepts():
+    owners: dict[str, set[str]] = {}
+    for m in CATALOG.metrics.values():
+        for syn in m.synonyms:
+            owners.setdefault(syn.lower(), set()).add(m.measure)
+    for ds in CATALOG.datasets.values():
+        if ds.visibility != "public":
+            continue
+        for measure in ds.measures:
+            for syn in measure.synonyms:
+                owners.setdefault(syn.lower(), set()).add(f"{ds.id}:{measure.name}")
+    shared = {syn: sorted(o) for syn, o in owners.items() if len(o) > 1}
+    assert shared == {}
