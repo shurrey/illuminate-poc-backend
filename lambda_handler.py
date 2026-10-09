@@ -734,7 +734,13 @@ def _tenant_state(tenant_id: str) -> tuple:
     hit = _overlay_cache.get(tenant_id)
     if hit and time.monotonic() - hit[0] < _OVERLAY_TTL_SECONDS:
         return hit[1]
-    state = _apply_each(default_catalog(), overlay_store.list_overlays(tenant_id))
+    try:
+        stored = overlay_store.list_overlays(tenant_id)
+    except Exception as e:
+        # Canonical definitions keep the tenant's queries working; not cached, so recovery is immediate.
+        logger.error("Overlay store unavailable for tenant %s: %s", tenant_id, e)
+        return default_catalog(), [], {}
+    state = _apply_each(default_catalog(), stored)
     _overlay_cache[tenant_id] = (time.monotonic(), state)
     return state
 
@@ -763,11 +769,22 @@ def _compile_contract(contract: QueryContract, authorization: str):
         compiled = compile_query(contract, catalog, _semantic_database())
     except CompileError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    p = compiled.provenance
-    p.overlays = [f"{o.target}@v{o.version}" for o in overlays
-                  if (o.kind == "metric" and o.target.split(":", 1)[1] in p.metrics)
-                  or (o.kind != "metric" and o.target.split(":")[1] in p.datasets)]
+    compiled.provenance.overlays = _overlays_used(compiled.provenance, catalog, overlays)
     return compiled
+
+
+def _overlays_used(provenance, catalog, overlays: list) -> list[str]:
+    """'<target>@v<version>' for the overlays that shaped this query's metrics, measures and their filters."""
+    measures = set(provenance.measures)
+    for ref in list(measures):
+        ds_id, _, name = ref.partition(":")
+        m = catalog.datasets[ds_id].measure(name)
+        if m.agg == "ratio":
+            measures |= {f"{ds_id}:{m.numerator}", f"{ds_id}:{m.denominator}"}
+    filters = {f"{catalog.metrics[mid].dataset_id}:{f}" for mid in provenance.metrics
+               for f in catalog.metrics[mid].default_filters}
+    used = {"metric": set(provenance.metrics), "measure": measures, "filter": filters}
+    return [f"{o.target}@v{o.version}" for o in overlays if o.target.split(":", 1)[1] in used[o.kind]]
 
 
 @app.post("/api/v1/semantic/compile")
@@ -927,13 +944,15 @@ def _overlay_errors(tenant_id: str, target: str, candidate) -> list[str]:
 def _save_checked(tenant_id: str, target: str, candidate, save) -> dict:
     import overlay_store
 
-    errors = _overlay_errors(tenant_id, target, candidate)
+    errors = [re.sub(r"\x1b\[[0-9;]*m", "", e) for e in _overlay_errors(tenant_id, target, candidate)]
     if errors:
         raise HTTPException(status_code=400, detail={"errors": errors})
     try:
         saved = save()
     except overlay_store.OverlayConflict:
         raise HTTPException(status_code=409, detail="This overlay changed since you loaded it; reload and try again.")
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e).strip("'"))
     _overlay_cache.pop(tenant_id, None)
     return {"tenant_id": tenant_id, "target": target, "overlay": saved.model_dump() if saved else None}
 
@@ -984,13 +1003,15 @@ async def admin_put_overlay(target: str, request: OverlayWrite, authorization: O
 
 
 @app.delete("/api/v1/admin/overlay/{target}")
-async def admin_delete_overlay(target: str, authorization: Optional[str] = Header(None)) -> dict:
-    """Remove the overlay (its history stays); 400 if another overlay depends on it."""
+async def admin_delete_overlay(target: str, expected_version: int,
+                               authorization: Optional[str] = Header(None)) -> dict:
+    """Remove the overlay (its history stays); 400 if another overlay depends on it, 409 if it changed."""
     import overlay_store
 
     user, tenant_id = _admin_tenant(authorization)
     _checked_target(target)
-    result = _save_checked(tenant_id, target, None, lambda: overlay_store.delete_overlay(tenant_id, target))
+    result = _save_checked(tenant_id, target, None,
+                           lambda: overlay_store.delete_overlay(tenant_id, target, expected_version))
     logger.info("Overlay deleted: tenant=%s target=%s by=%s", tenant_id, target, user.get("sub"))
     return result
 

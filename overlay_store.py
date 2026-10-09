@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from semantic_layer.overlays import Overlay
@@ -112,6 +112,16 @@ def revert(tenant_id: str, target: str, version: int, updated_by: str, expected_
     return put_overlay(tenant_id, _from_item(item), updated_by, expected_version)
 
 
-def delete_overlay(tenant_id: str, target: str) -> None:
-    """Remove the current overlay; its history stays so it can be reverted to."""
-    _get_table().delete_item(Key={"tenant_id": tenant_id, "metric_id": target})
+def delete_overlay(tenant_id: str, target: str, expected_version: int) -> None:
+    """Remove the current overlay (history stays); KeyError if there is none, OverlayConflict if it changed."""
+    try:
+        _get_table().delete_item(
+            Key={"tenant_id": tenant_id, "metric_id": target},
+            ConditionExpression=Attr("version").eq(expected_version),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        if get_overlay(tenant_id, target) is None:
+            raise KeyError(f"{target} has no overlay") from e
+        raise OverlayConflict(target) from e

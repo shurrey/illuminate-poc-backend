@@ -66,7 +66,7 @@ def test_reverting_to_a_missing_version_is_an_error(table):
 
 def test_delete_keeps_history_and_the_next_save_continues_the_numbering(table):
     overlay_store.put_overlay("t1", _ov("A"), "alice", expected_version=0)
-    overlay_store.delete_overlay("t1", TARGET)
+    overlay_store.delete_overlay("t1", TARGET, expected_version=1)
     assert overlay_store.get_overlay("t1", TARGET) is None
     again = overlay_store.put_overlay("t1", _ov("B"), "alice", expected_version=0)
     assert again.version == 2 and len(overlay_store.history("t1", TARGET)) == 2
