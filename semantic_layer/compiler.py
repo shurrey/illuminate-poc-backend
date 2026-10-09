@@ -430,6 +430,22 @@ def _combine(groups: list[str], contract: QueryContract, measure_names: list[lis
     return query
 
 
+def filter_dimension(contract: QueryContract, ref: str, catalog: Catalog) -> Optional[DatasetDimension]:
+    """The dimension a filter on ref would apply to, if every dataset the contract's measures read can
+    reach it (by join or semi-join); None otherwise. Raises CompileError for an unknown metric or measure."""
+    found = None
+    for _, base, _, _ in _selections(contract, catalog):
+        try:
+            _, dim, _ = _resolve(base, ref, catalog, _joins_from(base, catalog))
+        except CompileError:
+            via = _semi_join(base, ref, catalog)
+            if via is None:
+                return None
+            dim = via[1]
+        found = found or dim
+    return found
+
+
 def compile_query(contract: QueryContract, catalog: Catalog, database: str, allow_identity: bool = False) -> CompiledQuery:
     """allow_identity: personally identifiable dimensions may be selected (never for Viewers or chat)."""
     selections = _selections(contract, catalog)

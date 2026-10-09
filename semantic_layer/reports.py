@@ -14,7 +14,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .catalog import CANONICAL_DIR
-from .compiler import CompileError, _output_name, compile_query
+from .compiler import CompileError, _output_name, compile_query, filter_dimension
 from .contract import ContractFilter, FilterValue, QueryContract, TimeRange
 from .schema import Catalog
 
@@ -25,6 +25,10 @@ _VALIDATION_DB = "VALIDATION_DB"
 
 class ReportError(ValueError):
     """A report file is malformed or duplicates an id."""
+
+
+class ReportValueError(ValueError):
+    """A filter-bar value has the wrong shape or type for its filter."""
 
 
 class _Definition(BaseModel):
@@ -119,32 +123,70 @@ def query_contract(spec: dict[str, Any]) -> tuple[QueryContract, Optional[str]]:
     return QueryContract(**spec), time_dimension
 
 
+def _coerce(filter_id: str, values: list, dim_type: str) -> list:
+    """Values as the dimension's type; the frontend sends strings from the URL and option lists."""
+    out = []
+    for v in values:
+        if dim_type == "boolean":
+            if isinstance(v, bool):
+                out.append(v)
+            elif str(v).lower() in ("true", "false"):
+                out.append(str(v).lower() == "true")
+            else:
+                raise ReportValueError(f"filter {filter_id}: {v!r} is not true or false")
+        elif dim_type == "numeric":
+            try:
+                number = float(v)
+            except (TypeError, ValueError):
+                raise ReportValueError(f"filter {filter_id}: {v!r} is not a number") from None
+            out.append(int(number) if number.is_integer() else number)
+        else:
+            out.append(str(v) if not isinstance(v, (bool, int, float)) else v)
+    return out
+
+
 def merged_contract(report: Report, visual: Visual, query_name: str, values: dict[str, Any], catalog: Catalog,
                     database: str = _VALIDATION_DB) -> tuple[QueryContract, list[str]]:
-    """The query with each filter-bar value applied, and the filter ids it ignored because its datasets
-    cannot reach the filter's dimension (found by compiling with and without the filter)."""
+    """The query with each filter-bar value applied, and the ids of filters ignored because the query's
+    datasets cannot reach their dimension. Raises ReportValueError for a value of the wrong shape or type."""
     contract, time_dimension = query_contract(visual.queries[query_name])
     ignored: list[str] = []
+    filters = list(contract.filters)
+    time_range = contract.time_range
     for f in report.filters:
         value = values.get(f.id)
         if f.id in visual.filters_ignored or not value:
             continue
         if f.control == "date_range":
+            if not isinstance(value, dict):
+                raise ReportValueError(f"filter {f.id}: a date range is {{start, end}}")
             if not (value.get("start") or value.get("end")):
                 continue
-            update = {"time_range": TimeRange(dimension=time_dimension or f.time_dimension,
-                                              start=value.get("start"), end=value.get("end"))}
+            ref = time_dimension or f.time_dimension
+            dim = filter_dimension(contract, ref, catalog)
+            if dim is None or dim.type != "time":
+                ignored.append(f.id)
+                continue
+            try:
+                time_range = TimeRange(dimension=ref, start=value.get("start"), end=value.get("end"))
+            except ValidationError as e:
+                raise ReportValueError(f"filter {f.id}: {e.errors()[0]['msg']}") from None
         else:
-            values_list = value if isinstance(value, list) else [value]
-            update = {"filters": [*contract.filters, ContractFilter(dimension=f.dimension, op="in", values=values_list)]}
-        candidate = contract.model_copy(update=update)
-        try:
-            compile_query(candidate, catalog, database, allow_identity=True)
-        except CompileError:
-            ignored.append(f.id)
-            continue
-        contract = candidate
-    return contract, ignored
+            dim = filter_dimension(contract, f.dimension, catalog)
+            if dim is None:
+                ignored.append(f.id)
+                continue
+            raw = value if isinstance(value, list) else [value]
+            filters.append(ContractFilter(dimension=f.dimension, op="in", values=_coerce(f.id, raw, dim.type)))
+    return contract.model_copy(update={"filters": filters, "time_range": time_range}), ignored
+
+
+def _filter_target(f: ReportFilter, catalog: Catalog):
+    """The dimension a filter definition names, when it is fully qualified and exists; else None."""
+    ref = f.time_dimension if f.control == "date_range" else f.dimension
+    ds_id, _, name = ref.rpartition(":")
+    ds = catalog.datasets.get(ds_id) if ds_id else None
+    return ds.dimension(name) if ds else None
 
 
 def _output_names(contract: QueryContract, catalog: Catalog) -> set[str]:
@@ -154,27 +196,49 @@ def _output_names(contract: QueryContract, catalog: Catalog) -> set[str]:
     return names
 
 
+_SAMPLE = {"boolean": [True], "numeric": [1], "time": ["2026-01-01"]}
+
+
 def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATION_DB) -> list[str]:
-    """Problems as '<visual>/<query>: <message>'; empty when every query compiles with every filter applied."""
-    sample = {f.id: ({"start": "2026-01-01", "end": "2026-01-31"} if f.control == "date_range" else ["sample"])
-              for f in report.filters}
+    """Problems as '<visual>/<query>: …' or 'filter <id>: …'; empty when every query compiles with every
+    filter applied, every filter names a real dimension some visual applies, and every transform reads
+    queries the visual has."""
     problems = []
+    sample: dict[str, Any] = {}
+    for f in report.filters:
+        dim = _filter_target(f, catalog)
+        if dim is None:
+            ref = f.time_dimension if f.control == "date_range" else f.dimension
+            problems.append(f"filter {f.id}: {ref} is not a dataset-qualified dimension that exists")
+            continue
+        sample[f.id] = ({"start": "2026-01-01", "end": "2026-01-31"} if f.control == "date_range"
+                        else _SAMPLE.get(dim.type, ["sample"]))
+    applied: set[str] = set()
     for v in report.visuals():
         returned: set[str] = set()
         for name in v.queries:
             try:
                 contract, _ = query_contract(v.queries[name])
                 compile_query(contract, catalog, database, allow_identity=True)
-                merged, _ = merged_contract(report, v, name, sample, catalog, database)
+                merged, ignored = merged_contract(report, v, name, sample, catalog, database)
                 compile_query(merged, catalog, database, allow_identity=True)
             except (CompileError, ValidationError, ValueError) as e:
                 problems.append(f"{v.id}/{name}: {e}")
                 continue
+            applied |= set(sample) - set(ignored) - set(v.filters_ignored)
             returned |= _output_names(contract, catalog)
-        if v.transform is None and returned:
+        if v.transform is not None:
+            inputs = [v.transform.get(k) for k in ("value", "baseline", "query") if v.transform.get(k)]
+            missing = sorted(str(q) for q in inputs if q not in v.queries)
+            if missing:
+                problems.append(f"{v.id}/transform: reads queries {missing} the visual does not have")
+        elif returned:
             missing = sorted(c for c in v.encode.values() if isinstance(c, str) and c not in returned)
             if missing:
                 problems.append(f"{v.id}/encode: columns {missing} are not returned by its queries")
+    for f in report.filters:
+        if f.id in sample and f.id not in applied:
+            problems.append(f"filter {f.id}: no visual can apply it")
     return problems
 
 

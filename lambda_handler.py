@@ -952,14 +952,17 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     from roles import role_allows_identity
-    from semantic_layer.reports import merged_contract
+    from semantic_layer.reports import ReportValueError, merged_contract
 
     report = _report_or_404(report_id)
     visual = report.visual(request.visual)
     if visual is None or request.query not in visual.queries:
         raise HTTPException(status_code=404, detail=f"{report_id} has no query {request.visual}/{request.query}")
     catalog, _ = _catalog_for(user)
-    contract, ignored = merged_contract(report, visual, request.query, request.values, catalog, _semantic_database())
+    try:
+        contract, ignored = merged_contract(report, visual, request.query, request.values, catalog, _semantic_database())
+    except ReportValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not role_allows_identity(user):
         kept = [d for d in contract.dimensions if not _is_identity(d, catalog)]
         if contract.dimensions and not kept:
