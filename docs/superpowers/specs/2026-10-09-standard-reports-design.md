@@ -1,8 +1,8 @@
 # Standard reports on the semantic layer — design
 
 Date: 2026-10-09. Status: draft for review.
-Companion: [`2026-10-09-standard-reports-gap-analysis.md`](2026-10-09-standard-reports-gap-analysis.md) (per-visual
-mapping, the ranked list of missing pieces P1–P25, and the 27 QuickSight-vs-semantic differences C1–C27).
+Companion: [`2026-10-09-standard-reports-gap-analysis.md`](2026-10-09-standard-reports-gap-analysis.md), the build
+inventory: what each report needs from the semantic layer, as a ranked list of pieces P1–P25.
 
 ## 1. Goal
 
@@ -33,20 +33,21 @@ Out of scope:
 2. Each report's filter bar applies to every visual on the report.
 3. A test compiles every visual of every report definition against the canonical catalog, so a definition change
    cannot silently break a report.
-4. Numbers come from the semantic layer's definitions. Where one differs from QuickSight because QuickSight is wrong,
-   the semantic layer stands. The companion lists these differences as C1–C27.
-5. Every governed visual can be pinned as a dashboard card.
+4. Numbers come from the semantic layer's definitions.
+5. Every number has an info button that shows how it is calculated (§3.2).
+6. Every governed visual can be pinned as a dashboard card.
 
 ## 2. Decisions
 
 | Decision | Ruling |
 |---|---|
-| Definitions | **The semantic layer is the source of truth.** It already corrects many bbd-analytics and QuickSight defects. When a report needs a data point the layer lacks (a median, a band, a role-scoped count), we add it to the layer with correct maths, and never copy QuickSight's maths. The C1–C27 differences are resolved this way: corrected maths, and the same data point. |
+| Definitions | **The semantic layer is the source of truth.** It already corrects many bbd-analytics and QuickSight defects. When a report needs a data point the layer lacks (a median, a band, a role-scoped count), we add it to the layer with correct maths, and never copy QuickSight's maths. |
 | Identity (PII) | **Viewers** see counts only: PII may be filtered and counted, never selected. **Admins, Authors and Developers** see everything, including roster tables. Details are in §6. |
 | Fidelity | Same content in our style: the same pages, visuals, filters and data points, drawn with the POC's components. We don't copy QuickSight's grid. |
 | Date defaults | The current term, where a report has a Term filter. Otherwise the last 30 days. Users can change either. |
 | Help-text panels | Kept, as text visuals carrying the QuickSight English copy, with the wording corrected where our definitions differ. |
-| What users see | Reports, and nothing about how they were built. No product surface refers to QuickSight, bbd-analytics, this gap analysis, or C/P numbers: not report text, not visual titles, not measure and metric descriptions (they appear in Info panels and the chat catalog), not errors. Descriptions say what a number is. Comparisons with the shipped reports stay in PR descriptions and these docs. |
+| What users see | Reports, and nothing about how they were built. No product surface refers to QuickSight, bbd-analytics or this build inventory: not report text, not visual titles, not measure or metric descriptions (which appear in Info and the chat catalog), not errors. Descriptions say what a number is. |
+| What we document | What is built, in PRs and code comments. Nothing compares our numbers with another product's. |
 
 ## 3. Architecture
 
@@ -108,8 +109,22 @@ a definition:
 - visuals in a responsive grid.
 
 Each visual type is one component, built on the existing Recharts and card components and on `ResultTable` for tables.
-Visuals run their contracts in parallel and are cached by contract. Each visual has View SQL, Info (definition and
-provenance) and Pin as card.
+Visuals run their contracts in parallel and are cached by contract. Each visual has Info, View SQL and Pin as card.
+
+**Info, on every number.** Every KPI, every chart and table (with one entry per series or column), and every dashboard
+card has an info button. It shows how the number is calculated, in this order:
+1. The metric or measure name and its description.
+2. The calculation in words and in its expression: for example "Average of `GRADE_PERCENTAGE`", or for a ratio its
+   numerator ÷ denominator, each with its own expression.
+3. The dataset it reads, with that dataset's grain and description.
+4. Every filter in force: the filter-bar values, the metric's default filters, and the visual's own filters, each with
+   its condition.
+5. The time range and time dimension.
+6. Any client transform, in words, for example "% change vs the comparison period" or "share of total".
+7. Your institution's overrides, if any applied, with their version.
+
+Everything Info shows comes from the catalog, the visual's contracts and the query provenance, so it is always what
+actually ran. View SQL shows the compiled SQL.
 
 The mock Reporting data (`mockReports`, `mockChartData`, `ReportChartArea`) is removed once the first real report ships.
 
@@ -151,7 +166,7 @@ These are the pieces the reports need, ranked and sized in the companion as P1�
 
 **Datasets** (each its own PR, under the existing dataset schema)
 - `collab_sessions` and `collab_events`.
-- `course_enrollments`: every enrollment, kept even with no activity. This fixes C2.
+- `course_enrollments`: every enrollment, kept even with no activity.
 - `persons`.
 - `course_items`.
 - `course_readiness`.
@@ -162,18 +177,19 @@ These are the pieces the reports need, ranked and sized in the companion as P1�
 - `collab_course_media`.
 - `enrollment_daily_grade_activity`.
 
+**Catalog for Info** (in the foundation phase): the public catalog adds each measure's expression (`expr`, with the
+tenant's override applied) and each filter's condition (`sql`). Today only the admin overlay endpoint returns these.
+
 **Definitions** (grouped into small PRs by YAML file)
 - Course-grain dimensions on `courses.v1` (P2).
 - Grading and platform definitions (P9).
 - Instructor-scoped measures (P10).
 - The per-dataset measures and dimensions listed in the companion's §2, "Remaining definitions".
 
-Each new measure that matches a QuickSight data point uses our corrected maths. Its description says what it
-measures, in user terms, and never how it differs from another product (§2, "What users see"); differences are
-recorded only in the companion. Examples:
-- `students_active_last_7_days` keeps its definition, and gains a sibling `share_recently_active_5min` for the
-  QuickSight data point.
-- "Instructor" data points use `teaching_staff` (all non-student roles) as a named role group beside `instructor`.
+Each new measure's description says what it measures, in user terms (§2). Examples:
+- `students_active_last_7_days` keeps its definition, and gains a sibling, `share_recently_active_5min`, for the
+  report's data point.
+- "Instructor" data points use `teaching_staff` (all non-student roles), a named role group beside `instructor`.
 
 ## 5. Current term
 
@@ -205,8 +221,9 @@ travel together in the caller context the compiler receives.
 
 ## 7. Build order
 
-1. **Foundation**, about 6 PRs:
+1. **Foundation**, about 7 PRs:
    - report definition schema, validation and endpoints, with one trivial report;
+   - catalog expressions and filter conditions, plus the Info panel (shared by report visuals and dashboard cards);
    - the renderer and filter bar;
    - the client transform kit;
    - P1 cross-dataset filters;
@@ -236,9 +253,6 @@ removed in the first report PR.
   - Unit tests for the transforms, the first frontend unit tests. This adds Vitest to the POC.
   - Type checks for definitions, which come from the endpoint.
   - A manual check of each report on the test deployment.
-- **Parity check (reviewers only).** Each report's PR description compares a few headline numbers with the shipped
-  report on the same tenant, where possible, and explains any difference by its C number. This is a pre-merge check
-  for the reviewer. Nothing in it reaches the product.
 
 ## 9. Risks
 

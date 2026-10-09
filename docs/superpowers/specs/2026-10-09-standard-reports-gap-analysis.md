@@ -1,4 +1,4 @@
-# Standard reports vs the semantic layer: gap analysis
+# Standard reports: build inventory
 
 Date: 2026-10-09. Companion to [`2026-10-09-standard-reports-design.md`](2026-10-09-standard-reports-design.md).
 
@@ -63,8 +63,8 @@ small datasets unblock. 5 visuals are blocked by unreachable sources: `ACTIVITY_
 | P5 | `collab_sessions` + `collab_events` | 2 × S | **Sessions:** one row per `CDM_CLB.SESSION`; session_start (instance tz), minutes, attendance_count, linked_to_course, term_names, ih_nodes; sessions, rooms and minutes stats.<br>**Events:** `CDM_TLM.COLLAB_EVENTS` → session; event_type, event_group, event_time. | Collaboration 38 of 38 |
 | P6 | `persons` | dataset, S | `complete: true`, primary `person`. Filter-only `person_source_id` and `person_alt_id` (`COALESCE(STAGE:student_id, STAGE:user_id, STAGE:batch_uid, SOURCE_ID)`). | Scope for Student Summary and Reach |
 | P7 | Identity (roster) policy | policy, then SL M | Decided: role-gated (design §6) | ≈24 tables and the student picker |
-| P8 | `course_enrollments` | dataset, M | **Rows:** every PERSON_COURSE, all roles, test users out, left-joined to activity.<br>**Activity:** cnt_days, percentage_days, interactions, hours, last access and submission, contributions (`item_group <> 'A'`), grades entered, response hours, Collaborate.<br>**Recency:** ≥5 min within 7 days; recency bucket; NTILE(4) quartile.<br>**Flags:** available, enabled, deleted, accommodation. | ≈11 visuals; fixes C2 |
-| P9 | Grading and platform definitions | DEF, S | **GRT:** `has_due_date`, `due_time`, `gradebook_name`, `response_days_capped` (`LEAST(RESPONSE_DAYS,91)`), `ungraded_attempts`, min/max response days, `share_ungraded`.<br>**lms_sessions:** `session_end_date`.<br>**collab_sessions_by_slot:** `session_slots`. | ≈17 visuals; Assessment & Grades parity |
+| P8 | `course_enrollments` | dataset, M | **Rows:** every PERSON_COURSE, all roles, test users out, left-joined to activity.<br>**Activity:** cnt_days, percentage_days, interactions, hours, last access and submission, contributions (`item_group <> 'A'`), grades entered, response hours, Collaborate.<br>**Recency:** ≥5 min within 7 days; recency bucket; NTILE(4) quartile.<br>**Flags:** available, enabled, deleted, accommodation. | ≈11 visuals |
+| P9 | Grading and platform definitions | DEF, S | **GRT:** `has_due_date`, `due_time`, `gradebook_name`, `response_days_capped` (`LEAST(RESPONSE_DAYS,91)`), `ungraded_attempts`, min/max response days, `share_ungraded`.<br>**lms_sessions:** `session_end_date`.<br>**collab_sessions_by_slot:** `session_slots`. | ≈17 visuals; Assessment & Grades |
 | P10 | CRA instructor definitions | DEF, S–M | Role-scoped active / enrolled / minutes; class size `CEIL(S_active/NVL(NULLIF(I_active,0),1))` with stats and band; access frequency with stats and band; `activity_recency`; Collaborate shares and minutes; `contributions` | ≈18 visuals |
 
 ### Further datasets
@@ -96,7 +96,7 @@ small datasets unblock. 5 visuals are blocked by unreachable sources: `ACTIVITY_
 ### Remaining definitions, by YAML file
 
 - **CSA:**
-  - measures: min/max percent activity; first/last access; `content_items_started` (renames `content_items_reviewed`, C3); unopened; tracked and its ratios; access decile; contributions;
+  - measures: min/max percent activity; first/last access; `content_items_started` (renames `content_items_reviewed`); unopened; tracked and its ratios; access decile; contributions;
   - dimensions: percent-activity band, hours-per-week band, access recency, participation recency, days-active-after-start.
 - **SCM:** min/max/median over minutes, interactions and per-week values; value dimensions; `content_activity_status`.
 - **SA:**
@@ -150,7 +150,7 @@ transcript summarised here. For each report:
   `collab_attendance_hourly`, Ally and SafeAssign. Needs P9 (`session_end_date`, `session_slots`) and the weekday divisor.
 - **Learning Tool Activity & Use.** Minutes and users by date are ready on CTA. The heat maps need `day_of_week` /
   `hour_group_3h` (or P20). KPIs need POP, and the role pie needs top-N.
-- **Assessment & Grades.** All contracts take `has_due_date` (C9). The not-graded KPIs are ready on GRT. The response-time
+- **Assessment & Grades.** All contracts take `has_due_date`. The not-graded KPIs are ready on GRT. The response-time
   bars and type stats need P9. The IH views need P4, and thresholds and percentages are client work.
 - **Collaboration Session Activity.** Every visual needs P5. The KPIs also need POP.
 - **Course Administration.** Every visual needs P12. V1 also needs P21.
@@ -158,42 +158,7 @@ transcript summarised here. For each report:
 - **Learning Tools Adoption.** The role donuts are ready on CTA. The rest needs POP, PARAM-MEASURE, P4 or P19.
 - **Instructional Practices.** Needs P10, P11, P16, P17 and P4. KPIs need role-scoped stats.
 - **Student Engagement.** Needs P8, the CSA/SCM/SA definitions, P4 and P19.
-- **Social & Collaborative.** Needs the SOC and CSSA definitions, P19 (C10) and P4.
+- **Social & Collaborative.** Needs the SOC and CSSA definitions, P19 and P4.
 - **Course Summary.** Scoping to one course works today. Needs P8, P11, P14, P16, P17, P18 and GRT definitions.
 - **Student Performance & Grades.** Needs the SG definitions, P4, thresholds, P24 and identity.
 - **Student Summary and Reach.** Need P6, identity, P14, P15, P20 and P21. Reach's engagement score is out of scope.
-
-## 5. QuickSight vs semantic differences
-
-The design rules on all of these: the semantic layer's maths stands; where a data point is missing, it's added with
-correct maths. QS defect marks behaviour we don't port.
-
-| # | Topic | QuickSight | Semantic | Type |
-|---|---|---|---|---|
-| C1 | Recently active | ≥5 min within 1 week; share of all enrollments | no minutes threshold; share of students with activity | Diff |
-| C2 | Zero-activity enrollments | kept as 0 | dropped by inner join (inflates averages) | Diff → P8 |
-| C3 | content_items_reviewed | completed + started + unlocked | 'S' only (misnamed) | Diff |
-| C4 | Frequency denominator | `cnt_days/(datediff+1)` and variants | `CNT_DAYS/(COURSE_WEEKS*7)` | Diff |
-| C5 | Average grade | median of final normalized score, 0–1 | mean of grade percentage, 0–100 | Diff |
-| C6 | Failing threshold | 50 (`>=`); Reach < 0.70 | < 60 | Diff |
-| C7 | Grade bands | `percentage_custom` | `grade_band` | By design |
-| C8 | Instructor | all roles except S, G | 'I' only | Diff |
-| C9 | Grade response scope | due_time not null only | includes no-due-date (+49%) | By design; add `has_due_date` |
-| C10 | Collab participation % | ÷ course-max minutes | ÷ the student's own sessions | Diff |
-| C11 | Tool minutes | double counted; "minutes" are hours | counted once | By design |
-| C12 | Slot heat-map counts | summed counts; empty slots in divisor | distinct; empty slots dropped | Diff |
-| C13 | LMS counts | session × IH fan-out | distinct | QS overcount |
-| C14 | Sessions launched | distinct START_TIME | session id | QS defect |
-| C15 | Chat messages | counts sessions | — | QS defect |
-| C16 | Session length | ATTENDED_DURATION | attendee minutes | Naming trap |
-| C17 | Readiness with no items | NULL treated as ready | ZEROIFNULL | QS defect |
-| C18 | Course count | distinct COURSE_NUMBER | COURSE_ID | Diff |
-| C19 | Reach time last week | whole-course minutes | `activity_log` hours | QS defect |
-| C20 | Social student counts | instructors included; weekly columns swapped | role-scoped | QS defects |
-| C21 | Reach overdue | case mismatch, always 0 | sum(OVERDUE) | QS defect |
-| C22 | Item coverage | three different definitions | enrollment-weighted | Diff |
-| C23 | Class size | `ceil(S/nvl(I,1))` per course | ratio of sums | Diff |
-| C24 | Threshold boundaries | inconsistent `<` / `>=` / `>` | single boundary | QS defect |
-| C25 | Other | enrolled_students counts inactive; AI Y vs Y/P; … | — | QS defects |
-| C26 | Grades course scope | max grade > 0, last 3 years | none | Diff |
-| C27 | `ih_nodes contains` | exact level | substring | Precision gap → P23 |
