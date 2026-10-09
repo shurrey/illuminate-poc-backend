@@ -1,0 +1,33 @@
+id: dataset.collab_attendance_hourly.v1
+display_name: Collaborate attendance by hour
+description: >
+  One row per hour and person attending a Collaborate session in that hour (from the hour of first
+  join to the hour of last leave), with the institution hierarchy nodes of the courses linked to the
+  session's room as a ';'-separated list (filter with contains), for concurrent-attendance charts.
+grain: one row per hour x person x hierarchy node list attending Collaborate
+domain: collaborate
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_CLB_ATTENDANCE_HOURLY.sql
+depends_on: [dataset.calendar_hour.v1, dataset.collab_attendance.v1]
+base_sql: |
+  WITH attendance AS (
+      SELECT a.PERSON_ID, a.IH_NODES,
+             DATE_TRUNC('hour', att.FIRST_JOIN_TIME) AS FIRST_HOUR,
+             DATE_TRUNC('hour', att.LAST_LEAVE_TIME) AS LAST_HOUR
+      FROM {{ ref('dataset.collab_attendance.v1') }} a
+      JOIN {{ database }}.CDM_CLB.ATTENDANCE att ON att.ID = a.ATTENDANCE_ID
+      WHERE att.FIRST_JOIN_TIME IS NOT NULL AND att.LAST_LEAVE_TIME IS NOT NULL
+  )
+  SELECT DISTINCT h.DATE_HOUR, h.DAY_DATE, h.SLOT_LABEL, at.PERSON_ID, at.IH_NODES
+  FROM attendance at
+  JOIN {{ ref('dataset.calendar_hour.v1') }} h ON h.DATE_HOUR BETWEEN at.FIRST_HOUR AND at.LAST_HOUR
+entities:
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: hour, column: DATE_HOUR, type: time, grains: [hour, day, week, month, quarter, year]}
+  - {name: day, column: DAY_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: slot_label, column: SLOT_LABEL, type: categorical, description: "Two-hour slot of the hour, '12 AM' to '10 PM'"}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+measures:
+  - {name: attendees, agg: count_distinct, expr: PERSON_ID, unit: people, synonyms: [concurrent attendees]}
+  - {name: attendee_hours, agg: count, expr: "*", unit: hours}
+pii_columns: [PERSON_ID]
