@@ -66,7 +66,8 @@ def load_history(context_id: str, owner: str) -> list[dict]:
         if not item or item.get("owner_sub") != owner:
             return []
         messages = json.loads(item.get("messages", "[]"))
-        return messages[-_MAX_MESSAGES:]
+        # Whole turns only: Converse rejects a history that starts with an assistant message.
+        return messages[-(_MAX_MESSAGES - _MAX_MESSAGES % 2):] if _MAX_MESSAGES > 1 else []
     except Exception as e:
         logger.warning(f"Failed to load conversation history: {e}")
         return []

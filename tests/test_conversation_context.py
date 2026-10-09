@@ -96,3 +96,30 @@ def test_someone_elses_conversation_id_is_replaced(client, engine):
     assert data["contextId"] != "alice-ctx"
     assert engine[0] == ("hi", [])
     assert [m["content"] for m in conversation_store.load_history("alice-ctx", "alice")] == ["secret q", "secret a"]
+
+
+def test_history_is_trimmed_to_whole_turns_starting_with_the_user(table, monkeypatch):
+    monkeypatch.setattr(conversation_store, "_MAX_MESSAGES", 3)
+    conversation_store.save_turn("c5", "bob", "q1", "a1")
+    conversation_store.save_turn("c5", "bob", "q2", "a2")
+    history = conversation_store.load_history("c5", "bob")
+    assert [m["role"] for m in history] == ["user", "assistant"]
+    assert history[0]["content"] == "q2"
+
+
+def test_conversation_storage_runs_off_the_event_loop(client, monkeypatch):
+    import threading
+    import chat_engine
+
+    threads = []
+    monkeypatch.setattr(conversation_store, "load_history", lambda cid, owner: threads.append(threading.get_ident()) or [])
+    monkeypatch.setattr(conversation_store, "save_turn", lambda *a, **k: threads.append(threading.get_ident()))
+
+    async def fake_stream(message, history, **kw):
+        threads.append(("loop", threading.get_ident()))
+        yield {"type": "raw_complete", "text": "Done.", "messages": [], "artifacts": []}
+
+    monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
+    client.post("/api/chat/stream", headers=AUTH, json={"message": "q"})
+    loop_thread = next(t[1] for t in threads if isinstance(t, tuple))
+    assert all(t != loop_thread for t in threads if not isinstance(t, tuple))

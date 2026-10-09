@@ -66,9 +66,9 @@ def test_invalid_contract_is_reported_to_the_model_and_nothing_runs():
     assert "error" in out.content and wh.sql == []
 
 
-def test_warehouse_errors_are_returned_with_the_sql():
+def test_warehouse_errors_reach_the_model_without_the_compiled_sql():
     out = _tools(FakeWarehouse(error="boom")).dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
-    assert out.content["error"] == "boom" and "DS_COURSE_FILTERS_V1" in out.content["sql"]
+    assert out.content == {"error": "boom"}
     assert out.artifacts == []
 
 
@@ -185,3 +185,11 @@ def test_filter_values_schema_names_the_value_types():
     spec = next(s for s in _tools().specs if s["name"] == "query_semantic")
     items = spec["inputSchema"]["json"]["properties"]["filters"]["items"]["properties"]["values"]["items"]
     assert items == {"type": ["string", "number", "boolean"]}
+
+
+def test_warehouse_errors_reach_the_model_without_internal_object_or_role_names():
+    raw = "002003 (42S02): SQL compilation error:\nObject 'PROD_DB.SECRET_SCHEMA.T' does not exist or not authorized, role BBDATA_ROLE"
+    tools = ChatTools(CATALOG, "DB", execute=lambda sql, params=None, compiled=False: {"error": raw, "warehouse_error": True})
+    out = tools.dispatch("execute_sql", {"sql": "SELECT 1", "reason": "testing the error path"}, called=SEARCHED)
+    assert "SECRET_SCHEMA" not in out.content["error"] and "BBDATA_ROLE" not in out.content["error"]
+    assert "does not exist" in out.content["error"]

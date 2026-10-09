@@ -6,6 +6,7 @@ contract, SQL and provenance so the client can render, re-run or pin the result.
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
@@ -124,6 +125,15 @@ def _default_execute(sql: str, params: Optional[dict] = None, compiled: bool = F
     return validate_and_execute(sql, params, compiled=compiled)
 
 
+def _model_error(result: dict) -> str:
+    """The error the model sees: warehouse messages without object or role names."""
+    message = result["error"]
+    if not result.get("warehouse_error"):
+        return message
+    message = re.sub(r"Object '[^']*'", "An object", message)
+    return re.sub(r",?\s*role \S+", "", message)
+
+
 def _artifact(kind: str, title: str, data, **extra) -> dict:
     return {"id": uuid.uuid4().hex, "type": kind, "title": title, "data": data, **extra}
 
@@ -159,7 +169,7 @@ class ChatTools:
 
         result = self.execute(compiled.sql, None, compiled=True)
         if "error" in result:
-            return ToolResult({"error": result["error"], "sql": compiled.sql})
+            return ToolResult({"error": _model_error(result)})
 
         result = named_result(result)
         rows, columns = result["rows"], result["columns"]
@@ -201,7 +211,7 @@ class ChatTools:
         sql = tool_input.get("sql", "")
         result = self.execute(sql, None)
         if "error" in result:
-            return ToolResult({"error": result["error"]})
+            return ToolResult({"error": _model_error(result)})
         rows, columns = result["rows"], result["columns"]
         provenance = {"governed": False, "reason": reason}
         title = tool_input.get("title") or "Ungoverned query result"

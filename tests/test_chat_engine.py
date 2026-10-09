@@ -124,3 +124,20 @@ def test_a_per_request_tool_set_replaces_the_default(monkeypatch, tools):
     monkeypatch.setattr(chat_engine, "_bedrock", ScriptedBedrock(_tool("query_semantic", {}), _text("ok")))
     chat_engine.send_message("q", [], tools=mine)
     assert len(mine.calls) == 1 and tools.calls == []
+
+
+def _cut_off(text):
+    return {"output": {"message": {"role": "assistant", "content": [{"text": text}]}}, "stopReason": "max_tokens"}
+
+
+def test_an_answer_cut_off_at_the_token_limit_says_so(monkeypatch, tools):
+    monkeypatch.setattr(chat_engine, "_bedrock", ScriptedBedrock(_cut_off("The first half")))
+    text, _, _ = chat_engine.send_message("q", [])
+    assert text.startswith("The first half") and "cut off" in text
+
+
+def test_failed_tool_results_are_marked_as_errors(monkeypatch, tools):
+    monkeypatch.setattr(tools, "dispatch", lambda name, tool_input, called=(): ToolResult({"error": "bad contract"}))
+    monkeypatch.setattr(chat_engine, "_bedrock", ScriptedBedrock(_tool("query_semantic", {}), _text("ok")))
+    _, messages, _ = chat_engine.send_message("q", [])
+    assert messages[2]["content"][0]["toolResult"]["status"] == "error"

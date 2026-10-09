@@ -327,23 +327,29 @@ async def send_message_streaming(
     user: Optional[dict] = None,
 ):
     """Stream a response via chat_engine, yielding frontend events."""
+    import asyncio
     from chat_engine import send_message_streaming as engine_stream
     from conversation_store import load_history, save_turn
 
     yield {"type": "status", "message": "Processing your question..."}
 
-    context_id = _conversation_id(context_id, owner)
-    bedrock_history, model_text = _model_turns(load_history(context_id, owner), message_text)
+    # DynamoDB calls are blocking; keep them off the event loop that serves the stream.
+    loop = asyncio.get_running_loop()
+    context_id = await loop.run_in_executor(None, _conversation_id, context_id, owner)
+    history = await loop.run_in_executor(None, load_history, context_id, owner)
+    bedrock_history, model_text = _model_turns(history, message_text)
+    engine_kwargs = await loop.run_in_executor(None, _engine_kwargs, user)
 
     full_text, artifacts = "", []
     try:
-        async for event in engine_stream(model_text, bedrock_history, **_engine_kwargs(user)):
+        async for event in engine_stream(model_text, bedrock_history, **engine_kwargs):
             if event["type"] == "status":
                 yield event
             elif event["type"] == "raw_complete":
                 full_text, artifacts = event["text"], event["artifacts"]
                 if full_text.strip():
-                    save_turn(context_id, owner, message_text, full_text, _queries_from(artifacts))
+                    await loop.run_in_executor(
+                        None, save_turn, context_id, owner, message_text, full_text, _queries_from(artifacts))
 
         if not full_text.strip():
             yield {"type": "error", "message": "Empty response"}

@@ -74,9 +74,14 @@ def _tool_uses(message: dict) -> list[dict]:
     return [b["toolUse"] for b in message.get("content", []) if "toolUse" in b]
 
 
-def _answer(message: dict, artifacts: list) -> str:
+def _answer(response: dict, artifacts: list) -> str:
     # Claude can end a turn after tool results with no text; blank text also breaks the next Converse call.
-    text = _text_of(message).strip()
+    stop = response.get("stopReason")
+    if stop not in (None, "end_turn", "tool_use"):
+        logger.warning("Converse stopped with %s", stop)
+    text = _text_of(response["output"]["message"]).strip()
+    if stop == "max_tokens":
+        return (text + "\n\n" if text else "") + "_(This answer was cut off; ask me to continue.)_"
     if text:
         return text
     return "Here are the results." if artifacts else "I couldn't find an answer to that."
@@ -91,6 +96,7 @@ def _run_tool(tool_use: dict, artifacts: list, called: list, tools: ChatTools) -
     return {"toolResult": {
         "toolUseId": tool_use["toolUseId"],
         "content": [{"text": json.dumps(result.content, default=str)}],
+        **({"status": "error"} if "error" in result.content else {}),
     }}
 
 
@@ -101,11 +107,12 @@ def send_message(user_message: str, history: list, tools: Optional[ChatTools] = 
     artifacts: list = []
     called: list = []
     for _ in range(_MAX_ROUNDS):
-        output = _converse(messages)["output"]["message"]
+        response = _converse(messages)
+        output = response["output"]["message"]
         messages.append(output)
         uses = _tool_uses(output)
         if not uses:
-            return _answer(output, artifacts), messages, artifacts
+            return _answer(response, artifacts), messages, artifacts
         messages.append({"role": "user", "content": [_run_tool(u, artifacts, called, tools) for u in uses]})
     return "I was unable to complete the request.", messages, artifacts
 
@@ -123,7 +130,7 @@ async def send_message_streaming(user_message: str, history: list, tools: Option
         messages.append(output)
         uses = _tool_uses(output)
         if not uses:
-            yield {"type": "raw_complete", "text": _answer(output, artifacts), "messages": messages, "artifacts": artifacts}
+            yield {"type": "raw_complete", "text": _answer(response, artifacts), "messages": messages, "artifacts": artifacts}
             return
         results = []
         for use in uses:
