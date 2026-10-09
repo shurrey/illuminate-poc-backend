@@ -13,10 +13,8 @@ export interface LambdaProxyProps {
   overlayTableName: string;
   userPoolId: string;
   userPoolClientId: string;
-  artifactsBucketName: string;
   snowflakeSecretArn: string;
   /** CloudFront origin URL to add to CORS allowed origins */
-  frontendOrigin?: string;
 }
 
 export class LambdaProxy extends Construct {
@@ -70,16 +68,10 @@ export class LambdaProxy extends Construct {
       resources: [props.overlayTableArn],
     }));
 
-    // Secrets Manager (read + write for config endpoint)
+    // Secrets Manager (read only)
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],
       resources: [props.snowflakeSecretArn],
-    }));
-
-    // S3
-    role.addToPolicy(new iam.PolicyStatement({
-      actions: ['s3:GetObject', 's3:PutObject'],
-      resources: [`arn:aws:s3:::${props.artifactsBucketName}/*`],
     }));
 
     // Cognito
@@ -90,18 +82,11 @@ export class LambdaProxy extends Construct {
       ],
     }));
 
-    // Build CORS allowed origins.
-    // Dev includes the existing CloudFront distribution URL inline — the
-    // frontend stack's AddCorsOrigin custom resource was supposed to append
-    // this dynamically but only read the config, never wrote. Hardcoding
-    // here is more reliable than a buggy custom resource and the URL is
-    // stable for the lifetime of the IlluminatePoc stack.
-    const defaultOrigins = isProd
+    // Each deploy resets ALLOWED_ORIGINS to these; the frontend stack appends its CloudFront
+    // origin on its own deploys, so redeploy it after this stack.
+    const allowedOrigins = isProd
       ? 'https://illuminate.anthology.com'
       : 'http://localhost:3000,http://localhost:5173,https://dm5zbussw00dg.cloudfront.net';
-    const allowedOrigins = props.frontendOrigin
-      ? `${defaultOrigins},${props.frontendOrigin}`
-      : defaultOrigins;
 
     // Lambda Web Adapter layer
     const lwaLayer = lambda.LayerVersion.fromLayerVersionArn(this, 'LWA',
@@ -138,7 +123,6 @@ export class LambdaProxy extends Construct {
         CONVERSATION_TABLE: props.conversationTableName,
         OVERLAY_TABLE: props.overlayTableName,
         BEDROCK_MODEL_ID: 'us.anthropic.claude-sonnet-4-6',
-        ARTIFACTS_BUCKET: props.artifactsBucketName,
         USER_POOL_ID: props.userPoolId,
         USER_POOL_CLIENT_ID: props.userPoolClientId,
         ALLOWED_ORIGINS: allowedOrigins,

@@ -7,17 +7,13 @@ export interface OverlayTableProps {
 }
 
 /**
- * Per-tenant metric overlays. Each item is one tenant's override of one
- * canonical metric:
+ * Per-tenant semantic-layer overlays, written by overlay_store.py:
  *
- *   tenant_id   (HASH)    — string, e.g. "blackboard-dev"
- *   metric_id   (RANGE)   — string, e.g. "metric.dashboard.retention_rate.v1"
- *   measure_sql           — the override SQL
- *   diff_description      — human-readable explanation of what changed
- *   owner                 — institutional owner ("Lone Star Registrar's Office")
- *   last_reviewed         — ISO date string
- *   updated_at            — ISO timestamp set on every write
- *   updated_by            — Cognito sub of the editor
+ *   tenant_id   (HASH)   — the caller's custom:tenant_id
+ *   metric_id   (RANGE)  — the target (measure:<dataset>:<name>, filter:..., metric:<id>);
+ *                          each saved version is also kept under <target>#v<000001>
+ *   expr | sql | default_filters — the overridden field, by target kind
+ *   description, version, updated_by, updated_at
  */
 export class OverlayTable extends Construct {
   public readonly table: dynamodb.Table;

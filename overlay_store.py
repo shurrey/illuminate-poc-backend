@@ -1,7 +1,6 @@
 """DynamoDB storage for semantic-layer tenant overlays, versioned with history.
 
-Shares the overlay table (tenant_id HASH, metric_id RANGE) with the legacy metric overlays. The
-current overlay's sort key is its target (`measure:...`, `filter:...`, `metric:...`); every saved
+Table keys are tenant_id (HASH) and metric_id (RANGE); metric_id holds the target. The current overlay's sort key is its target (`measure:...`, `filter:...`, `metric:...`); every saved
 version is also kept under `<target>#v<version>`. Saves are conditional on the caller's version and write both rows in one transaction.
 """
 

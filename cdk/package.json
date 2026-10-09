@@ -9,11 +9,9 @@
     "synth": "cdk synth",
     "deploy": "cdk deploy --all",
     "deploy:base": "cdk deploy IlluminateBase-*",
-    "deploy:agentcore": "cdk deploy IlluminateAgentCore-*",
     "deploy:api": "cdk deploy IlluminateApi-*"
   },
   "dependencies": {
-    "@aws-cdk/aws-bedrock-agentcore-alpha": "^2.248.0-alpha.0",
     "aws-cdk-lib": "^2.248.0",
     "constructs": "^10.4.2"
   },
