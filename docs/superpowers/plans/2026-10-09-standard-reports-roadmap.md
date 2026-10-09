@@ -1,0 +1,61 @@
+# Standard reports: roadmap
+
+**Spec:** `docs/superpowers/specs/2026-10-09-standard-reports-design.md`
+**Build inventory:** `docs/superpowers/specs/2026-10-09-standard-reports-gap-analysis.md` (P-numbers)
+**Repos:** B = this repo (`illuminate-conversational-intelligence`), F = `illuminate-poc`.
+
+One unit is one PR, branched from `main` and self-merged after its tests pass. Each phase gets its own detailed
+plan when it starts, written against the code the earlier phases actually produced.
+
+## Phase 1: Foundation. Detailed plan: `2026-10-09-standard-reports-phase-1-foundation.md`
+
+| Unit | Repo | Scope |
+|---|---|---|
+| 1.1 | B | The public catalog exposes each measure's `expr` and each filter's `sql`, with tenant overrides applied |
+| 1.2 | F | Vitest; `describeQuery` (how a number is calculated); the Info panel on dashboard cards |
+| 1.3 | B | Roles (Admin / Author / Developer / Viewer); identity selectable for the first three; identity queries logged |
+| 1.4 | B | P1: cross-dataset filters as a semi-join |
+| 1.5 | B | `terms` dataset; report schema, loader and validation; the `/api/v1/reports` endpoints, including `run` |
+| 1.6 | F | Report renderer: list, filter bar, pages, and the KPI / bar / line / pie / table / text visuals with Info |
+| 1.7 | F | Client transforms: period_over_period, percent_of_total, unpivot, top_n_other |
+| 1.8 | B | P2: course-grain dimensions on `courses.v1` |
+| 1.9 | B | P9: grading and platform definitions |
+
+## Phase 2: Quick reports
+
+Each report is one PR in B (its definition) and is verified live in F. Datasets and definitions it needs land first,
+in their own PRs.
+
+| Report | Needs first |
+|---|---|
+| Learning Platform Adoption | 1.7 weekday_divisor transform; Ally and SafeAssign definitions as found |
+| Learning Tool Activity & Use | `day_of_week` / `hour_group_3h` on CTA (or P20) |
+| Assessment & Grades | threshold transform; `has_due_date` scoping (1.9) |
+| Collaboration Session Activity | `collab_sessions`, `collab_events` (P5) |
+| Course Administration | `course_readiness` (P12); P21 paging |
+| AI Design Assistant Adoption | `course_item_ai_usage` (P13); ih_child transform |
+| Learning Tools Adoption | measure_switch transform; P4 interim (primary IH node) |
+
+The first report's PR in F removes the mock reports (`mockReports`, `mockChartData`, `ReportChartArea`).
+
+## Phase 3: Instructional Practices
+
+P4 (group by IH node) · P10 (CRA instructor definitions) · `course_items` (P11) · `course_groups` (P16) ·
+`collab_course_media` (P17) · bin transform · the report.
+
+## Phase 4: Student Engagement, Social & Collaborative, Course Summary
+
+`course_enrollments` (P8) · P19 (two-stage aggregation) · `course_access_by_slot` (P14) ·
+`enrollment_daily_grade_activity` (P18) · the per-dataset definitions for CSA, SCM, SA, SOC, CSSA, CITA, SITA,
+`activity_log` and `lms_course_logins` · combine transform · the three reports.
+
+## Phase 5: Student-level reports
+
+`persons` (P6) · `student_grade_items` (P15) · P20 (hour / weekday grains) · P21 (paging) · P24 (percentiles) ·
+Student Performance & Grades · Student Summary · Student Summary (Reach). Reach's engagement-score visuals render as
+not available.
+
+## Deferred
+
+- IH-node scoping for Authors and Viewers, which arrives with user management.
+- P25 cumulative totals and the credit burndown, both out of scope.
