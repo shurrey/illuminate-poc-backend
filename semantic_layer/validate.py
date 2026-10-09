@@ -118,7 +118,9 @@ def validate_dataset(ds: Dataset, catalog: Catalog, snapshot: dict, pii: frozens
         return [f"{ds.id}: {e}"]
 
     errors: list[str] = []
-    pii_outputs = (outputs & PII_COLUMN_NAMES) | _traced_pii(ds, catalog, snapshot, outputs, pii)
+    exempt = {c.upper() for c in ds.pii_exempt}
+    errors += [f"{ds.id}: {c} is a known PII column name and cannot be exempt" for c in sorted(exempt & PII_COLUMN_NAMES)]
+    pii_outputs = (outputs & PII_COLUMN_NAMES) | (_traced_pii(ds, catalog, snapshot, outputs, pii) - exempt)
 
     def need(cols: set[str], what: str) -> None:
         missing = sorted(cols - outputs)

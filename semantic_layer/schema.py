@@ -92,9 +92,14 @@ class Dataset(_Definition):
     measures: list[Measure] = Field(default_factory=list)
     filters: list[DatasetFilter] = Field(default_factory=list)
     pii_columns: list[str] = Field(default_factory=list)
+    # Outputs traced to a PII-flagged source column that a reviewer judged not personal
+    # (e.g. one key extracted from a JSON column flagged as a whole), with the reason.
+    pii_exempt: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _names_are_unique_and_ratios_resolve(self) -> "Dataset":
+        if any(not reason.strip() for reason in self.pii_exempt.values()):
+            raise ValueError(f"{self.id}: every pii_exempt entry needs a reason")
         names = [d.name for d in self.dimensions] + [m.name for m in self.measures]
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:
