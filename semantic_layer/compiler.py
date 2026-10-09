@@ -7,6 +7,7 @@ spliced into SQL text.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 
 import sqlglot
@@ -149,6 +150,22 @@ def named_result(result: dict) -> dict:
             "rows": [{rename.get(k, k): v for k, v in row.items()} for row in result["rows"]]}
 
 
+def _check_filter_values(f: ContractFilter, dim: DatasetDimension) -> None:
+    """Values the warehouse can compare with the dimension: numbers, booleans or ISO dates as its type needs."""
+    for v in f.values:
+        if f.op == "contains":
+            continue
+        if dim.type == "numeric" and (isinstance(v, bool) or not isinstance(v, (int, float))):
+            raise CompileError(f"filter {f.dimension!r} needs number values; got {v!r}")
+        if dim.type == "boolean" and not isinstance(v, bool):
+            raise CompileError(f"filter {f.dimension!r} needs true or false; got {v!r}")
+        if dim.type == "time":
+            try:
+                date.fromisoformat(str(v)[:10])
+            except ValueError:
+                raise CompileError(f"filter {f.dimension!r} needs ISO date values (YYYY-MM-DD); got {v!r}") from None
+
+
 def _resolve(base: Dataset, ref: str, catalog: Catalog, joins: dict) -> tuple[Dataset, DatasetDimension, Optional[str]]:
     ds_id, name, grain = _split_ref(ref)
     if ds_id is not None and ds_id != base.id:
@@ -197,20 +214,30 @@ def _unquoted_upper(ident: Optional[exp.Identifier]) -> str:
     return ident.name if ident.quoted else ident.name.upper()
 
 
+_GENERATOR_MAX_ROWS = 1_000_000
+
+
 def _is_generator(table: exp.Table) -> bool:
-    """TABLE(GENERATOR(...)): Snowflake's row generator, which reads no data."""
+    """TABLE(GENERATOR(ROWCOUNT => n)) with a literal n up to _GENERATOR_MAX_ROWS; it reads no data."""
     fn = table.this
-    return (isinstance(fn, exp.Anonymous) and str(fn.this).upper() == "TABLE" and len(fn.expressions) == 1
-            and isinstance(fn.expressions[0], exp.Anonymous) and str(fn.expressions[0].this).upper() == "GENERATOR")
+    if not (isinstance(fn, exp.Anonymous) and str(fn.this).upper() == "TABLE" and len(fn.expressions) == 1):
+        return False
+    gen = fn.expressions[0]
+    if not (isinstance(gen, exp.Anonymous) and str(gen.this).upper() == "GENERATOR" and len(gen.expressions) == 1):
+        return False
+    arg = gen.expressions[0]
+    return (isinstance(arg, exp.Kwarg) and arg.this.name.upper() == "ROWCOUNT"
+            and isinstance(arg.expression, exp.Literal) and not arg.expression.is_string
+            and int(arg.expression.this) <= _GENERATOR_MAX_ROWS)
 
 
 def _ctes_in_scope(node: exp.Expression) -> set[str]:
-    """CTE names visible from node: those of every WITH clause enclosing it."""
+    """CTE names visible from node, as Snowflake resolves them: those of every WITH clause enclosing it."""
     names: set[str] = set()
     while node is not None:
         with_ = node.args.get("with")
         if isinstance(with_, exp.With):
-            names |= {cte.alias_or_name.upper() for cte in with_.expressions}
+            names |= {_unquoted_upper(cte.args["alias"].this) for cte in with_.expressions}
         node = node.parent
     return names
 
@@ -221,9 +248,10 @@ def _check_tables(sql: str, database: str) -> None:
     for table in tree.find_all(exp.Table):
         schema = _unquoted_upper(table.args.get("db"))
         catalog = _unquoted_upper(table.args.get("catalog"))
-        if not schema and not catalog and table.name.upper() in _ctes_in_scope(table):
-            continue
         if _is_generator(table):
+            continue
+        if (not schema and not catalog and isinstance(table.this, exp.Identifier)
+                and _unquoted_upper(table.this) in _ctes_in_scope(table)):
             continue
         if catalog != database.upper() or not schema.startswith("CDM_"):
             raise CompileError(
@@ -265,10 +293,13 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
             raise CompileError(
                 f"filter dimension {f.dimension!r} has a grain suffix; filters take the plain dimension name"
             )
-        filters.append((f, *_resolve(base, f.dimension, catalog, joins)[:2]))
+        target, dim, _ = _resolve(base, f.dimension, catalog, joins)
+        _check_filter_values(f, dim)
+        filters.append((f, target, dim))
     if base.required_time_range:
         tr = contract.time_range
-        if tr is None or tr.dimension.rpartition(":")[2] != base.required_time_range:
+        qualifier, _, name = (tr.dimension.rpartition(":") if tr else ("", "", ""))
+        if tr is None or name != base.required_time_range or qualifier not in ("", base.id):
             raise CompileError(f"{base.id} needs a time_range on {base.required_time_range}")
         if tr.start is None:
             raise CompileError(f"{base.id} needs a time_range start on {base.required_time_range}")

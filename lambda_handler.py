@@ -793,6 +793,12 @@ async def semantic_compile(contract: QueryContract, authorization: Optional[str]
     return _compile_contract(contract, authorization).model_dump()
 
 
+def _etag_matches(if_none_match: str, etag: str) -> bool:
+    """RFC 9110 weak comparison: '*', or any listed tag equal to etag once a W/ prefix is ignored."""
+    tags = [t.strip() for t in if_none_match.split(",")]
+    return "*" in tags or any(t.removeprefix("W/") == etag for t in tags)
+
+
 @app.get("/api/v1/semantic/catalog")
 async def semantic_catalog(
     authorization: Optional[str] = Header(None),
@@ -811,7 +817,7 @@ async def semantic_catalog(
     body = public_catalog(_catalog_for(user)[0])
     etag = '"' + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:32] + '"'
     headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
-    if if_none_match == etag:
+    if if_none_match and _etag_matches(if_none_match, etag):
         return Response(status_code=304, headers=headers)
     return JSONResponse(body, headers=headers)
 

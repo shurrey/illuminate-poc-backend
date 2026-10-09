@@ -270,3 +270,54 @@ def test_a_required_time_range_must_name_a_time_dimension():
 
     with pytest.raises(ValidationError):
         dataset(required_time_range="course_role")
+
+
+@pytest.mark.parametrize("dimension,values,message", [
+    ("active", ["abc"], "number"),
+    ("course_ended", [True], "number"),
+    ("last_access", ["not a date"], "date"),
+])
+def test_filter_values_must_match_the_dimension_type(dimension, values, message):
+    from semantic_layer.catalog import load_catalog
+
+    with pytest.raises(CompileError, match=message):
+        compile_query(QueryContract(measures=["dataset.course_student_activity.v1:students"],
+                                    filters=[{"dimension": dimension, "op": "eq", "values": values}]),
+                      load_catalog(), "DB")
+
+
+def test_well_typed_filter_values_compile():
+    from semantic_layer.catalog import load_catalog
+
+    compile_query(QueryContract(measures=["dataset.course_student_activity.v1:students"],
+                                filters=[{"dimension": "active", "op": "eq", "values": [1]},
+                                         {"dimension": "last_access", "op": "gte", "values": ["2026-01-01"]}]),
+                  load_catalog(), "DB")
+
+
+def test_a_quoted_table_name_only_matches_a_cte_of_exactly_that_name():
+    from semantic_layer.compiler import _check_tables
+
+    _check_tables('WITH "a" AS (SELECT 1 AS X FROM DB.CDM_LMS.T) SELECT X FROM "a"', "DB")
+    with pytest.raises(CompileError):
+        _check_tables('WITH a AS (SELECT 1 AS X FROM DB.CDM_LMS.T) SELECT X FROM "a"', "DB")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 100000000))",
+    "SELECT SEQ4() FROM TABLE(GENERATOR(TIMELIMIT => 60))",
+])
+def test_generators_are_bounded(sql):
+    from semantic_layer.compiler import _check_tables
+
+    with pytest.raises(CompileError):
+        _check_tables(sql, "DB")
+
+
+def test_a_required_time_range_must_be_on_the_dataset_itself():
+    from tests.semantic_fixtures import dataset
+
+    ds = dataset(required_time_range="enrolled_at")
+    with pytest.raises(CompileError, match="time_range"):
+        _compile(catalog(ds), measures=["dataset.enrollments.v1:enrollments"],
+                 time_range={"dimension": "dataset.other.v1:enrolled_at", "start": "2026-01-01"})

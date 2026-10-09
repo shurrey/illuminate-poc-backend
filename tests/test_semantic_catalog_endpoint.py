@@ -58,3 +58,10 @@ def test_browsers_can_send_if_none_match_and_read_the_etag(client):
 def test_catalog_responses_must_be_revalidated(client):
     r = client.get("/api/v1/semantic/catalog", headers=AUTH)
     assert r.headers["cache-control"] == "private, no-cache"
+
+
+@pytest.mark.parametrize("header", ["*", 'W/{etag}', '"x", {etag}'])
+def test_if_none_match_handles_weak_lists_and_wildcards(client, header):
+    etag = client.get("/api/v1/semantic/catalog", headers=AUTH).headers["ETag"]
+    r = client.get("/api/v1/semantic/catalog", headers={**AUTH, "If-None-Match": header.format(etag=etag)})
+    assert r.status_code == 304
