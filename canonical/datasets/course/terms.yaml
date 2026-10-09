@@ -1,0 +1,24 @@
+id: dataset.terms.v1
+display_name: Terms
+description: >
+  Every term once, with its name and its start and end dates. Reports default to the term that spans
+  today (or the latest that has ended) from here.
+grain: one row per term
+domain: course
+complete: true
+source: CDM_LMS.TERM
+base_sql: |
+  SELECT te.ID AS TERM_ID,
+         te.NAME AS TERM_NAME,
+         COALESCE(te.START_DATE, te.START_TIME::DATE) AS TERM_START_DATE,
+         COALESCE(te.END_DATE, te.END_TIME::DATE) AS TERM_END_DATE
+  FROM {{ database }}.CDM_LMS.TERM te
+  WHERE te.ROW_DELETED_TIME IS NULL
+entities:
+  - {name: term, column: TERM_ID, type: primary}
+dimensions:
+  - {name: term_name, column: TERM_NAME, type: categorical, synonyms: [term, semester]}
+  - {name: term_start, column: TERM_START_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: term_end, column: TERM_END_DATE, type: time, grains: [day, week, month, quarter, year]}
+measures:
+  - {name: terms, agg: count_distinct, expr: TERM_ID, unit: terms}
