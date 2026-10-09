@@ -50,7 +50,7 @@ Found while planning: the backend has no `/api/v1/config/snowflake` route, so 3f
 Decisions from planning:
 - Dashboard metrics are re-expressed as the measure they count; the period-over-period comparison arrives with the metric `comparison` field in 6c.
 - Instructor grading engagement waits for datasets 22–23 in Phase 7.
-- Rolling-window retention can't be expressed as a single measure and has no bbd-analytics product; decide in 6c whether it gets a dedicated dataset or the card is dropped.
+- Rolling-window retention can't be expressed as a single measure and has no bbd-analytics product. Ruled in Phase 7: the retention card is dropped.
 - Legacy `course_completion_rate` reads `PERSON_COURSE.STATUS`, which the CDM doesn't have, so it is not re-expressed.
 - The dictionary-snapshot supplement now exists (`tests/fixtures/cdm_dictionary_supplement.json`).
 
@@ -173,3 +173,16 @@ Before the first dataset that reads `CDM_META` or `CDM_TLM` columns missing from
 | Phase 2 review, carried | ETag weak, list and `*` comparison (RFC 9110) | 9b |
 | Phase 4 review, carried | Synonym collision ("course count" on `reportable_courses` and `courses`) | 9b |
 | Phase 5 review, carried | The card builder's preview re-runs a query the agent already ran | 9b |
+| Phase 7 review | `required_time_range` compares only the dimension name, not that it resolved on the base dataset; any start date passes; a metric can't be built on such a dataset because overlay validation and the metric test compile without a time range | 9b |
+| Phase 7 review | `pii_exempt` is keyed on the output column, not the source lineage it was reviewed for | 9b |
+| Phase 7 review | `activity_log` submission rows put `item type: name` in `tool` (carried from the source) | 9b |
+| Phase 7 review | `students_at_risk` thresholds are new and undocumented as such; rows include ungraded enrollments | 9b |
+| Phase 7 review | Two "grading turnaround" measures (response days vs hours to grade) share the synonym; per-grade rounding up adds about half a day | 9b |
+| Phase 7 review | `courses_graded_this_week` keeps the "instructor engagement" synonym, which overstates it | 9b |
+| Phase 7 review | `collab_attendance_hourly.attendee_hours` counts a person twice in an hour when two sessions carry different IH lists | 9b |
+| Phase 7 review | `lms_sessions` IH nodes include child courses; the slot source excludes them | 9b |
+| Phase 7 review | `safeassign_originality_reports_basic` is always empty (the event type does not occur) | 9b |
+| Phase 7 review | `item_tool.FIRST_ACCESSED_DATE` (session timezone date) is compared with tenant-timezone course weeks, about a day off at each edge | 9b |
+| Phase 7 review | `TABLE(GENERATOR(ROWCOUNT => n))` has no size cap (canonical YAML only) | 9b |
+| Phase 7 review | Preview and support users stay in `social_interactions_by_type` and non-student `course_item_tool_activity` denominators (as in the source) | 9b |
+| Phase 7 review | Enrollment metrics over `course_role_activity` include deleted courses (about 2%), like the other course_filters-based metrics | 9b |

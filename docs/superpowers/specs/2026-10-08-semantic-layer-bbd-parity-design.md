@@ -139,6 +139,11 @@ Rules:
 - Measures over PII columns must be counts.
 - A dimension's `type` must match its column's inferred SQL type (`boolean`, `time`, `numeric`).
 - Filters are applied through metrics' `default_filters`; there is no dataset-level default.
+- `pii_exempt` maps an output column to the reason a reviewer judged it not personal, for values
+  taken from a column the dictionary flags as a whole (one key of a JSON `DATA` or `STAGE` column).
+  Every entry needs a reason, and known PII column names can never be exempt.
+- `required_time_range` names a time dimension that every query on the dataset must bound with a
+  `time_range` start; the compiler refuses the query otherwise. `activity_log` requires one.
 
 ### 3.3 Metric schema
 
@@ -280,6 +285,17 @@ in the same PR.
 | `ITEM_TOOL` (processItemTool) | Each run deletes a (course item, enrollment) row and re-inserts it summed over only the activity changed since the last run, losing earlier totals | Dataset 6 sums all activity at query time |
 | `COURSE_TOOL_ACTIVITY_HOUR` (processCourseItemToolActivityHour) | Counts an access once for its tool and again for its content item's tool; 1,889,729 of 1,893,378 tool rows in three years carry both, 1,459,346 for the same tool (minutes doubled) | Dataset 7 counts each access once, for its own tool or else its item's tool |
 | `TFV_COURSE_TOOL_USE` | A missing submission timestamp becomes 1970-01-01 in the course's first-activity date (471 of 10,002 courses with submissions have one); `INSTANCE` is joined on tenant only, multiplying rows when a tenant has several instances | Dataset 8 ignores missing timestamps and joins the course's own instance |
+| `COURSE_ITEM_TOOL_ACTIVITY` (processCourseItemToolActivity) | Groups by the person's STAGE `student_id`, so everyone without one in a course and role collapses into one row | Dataset 9 keeps one row per enrollment |
+| `TFV_STUDENT_ITEM_TOOL_ACTIVITY` | Left-joins tool activity, adding a typeless row for every student without tool activity and filing activity in tools with no tool type under no type | Dataset 13 lists only types used and leaves out tools without a tool type |
+| `HLP_STUDENT_COURSE_MINUTES_PER_CONTENT_ITEMS` | Weekly interactions divide by course weeks summed once per item type; course item totals are summed over every student row; each enrollment repeats per institutional hierarchy node, inflating sums across nodes | Dataset 14 divides once, leaves course totals to dataset 9, and keeps one row per enrollment |
+| `TFV_STUDENT_SOCIAL_INTERACT_AND_SUB_BY_TYPE` | Every enrollment in the course is included with no course role, so instructor and student rows can't be separated | Dataset 17 adds `course_role` |
+| `TFV_STUDENT_ASSIGNMENTS` | Reports 1970-01-01 as the last access when a student never opened an item; joins GRADE without `ROW_DELETED_TIME IS NULL`, so deleted grade rows count as submissions (41,988 item x enrollment pairs counted as submitted only through a deleted row) | Dataset 15 leaves the last access NULL and counts live grades only |
+| `GRADES_COURSE_ITEM_RESPONSE_TIME` | Measures response time from the due date when there is one and otherwise returns none: 160,219 of 327,957 graded attempts on response-time item types (49%) have no due date | Dataset 23 measures from the later of the attempt and the due date |
+| `PLATFORM_LMS_COURSE_ACTIVITY` | Joins `INSTANCE` on tenant only, repeating every row once per instance | Dataset 27 joins the course's own instance |
+| `PLATFORM_CLB_ATTENDANCE` | Finds the timezone through the session's hierarchy row, so attendance in sessions not linked to a course (138,814 of 193,523, 72%) is dated in UTC, and joins the instance on tenant only | Dataset 31 takes each attendance's own instance timezone through `CDM_MAP.INSTANCE` |
+| `PLATFORM_CLB_STORAGE_CUMULATIVE_SUM` (dates) | Selects the media date rather than the calendar date, so every day without uploads has no date (all 1,012 days since 2024 here); the timezone lookup joins on an LMS instance tenant column this CDM does not have | Dataset 35 dates every day and uses the media's own instance timezone |
+| `PLATFORM_ALLY_ALTERNATIVE_FORMAT`, `PLATFORM_ALLY_INSTRUCTOR_FEEDBACK` | Left-join every calendar day and select the event's date, emitting a row with no date for each day without events | Datasets 29 and 30 list events only |
+| Activity log Ultra telemetry (`activityLog/`) | Filters `event_type = 'click'`; this CDM stores `'CLICK'`, so no Ultra clicks are included | Dataset 20 compares case-insensitively and removes duplicate event ids |
 
 The existing 18 metrics are re-expressed over these datasets, with their broken column references
 fixed. Each is re-added as soon as the dataset it needs exists. The `metric.dashboard.*` IDs are
