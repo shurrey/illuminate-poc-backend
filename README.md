@@ -1,125 +1,71 @@
-# Illuminate POC Backend
+# Illuminate Conversational Intelligence API
 
-Multi-agent AI backend for natural language access to Anthology Illuminate's educational data warehouse. Translates questions into SQL, executes against Snowflake, analyzes results, and validates for FERPA compliance.
+Backend for natural-language and governed analytics over Anthology Illuminate's CDM data in
+Snowflake. A single FastAPI app, run on AWS Lambda, serves:
 
-## Architecture
+- **Semantic queries**: callers send a query contract (metrics, measures, dimensions, filters); the
+  semantic layer compiles it to Snowflake SQL from governed dataset and metric definitions.
+- **Chat**: a Bedrock Converse tool loop that answers questions through the same semantic layer,
+  falling back to labelled, guarded freehand SQL.
+- **Tenant overlays**: per-tenant, versioned admin overrides of measures, filters and metric defaults.
+- **Data dictionary**: an authenticated proxy to the Blackboard data dictionary, and an admin-only table preview.
 
 ```
-API Clients (Frontend, Dashboard, etc.)
-  |
-  | HTTPS + Cognito JWT
-  v
-Lambda Function URL (RESPONSE_STREAM)
-  |
-  | Lambda Web Adapter (LWA) -> uvicorn/FastAPI
-  |
-  +-- /api/chat, /api/chat/stream     -> boto3 invoke_agent_runtime (SigV4)
-  |                                         |
-  |                                   Bedrock AgentCore (A2A Protocol)
-  |                                         |
-  |                                    Orchestrator (Sonnet 4.6)
-  |                                         |
-  |                              +----------+----------+----------+
-  |                              |          |          |          |
-  |                            SQL      Analyst     Writer    Validator
-  |                          (Sonnet)  (Sonnet)   (Sonnet)   (Sonnet)
-  |                              |
-  |                           Snowflake
-  |
-  +-- /api/v1/dictionary/*     -> Proxy to Blackboard Data Dictionary API
-  +-- /api/v1/dictionary/preview -> Direct Snowflake query
-  +-- /api/v1/dashboard/query  -> Direct Snowflake query
+Client --HTTPS + Cognito ID token--> Lambda Function URL (RESPONSE_STREAM)
+  --> Lambda Web Adapter --> uvicorn / FastAPI (lambda_handler.py)
+        |-- semantic_layer/ compile --> execution guard --> Snowflake
+        |-- chat_engine.py (Bedrock) --> semantic tools --> execution guard --> Snowflake
+        |-- overlay_store.py / conversation_store.py --> DynamoDB
+        '-- data dictionary proxy --> us.data.api.blackboard.com
 ```
 
-All agents run as containerized runtimes on AWS Bedrock AgentCore, communicating via the A2A (Agent-to-Agent) protocol. The Lambda function is a thin proxy that forwards chat requests to the orchestrator and provides direct data access endpoints.
-
-## Tech Stack
+## Tech stack
 
 | Layer | Technology |
-|-------|-----------|
-| API Proxy | AWS Lambda + Lambda Web Adapter (FastAPI, real SSE streaming) |
-| Auth | Amazon Cognito (JWT) |
-| Agent Runtime | AWS Bedrock AgentCore (ARM64 containers) |
-| Agent Framework | Strands Agents SDK (A2A protocol) |
-| LLM | Claude Sonnet 4.6 (via Amazon Bedrock) |
-| Data Warehouse | Snowflake |
-| Infrastructure | AWS CDK (TypeScript, 3 stacks) |
-| Service Discovery | SSM Parameter Store |
+|-------|------------|
+| API | FastAPI on AWS Lambda (Python 3.11) via Lambda Web Adapter, SSE streaming |
+| Auth | Amazon Cognito ID tokens |
+| LLM | Claude Sonnet 4.6 on Amazon Bedrock (Converse API) |
+| Semantic layer | YAML definitions in `canonical/`, compiled with sqlglot and sandboxed Jinja |
+| Storage | DynamoDB (conversations, overlays), Secrets Manager (Snowflake credentials) |
+| Warehouse | Snowflake |
+| Infrastructure | AWS CDK (TypeScript), two stacks |
 
-## Quick Start
+## Quick start
 
 ```bash
-# Prerequisites: AWS CLI, Python 3.11+, Node.js 18+, Docker, CDK CLI
+# Tests (no AWS, Bedrock or Snowflake needed)
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-lambda.txt -r requirements-dev.txt
+python -m pytest
 
-# 1. Configure
-cp .env.example .env
-# Edit .env with Snowflake credentials and initial user
-
-# 2. Deploy everything
-cd cdk
-npm install
-npx cdk bootstrap   # first time only
-npx cdk deploy --all
+# Deploy
+cp .env.example .env    # Snowflake credentials and the initial Cognito user
+cd cdk && npm install
+npx cdk deploy --all -c environment=dev
 ```
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full instructions.
-
-## API Endpoints
-
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
-| `/health` | GET | No | Health check |
-| `/api/chat` | POST | JWT | Send message, get complete response |
-| `/api/chat/stream` | POST | JWT | Send message, get SSE stream |
-| `/api/v1/dictionary/submodels` | GET | JWT | CDM domain listing |
-| `/api/v1/dictionary/definitions` | GET | JWT | Column definitions (1,617 entries) |
-| `/api/v1/dictionary/erd` | GET | JWT | Entity relationships |
-| `/api/v1/dictionary/preview` | GET | JWT | Sample table data from Snowflake |
-| `/api/v1/dashboard/query` | POST | JWT | Execute read-only SQL |
-
-See [docs/API.md](docs/API.md) for full reference.
-
-## Project Structure
+## Repository layout
 
 ```
-illuminate-poc-backend/
-├── agents/                    # 5 self-contained A2A agents
-│   ├── Dockerfile             # Shared Dockerfile (uv + Python 3.13)
-│   ├── orchestrator/          # Coordinator — routes to specialists
-│   ├── sql/                   # SQL generation & Snowflake execution
-│   ├── analyst/               # Data analysis & interpretation
-│   ├── writer/                # Response composition
-│   └── validator/             # FERPA compliance validation
-├── cdk/                       # AWS CDK infrastructure (TypeScript)
-│   ├── bin/illuminate.ts      # App entry — reads .env, deploys 3 stacks
-│   └── lib/
-│       ├── base/              # VPC, Cognito, S3, Secrets, WAF, SSM
-│       ├── agentcore/         # IAM, Memory (STM), 5x container runtimes
-│       └── api/               # Lambda + LWA + Function URL
-├── lambda_handler.py          # FastAPI proxy (chat, dictionary, dashboard)
-├── snowflake_client.py        # Lazy Snowflake connection for direct queries
-├── run.sh                     # LWA startup script
-├── requirements-lambda.txt    # Lambda Python dependencies
-├── .env.example               # Environment template
-└── docs/                      # Documentation
+lambda_handler.py       FastAPI app: routes, auth, overlay application, PII scrub
+chat_engine.py          Bedrock Converse tool loop
+conversation_store.py   DynamoDB conversation history
+overlay_store.py        DynamoDB tenant overlays, versioned
+snowflake_client.py     Snowflake connection and the execution guard
+semantic_layer/         Catalog loader, schema, compiler, validator, overlays, chat tools, prompt
+canonical/datasets/     Dataset definitions, one YAML file each, grouped by domain
+canonical/metrics/      Metric definitions, grouped by domain
+cdk/                    CDK app: IlluminateBase-<env> and IlluminateApi-<env>
+scripts/                build_dictionary_snapshot.py (CDM dictionary fixtures), set-snowflake-secret.sh
+tests/                  pytest suite
+run.sh                  Lambda Web Adapter entry point
 ```
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) - System design, agent responsibilities, data flow
-- [Deployment Guide](docs/DEPLOYMENT.md) - Setup and deployment instructions
-- [API Reference](docs/API.md) - Endpoint contracts and response shapes
-- [Development Guide](docs/DEVELOPMENT.md) - Agent development, modifying the system
-- [Product Spec](SPEC.md) - Original product requirements (with implementation notes)
-
-## SSM Discovery Parameters
-
-All service endpoints and IDs are published to SSM Parameter Store at `/illuminate/{env}/`:
-
-```
-cognito-pool-id, cognito-client-id, api-url, orchestrator-arn,
-sql-arn, analyst-arn, writer-arn, validator-arn, memory-id,
-artifacts-bucket, snowflake-secret-arn
-```
-
-Other services (frontend, dashboard) read these to discover backend resources.
+- [Architecture](docs/ARCHITECTURE.md): components, request flow, overlays, conversations, PII model
+- [API reference](docs/API.md): every route, with auth, request, response and errors
+- [Development](docs/DEVELOPMENT.md): setup, running locally, tests, adding datasets, metrics and overlays
+- [Deployment](docs/DEPLOYMENT.md): CDK stacks, environment variables, secrets
+- [Product spec](SPEC.md): original product requirements
