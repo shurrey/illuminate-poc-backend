@@ -201,15 +201,18 @@ PII is handled in layers:
 2. **Compile.** A dimension whose column is PII (declared, or a well-known name such as
    `FIRST_NAME`, `EMAIL`, `SSN`) cannot be selected; it can only be filtered on. The public catalog
    marks such dimensions `selectable: false`, and `search_catalog` omits them.
-3. **Execution guard** (`validate_and_execute`). Every statement must be a single `SELECT`, `WITH`,
-   `UNION`, `SHOW` or `DESCRIBE`, with no DML or DDL anywhere in the tree, reading only `CDM_*` or
-   `INFORMATION_SCHEMA`, with no table function other than `TABLE(GENERATOR(ROWCOUNT => n))` for a
-   literal n up to 1,000,000, and with no `LIMIT` above 1000. Well-known PII column names may appear in a
-   projection only inside `COUNT`, `COUNT_IF`, `APPROX_COUNT_DISTINCT` or HLL, not windowed.
+3. **Execution guard** (`validate_and_execute`). Every statement must be a single `SELECT`, `WITH`
+   or `UNION` (`query_sql` runs nothing else), with no DML or DDL anywhere in the tree, reading only
+   `CDM_*` or `INFORMATION_SCHEMA`, with no `TABLE(...)` function other than
+   `TABLE(GENERATOR(ROWCOUNT => n))` for a literal n up to 1,000,000, and with no `LIMIT` above 1000.
+   `LATERAL FLATTEN` and `LATERAL SPLIT_TO_TABLE` are allowed. Well-known PII column names must sit
+   inside `COUNT`, `COUNT_IF`, `APPROX_COUNT_DISTINCT` or HLL, not windowed.
    - Compiled SQL (`compiled=True`) is checked on the outermost projection only, since its
      definitions were PII-checked when they were written.
-   - Freehand SQL (strict mode) is checked on every projection, and star projections are refused
-     except inside `COUNT(*)`.
+   - Freehand SQL (strict mode) is checked everywhere in the statement except filter conditions
+     (`WHERE`, `HAVING`, `QUALIFY`, `JOIN ... ON`), which may test PII without returning it. This
+     covers `UNPIVOT`, `PIVOT`, `FLATTEN`, `MATCH_RECOGNIZE`, `ORDER BY` and `GROUP BY`. Star
+     projections are refused except inside `COUNT(*)`.
 4. **Row cap.** At most 1000 rows are fetched per query; results report `truncated`.
 5. **Response scrub.** Chat text is passed through regexes that redact SSNs, email addresses, phone
    numbers and card numbers before it is stored in the conversation or returned to the client.

@@ -73,6 +73,11 @@ npx cdk diff -c environment=dev                       # preview
 On a first deploy, the secret holds a generated placeholder until the script runs, and the API
 cannot reach Snowflake.
 
+**Upgrading an environment deployed before the secret moved out of the template:** the first base
+deploy afterwards replaces the stored credentials with a generated placeholder. Run
+`scripts/set-snowflake-secret.sh <env>` straight after it. Until then, chat and semantic queries fail
+with "Snowflake secret ... has no database"; they recover by themselves once the script has run.
+
 `npm run deploy:api` and `npm run deploy:base` wrap `cdk deploy IlluminateApi-*` and
 `cdk deploy IlluminateBase-*`.
 
