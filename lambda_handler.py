@@ -285,10 +285,22 @@ def _with_queries(text: str, queries: list[dict]) -> str:
     return f"<previous_queries>{json.dumps(queries)}</previous_queries>\n\n{text}"
 
 
+def _engine_kwargs(user: Optional[dict]) -> dict:
+    """A tool set over the caller's overlaid catalog, when their tenant has overlays."""
+    catalog, overlays = _catalog_for(user)
+    if not overlays:
+        return {}
+    from chat_engine import _database
+    from semantic_layer.chat_tools import ChatTools
+
+    return {"tools": ChatTools(catalog, _database)}
+
+
 async def send_message(
     message_text: str,
     owner: str,
     context_id: Optional[str] = None,
+    user: Optional[dict] = None,
 ) -> dict:
     """Send a message via chat_engine (non-streaming)."""
     import asyncio
@@ -297,10 +309,11 @@ async def send_message(
 
     context_id = _conversation_id(context_id, owner)
     bedrock_history, model_text = _model_turns(load_history(context_id, owner), message_text)
+    kwargs = _engine_kwargs(user)
 
     loop = asyncio.get_event_loop()
     response_text, _, artifacts = await loop.run_in_executor(
-        None, lambda: engine_send(model_text, bedrock_history)
+        None, lambda: engine_send(model_text, bedrock_history, **kwargs)
     )
 
     save_turn(context_id, owner, message_text, response_text, _queries_from(artifacts))
@@ -312,6 +325,7 @@ async def send_message_streaming(
     message_text: str,
     owner: str,
     context_id: Optional[str] = None,
+    user: Optional[dict] = None,
 ):
     """Stream a response via chat_engine, yielding frontend events."""
     from chat_engine import send_message_streaming as engine_stream
@@ -324,7 +338,7 @@ async def send_message_streaming(
 
     full_text, artifacts = "", []
     try:
-        async for event in engine_stream(model_text, bedrock_history):
+        async for event in engine_stream(model_text, bedrock_history, **_engine_kwargs(user)):
             if event["type"] == "status":
                 yield event
             elif event["type"] == "raw_complete":
@@ -413,6 +427,7 @@ async def chat(
             message_text=message_text,
             owner=user["sub"],
             context_id=context_id,
+            user=user,
         )
 
         return ChatResponse(
@@ -463,6 +478,7 @@ async def chat_stream(
                 message_text=message_text,
                 owner=user["sub"],
                 context_id=context_id,
+                user=user,
             ):
                 # Check if request was cancelled
                 if request_id and request_id in _cancelled_requests:

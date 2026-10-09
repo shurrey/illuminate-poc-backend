@@ -117,3 +117,10 @@ def test_tools_learn_which_tools_ran_earlier_in_the_turn(monkeypatch, tools):
     monkeypatch.setattr(chat_engine, "_bedrock", bedrock)
     chat_engine.send_message("q", [])
     assert tools.called == ("search_catalog",)
+
+
+def test_a_per_request_tool_set_replaces_the_default(monkeypatch, tools):
+    mine = RecordingTools()
+    monkeypatch.setattr(chat_engine, "_bedrock", ScriptedBedrock(_tool("query_semantic", {}), _text("ok")))
+    chat_engine.send_message("q", [], tools=mine)
+    assert len(mine.calls) == 1 and tools.calls == []

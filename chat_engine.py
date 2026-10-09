@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+from typing import Optional
 
 import boto3
 
@@ -81,8 +82,8 @@ def _answer(message: dict, artifacts: list) -> str:
     return "Here are the results." if artifacts else "I couldn't find an answer to that."
 
 
-def _run_tool(tool_use: dict, artifacts: list, called: list) -> dict:
-    result = _tools.dispatch(tool_use["name"], tool_use.get("input", {}), called)
+def _run_tool(tool_use: dict, artifacts: list, called: list, tools: ChatTools) -> dict:
+    result = tools.dispatch(tool_use["name"], tool_use.get("input", {}), called)
     called.append(tool_use["name"])
     if "error" in result.content:
         logger.warning("%s error: %s", tool_use["name"], result.content["error"])
@@ -93,8 +94,9 @@ def _run_tool(tool_use: dict, artifacts: list, called: list) -> dict:
     }}
 
 
-def send_message(user_message: str, history: list) -> tuple[str, list, list]:
-    """Returns (response_text, updated_messages, artifacts)."""
+def send_message(user_message: str, history: list, tools: Optional[ChatTools] = None) -> tuple[str, list, list]:
+    """Returns (response_text, updated_messages, artifacts). tools: e.g. over a tenant's overlaid catalog."""
+    tools = tools or _tools
     messages = list(history) + [{"role": "user", "content": [{"text": user_message}]}]
     artifacts: list = []
     called: list = []
@@ -104,12 +106,13 @@ def send_message(user_message: str, history: list) -> tuple[str, list, list]:
         uses = _tool_uses(output)
         if not uses:
             return _answer(output, artifacts), messages, artifacts
-        messages.append({"role": "user", "content": [_run_tool(u, artifacts, called) for u in uses]})
+        messages.append({"role": "user", "content": [_run_tool(u, artifacts, called, tools) for u in uses]})
     return "I was unable to complete the request.", messages, artifacts
 
 
-async def send_message_streaming(user_message: str, history: list):
+async def send_message_streaming(user_message: str, history: list, tools: Optional[ChatTools] = None):
     """Yields {"type": "status", "message"} events, then {"type": "raw_complete", "text", "messages", "artifacts"}."""
+    tools = tools or _tools
     loop = asyncio.get_running_loop()
     messages = list(history) + [{"role": "user", "content": [{"text": user_message}]}]
     artifacts: list = []
@@ -125,7 +128,7 @@ async def send_message_streaming(user_message: str, history: list):
         results = []
         for use in uses:
             yield {"type": "status", "message": _STATUS.get(use["name"], "Working...")}
-            results.append(await loop.run_in_executor(None, _run_tool, use, artifacts, called))
+            results.append(await loop.run_in_executor(None, _run_tool, use, artifacts, called, tools))
         messages.append({"role": "user", "content": results})
     yield {"type": "raw_complete", "text": "I was unable to complete the request.",
            "messages": messages, "artifacts": artifacts}
