@@ -1,0 +1,45 @@
+id: dataset.grade_turnaround_by_item_type.v1
+display_name: Grading turnaround by course and item type
+description: >
+  Per reportable course and gradebook item type, student grades graded after their attempt: how many,
+  and the fewest, total and most hours from attempt to grade. Averages across courses are weighted by
+  grades (total hours over grades) rather than averaging course averages.
+grain: one row per reportable course x item type with graded attempts
+domain: grades
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__GRADE_COURSE_ITEM.sql
+depends_on: [dataset.course_filters.v1]
+base_sql: |
+  WITH reportable AS (
+      SELECT DISTINCT COURSE_ID FROM {{ ref('dataset.course_filters.v1') }}
+  ),
+  grade_time AS (
+      SELECT gb.COURSE_ID,
+             NVL(IFF(ci.ITEM_TYPE IN ('SCORM_ENGINE', 'CONTENT_PACKAGE_SCORM', 'SCORM'), 'SCORM PACKAGE', ci.ITEM_TYPE), 'OTHER') AS ITEM_TYPE,
+             DATEDIFF(hour, g.ATTEMPTED_TIME, g.GRADED_TIME) AS GRADED_HOURS
+      FROM {{ database }}.CDM_LMS.GRADEBOOK gb
+      JOIN {{ database }}.CDM_LMS.GRADE g ON g.GRADEBOOK_ID = gb.ID
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE pc ON pc.ID = g.PERSON_COURSE_ID AND pc.STUDENT_IND
+      JOIN reportable r ON r.COURSE_ID = gb.COURSE_ID
+      LEFT JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = gb.COURSE_ITEM_ID
+      WHERE g.ATTEMPTED_TIME < g.GRADED_TIME
+        AND g.ATTEMPTED_TIME > '1970-01-01'::DATE
+        AND g.ROW_DELETED_TIME IS NULL
+  )
+  SELECT COURSE_ID, ITEM_TYPE,
+         COUNT(*) AS GRADES,
+         MIN(GRADED_HOURS) AS MIN_HOURS,
+         SUM(GRADED_HOURS) AS TOTAL_HOURS,
+         MAX(GRADED_HOURS) AS MAX_HOURS
+  FROM grade_time
+  GROUP BY COURSE_ID, ITEM_TYPE
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: item_type, column: ITEM_TYPE, type: categorical, synonyms: [assignment type]}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: grades, agg: sum, expr: GRADES, unit: grades}
+  - {name: total_hours, agg: sum, expr: TOTAL_HOURS, unit: hours}
+  - {name: avg_hours_to_grade, agg: ratio, numerator: total_hours, denominator: grades, unit: hours, synonyms: [grading turnaround]}
+  - {name: min_hours_to_grade, agg: min, expr: MIN_HOURS, unit: hours}
+  - {name: max_hours_to_grade, agg: max, expr: MAX_HOURS, unit: hours}
