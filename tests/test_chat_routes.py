@@ -94,3 +94,23 @@ def test_chat_queries_use_the_callers_tenant_overlays(client, monkeypatch, path)
     client.post(path, headers=AUTH, json={"message": "q"})
     measure = seen["tools"].catalog.datasets["dataset.student_grade.v1"].measure("average_grade_percentage")
     assert measure.expr == "ROUND(GRADE_PERCENTAGE, 0)"
+
+
+def test_chat_prompt_lists_the_tenants_own_filters(client, monkeypatch):
+    import chat_engine
+    import overlay_store
+    from semantic_layer.overlays import Overlay
+
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "u1", "custom:tenant_id": "t1"})
+    monkeypatch.setattr(overlay_store, "list_overlays",
+                        lambda tid: [Overlay(target="filter:dataset.student_grade.v1:honours", sql="GRADE_PERCENTAGE >= 90", version=1)])
+    lambda_handler._overlay_cache.clear()
+    seen = {}
+
+    def fake_send(message, history, **kw):
+        seen.update(kw)
+        return "Done.", [], []
+
+    monkeypatch.setattr(chat_engine, "send_message", fake_send)
+    client.post("/api/chat", headers=AUTH, json={"message": "q"})
+    assert "honours" in seen["system_prompt"]

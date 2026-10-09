@@ -55,11 +55,11 @@ _STATUS = {
 }
 
 
-def _converse(messages: list) -> dict:
+def _converse(messages: list, system_prompt: Optional[str] = None) -> dict:
     # cachePoints after the system prompt and tools let Bedrock reuse them across rounds and requests.
     return _bedrock.converse(
         modelId=MODEL_ID,
-        system=[{"text": SYSTEM_PROMPT}, {"cachePoint": {"type": "default"}}],
+        system=[{"text": system_prompt or SYSTEM_PROMPT}, {"cachePoint": {"type": "default"}}],
         messages=messages,
         toolConfig={"tools": [{"toolSpec": t} for t in _tools.specs] + [{"cachePoint": {"type": "default"}}]},
         inferenceConfig=_INFERENCE_CONFIG,
@@ -100,14 +100,15 @@ def _run_tool(tool_use: dict, artifacts: list, called: list, tools: ChatTools) -
     }}
 
 
-def send_message(user_message: str, history: list, tools: Optional[ChatTools] = None) -> tuple[str, list, list]:
-    """Returns (response_text, updated_messages, artifacts). tools: e.g. over a tenant's overlaid catalog."""
+def send_message(user_message: str, history: list, tools: Optional[ChatTools] = None,
+                 system_prompt: Optional[str] = None) -> tuple[str, list, list]:
+    """Returns (response_text, updated_messages, artifacts). tools, system_prompt: e.g. for a tenant's overlaid catalog."""
     tools = tools or _tools
     messages = list(history) + [{"role": "user", "content": [{"text": user_message}]}]
     artifacts: list = []
     called: list = []
     for _ in range(_MAX_ROUNDS):
-        response = _converse(messages)
+        response = _converse(messages, system_prompt)
         output = response["output"]["message"]
         messages.append(output)
         uses = _tool_uses(output)
@@ -117,7 +118,8 @@ def send_message(user_message: str, history: list, tools: Optional[ChatTools] = 
     return "I was unable to complete the request.", messages, artifacts
 
 
-async def send_message_streaming(user_message: str, history: list, tools: Optional[ChatTools] = None):
+async def send_message_streaming(user_message: str, history: list, tools: Optional[ChatTools] = None,
+                                 system_prompt: Optional[str] = None):
     """Yields {"type": "status", "message"} events, then {"type": "raw_complete", "text", "messages", "artifacts"}."""
     tools = tools or _tools
     loop = asyncio.get_running_loop()
@@ -125,7 +127,7 @@ async def send_message_streaming(user_message: str, history: list, tools: Option
     artifacts: list = []
     called: list = []
     for _ in range(_MAX_ROUNDS):
-        response = await loop.run_in_executor(None, _converse, messages)
+        response = await loop.run_in_executor(None, _converse, messages, system_prompt)
         output = response["output"]["message"]
         messages.append(output)
         uses = _tool_uses(output)

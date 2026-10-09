@@ -141,3 +141,10 @@ def test_failed_tool_results_are_marked_as_errors(monkeypatch, tools):
     monkeypatch.setattr(chat_engine, "_bedrock", ScriptedBedrock(_tool("query_semantic", {}), _text("ok")))
     _, messages, _ = chat_engine.send_message("q", [])
     assert messages[2]["content"][0]["toolResult"]["status"] == "error"
+
+
+def test_a_per_request_system_prompt_replaces_the_default(monkeypatch, tools):
+    bedrock = ScriptedBedrock(_text("ok"))
+    monkeypatch.setattr(chat_engine, "_bedrock", bedrock)
+    chat_engine.send_message("q", [], system_prompt="TENANT PROMPT")
+    assert bedrock.calls[0]["system"][0] == {"text": "TENANT PROMPT"}
