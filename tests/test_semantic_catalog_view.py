@@ -71,3 +71,10 @@ def test_datasets_list_the_public_datasets_whose_dimensions_they_can_use():
     view = {d["id"]: d for d in public_catalog(load_catalog())["datasets"]}
     assert "dataset.courses.v1" in view["dataset.student_grade.v1"]["joins"]
     assert all(j in view for d in view.values() for j in d["joins"])
+
+
+def test_datasets_say_when_they_require_a_time_range():
+    from tests.semantic_fixtures import dataset
+
+    view = public_catalog(catalog(dataset(required_time_range="enrolled_at")))
+    assert view["datasets"][0]["required_time_range"] == "enrolled_at"

@@ -95,11 +95,17 @@ class Dataset(_Definition):
     # Outputs traced to a PII-flagged source column that a reviewer judged not personal
     # (e.g. one key extracted from a JSON column flagged as a whole), with the reason.
     pii_exempt: dict[str, str] = Field(default_factory=dict)
+    # A time dimension every query on this dataset must bound with a time_range start.
+    required_time_range: Optional[str] = None
 
     @model_validator(mode="after")
     def _names_are_unique_and_ratios_resolve(self) -> "Dataset":
         if any(not reason.strip() for reason in self.pii_exempt.values()):
             raise ValueError(f"{self.id}: every pii_exempt entry needs a reason")
+        if self.required_time_range is not None:
+            dim = next((d for d in self.dimensions if d.name == self.required_time_range), None)
+            if dim is None or dim.type != "time":
+                raise ValueError(f"{self.id}: required_time_range {self.required_time_range!r} is not one of its time dimensions")
         names = [d.name for d in self.dimensions] + [m.name for m in self.measures]
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:

@@ -1,0 +1,101 @@
+id: dataset.activity_log.v1
+display_name: Activity log
+description: >
+  Every LMS activity, submission and Ultra click in the last year, one row per event: when, who
+  (by person id only), the course, the item or tool, the event type (Login, Logout, Item Access,
+  Tool Access, Course Access, Session Continuation, Submission, Ultra Click), a readable context and
+  seconds spent. Queries must give a time_range start on event_time, because the log is large.
+grain: one row per event in the last year
+domain: activity
+source: bbdata-bbd-analytics procedures/orchestration/activityLog/
+required_time_range: event_time
+base_sql: |
+  WITH items AS (
+      SELECT ID AS COURSE_ITEM_ID, COURSE_TOOL_ID, NAME,
+             INITCAP(REPLACE(ITEM_TYPE, '_', ' ')) AS ITEM_TYPE
+      FROM {{ database }}.CDM_LMS.COURSE_ITEM
+      WHERE NAME IS NULL OR NAME NOT IN ('ROOT', 'INTERACTIVE')
+  ),
+  lms_activity AS (
+      SELECT 'LMS' AS SOURCE, CONCAT('1', a.ID) AS EVENT_ID, a.PERSON_ID, a.FIRST_ACCESSED_TIME AS EVENT_TIME,
+             a.COURSE_ID, it.NAME AS ITEM, it.ITEM_TYPE,
+             INITCAP(REPLACE(REPLACE(t.NAME, '_', ' '), '.label', '')) AS TOOL,
+             CASE
+                 WHEN a.STAGE:login::STRING = 'true' THEN 'Login'
+                 WHEN a.STAGE:logout::STRING = 'true' THEN 'Logout'
+                 WHEN it.NAME IS NOT NULL THEN 'Item Access'
+                 WHEN t.NAME IS NOT NULL THEN 'Tool Access'
+                 WHEN a.COURSE_ID IS NOT NULL THEN 'Course Access'
+                 ELSE 'Session Continuation'
+             END AS EVENT_TYPE,
+             COALESCE(CONCAT(it.ITEM_TYPE, ': ', it.NAME),
+                      CONCAT('Tool: ', INITCAP(REPLACE(REPLACE(t.NAME, '_', ' '), '.label', ''))),
+                      CONCAT('Course: ', c.NAME), 'Session') AS CONTEXT,
+             a.DURATION_SUM AS SECONDS
+      FROM {{ database }}.CDM_LMS.ACTIVITY a
+      LEFT JOIN {{ database }}.CDM_LMS.COURSE c ON c.ID = a.COURSE_ID
+      LEFT JOIN items it ON it.COURSE_ITEM_ID = a.COURSE_ITEM_ID
+      LEFT JOIN {{ database }}.CDM_LMS.TOOL t ON t.ID = a.TOOL_ID
+      WHERE a.FIRST_ACCESSED_TIME >= DATEADD(year, -1, CURRENT_TIMESTAMP())
+  ),
+  lms_submissions AS (
+      SELECT 'LMS', CONCAT('2', su.ID), pc.PERSON_ID, su.SUBMITTED_TIME, su.COURSE_ID,
+             it.NAME, it.ITEM_TYPE, CONCAT(it.ITEM_TYPE, ': ', it.NAME), 'Submission',
+             COALESCE(CONCAT(it.ITEM_TYPE, ': ', it.NAME),
+                      CONCAT('Tool: ', INITCAP(REPLACE(REPLACE(t.NAME, '_', ' '), '.label', ''))),
+                      CONCAT('Course: ', c.NAME), 'Session'),
+             0
+      FROM {{ database }}.CDM_LMS.SUBMISSION su
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE pc ON pc.ID = su.PERSON_COURSE_ID
+      LEFT JOIN {{ database }}.CDM_LMS.COURSE c ON c.ID = su.COURSE_ID
+      LEFT JOIN items it ON it.COURSE_ITEM_ID = su.COURSE_ITEM_ID
+      LEFT JOIN {{ database }}.CDM_LMS.COURSE_TOOL ct ON ct.ID = it.COURSE_TOOL_ID
+      LEFT JOIN {{ database }}.CDM_LMS.TOOL t ON t.ID = ct.TOOL_ID
+      WHERE su.SUBMITTED_TIME >= DATEADD(year, -1, CURRENT_TIMESTAMP())
+  ),
+  people_by_uuid AS (
+      SELECT ID, PERSON_UUID
+      FROM (SELECT ID, STAGE:uuid::STRING AS PERSON_UUID FROM {{ database }}.CDM_LMS.PERSON WHERE ROW_DELETED_TIME IS NULL)
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY PERSON_UUID ORDER BY ID DESC) = 1
+  ),
+  ultra_clicks AS (
+      SELECT 'TLM', ue.DATA:eventId::STRING, p.ID, ue.EVENT_TIME, c.ID,
+             ue.DATA:interactionContextValue::STRING, ue.DATA:objectId::STRING, ue.DATA:objectId::STRING, 'Ultra Click',
+             CONCAT('Ultra Click: ', ue.DATA:interactionContextValue::STRING), 0
+      FROM {{ database }}.CDM_TLM.ULTRA_EVENTS ue
+      JOIN people_by_uuid p ON p.PERSON_UUID = ue.DATA:userId::STRING
+      LEFT JOIN {{ database }}.CDM_LMS.COURSE c
+        ON CONCAT('_', c.SOURCE_ID, '_1') = ue.DATA:contextId::STRING AND ue.DATA:contextType::STRING = 'COURSE'
+      WHERE ue.EVENT_TYPE = 'click'
+        AND ue.DATA:objectId::STRING <> 'bb-close.course.outline.tab.title'
+        AND (ue.DATA:interactionContextValue::STRING IS NULL OR ue.DATA:interactionContextValue::STRING NOT IN ('ROOT', 'INTERACTIVE'))
+        AND ue.EVENT_TIME >= DATEADD(year, -1, CURRENT_TIMESTAMP())
+  )
+  SELECT * FROM lms_activity
+  UNION ALL SELECT * FROM lms_submissions
+  UNION ALL SELECT * FROM ultra_clicks
+entities:
+  - {name: person, column: PERSON_ID, type: foreign}
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: event_time, column: EVENT_TIME, type: time, grains: [hour, day, week, month]}
+  - {name: event_type, column: EVENT_TYPE, type: categorical, description: "Login, Logout, Item Access, Tool Access, Course Access, Session Continuation, Submission or Ultra Click"}
+  - {name: source, column: SOURCE, type: categorical, description: "'LMS' or 'TLM' (Ultra telemetry)"}
+  - {name: item_type, column: ITEM_TYPE, type: categorical}
+  - {name: tool, column: TOOL, type: categorical}
+  - {name: context, column: CONTEXT, type: categorical}
+measures:
+  - {name: events, agg: count, expr: "*", unit: events}
+  - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people, synonyms: [active users]}
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: hours_spent, agg: sum, expr: "SECONDS / 3600", unit: hours}
+  - {name: logins, agg: count, expr: "IFF(EVENT_TYPE = 'Login', 1, NULL)", unit: logins}
+pii_columns: [PERSON_ID]
+pii_exempt:
+  ITEM: "Course item name, or DATA:interactionContextValue for Ultra clicks; ULTRA_EVENTS.DATA is flagged as a whole for its user ids"
+  ITEM_TYPE: "Item type, or DATA:objectId for Ultra clicks"
+  TOOL: "Tool name, or DATA:objectId for Ultra clicks"
+  CONTEXT: "Readable context built from item, tool and course names, or DATA:interactionContextValue for Ultra clicks"
+  EVENT_ID: "Event id, or DATA:eventId for Ultra clicks"
+  EVENT_TYPE: "Event category; uses only the login and logout flags from ACTIVITY.STAGE, which is flagged as a whole"
+  COURSE_ID: "LMS course id; Ultra clicks are matched to it through DATA:contextId"
