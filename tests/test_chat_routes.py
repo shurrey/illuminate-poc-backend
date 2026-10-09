@@ -66,3 +66,29 @@ def test_binary_and_nan_values_in_artifacts_do_not_break_either_chat_path(client
     assert r.status_code == 200
     body = r.json() if path == "/api/chat" else _events(r.text)[-1]["data"]
     assert body["artifacts"][0]["data"]["rows"] == [{"B": "ff", "F": None}]
+
+
+@pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+def test_chat_queries_use_the_callers_tenant_overlays(client, monkeypatch, path):
+    import chat_engine
+    from semantic_layer.overlays import Overlay
+
+    target = "measure:dataset.student_grade.v1:average_grade_percentage"
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "u1", "custom:tenant_id": "t1"})
+    monkeypatch.setattr(lambda_handler, "_tenant_overlays",
+                        lambda tid: [Overlay(target=target, expr="ROUND(GRADE_PERCENTAGE, 0)", version=2)])
+    seen = {}
+
+    async def fake_stream(message, history, **kw):
+        seen.update(kw)
+        yield {"type": "raw_complete", "text": "Done.", "messages": [], "artifacts": []}
+
+    def fake_send(message, history, **kw):
+        seen.update(kw)
+        return "Done.", [], []
+
+    monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
+    monkeypatch.setattr(chat_engine, "send_message", fake_send)
+    client.post(path, headers=AUTH, json={"message": "q"})
+    measure = seen["tools"].catalog.datasets["dataset.student_grade.v1"].measure("average_grade_percentage")
+    assert measure.expr == "ROUND(GRADE_PERCENTAGE, 0)"

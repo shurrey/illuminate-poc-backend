@@ -40,7 +40,7 @@ def test_owner_can_cancel(client):
 def test_streaming_registers_and_releases_the_request_owner(client, monkeypatch):
     seen = []
 
-    async def fake_stream(message_text, owner, context_id=None, tenant_id=None):
+    async def fake_stream(message_text, owner, context_id=None, user=None):
         seen.append(dict(lambda_handler._request_owners))
         yield {"type": "status", "message": "working"}
 
