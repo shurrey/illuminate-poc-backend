@@ -369,3 +369,19 @@ def test_enrollment_measures_group_by_the_new_course_grain_dimensions():
     assert "LEFT JOIN DS_COURSES_V1" in outer
     for column in ("COURSE_DURATION", "DELIVERY_METHOD", "COURSE_WEEKS", "COURSE_CREATION_DATE"):
         assert column in outer
+
+
+GRT = "dataset.grade_response_time.v1"
+
+
+def test_grading_definitions_compile_and_has_due_date_filters():
+    sql = _outer(_real(
+        measures=[f"{GRT}:{m}" for m in ("ungraded_attempts", "min_response_days", "max_response_days", "share_ungraded")],
+        dimensions=["gradebook_name", "response_days_capped", "due_time__week"],
+        filters=[{"dimension": "has_due_date", "op": "eq", "values": [True]}]))
+    assert "HAS_DUE_DATE = TRUE" in sql and "GRADEBOOK_NAME" in sql and "RESPONSE_DAYS_CAPPED" in sql
+
+
+def test_platform_definitions_compile():
+    assert "LAST_ACCESSED_DATE" in _outer(_real(measures=["dataset.lms_sessions.v1:sessions"], dimensions=["session_end_date__day"]))
+    assert "COUNT(*)" in _outer(_real(measures=["dataset.collab_sessions_by_slot.v1:session_slots"], dimensions=["slot_label"]))
