@@ -17,3 +17,27 @@ metrics:
     measure: dataset.student_grade.v1:share_failing
     synonyms: [failure rate, at risk by grade]
     example_questions: ["What share of students are failing?"]
+
+  - id: metric.courses_graded_this_week.v1
+    display_name: Courses graded in the last 7 days
+    description: >
+      Courses where a student's attempt on an item type that counts towards grade response time was
+      graded in the last 7 days.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.grade_response_time.v1:courses_graded_recently
+    default_filters: [graded_only]
+    synonyms: [instructor engagement, grading activity, instructors grading]
+    example_questions: ["How many courses had grading activity this week?"]
+
+  - id: metric.grade_response_days.v1
+    display_name: Average grading turnaround (days)
+    description: Average days from the later of a student's attempt and the due date to the grade being entered.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.grade_response_time.v1:avg_response_days
+    default_filters: [graded_only]
+    synonyms: [grading turnaround, feedback turnaround, time to grade]
+    example_questions: ["How long do instructors take to grade assignments?"]

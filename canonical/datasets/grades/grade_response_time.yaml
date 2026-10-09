@@ -1,0 +1,58 @@
+id: dataset.grade_response_time.v1
+display_name: Grade response time
+description: >
+  One row per student attempt on a gradebook item whose type counts towards grade response time
+  (CDM_META.BBD_CALCULATION_DETAIL): the hours and days from the later of the attempt and the due
+  date to grading, whether it is graded, and whether the grade was entered manually. Deviation:
+  bbd-analytics measures from the due date only when there is one and otherwise returns no response
+  time (49% of graded attempts live); here attempts without a due date are measured from the attempt.
+grain: one row per student grade with an attempt
+domain: grades
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__GRADES_COURSE_ITEM_RESPONSE_TIME.sql
+depends_on: [dataset.item_tool_map.v1]
+base_sql: |
+  WITH grades AS (
+      SELECT gb.COURSE_ID, g.ID AS GRADE_ID, g.PERSON_COURSE_ID,
+             COALESCE(IFF(ci.ITEM_TYPE IN ('SCORM_ENGINE', 'CONTENT_PACKAGE_SCORM', 'SCORM'), 'SCORM PACKAGE', ci.ITEM_TYPE), 'OTHER') AS ITEM_TYPE,
+             gb.DUE_TIME, g.ATTEMPTED_TIME, g.GRADED_TIME, g.MANUAL_IND,
+             GREATEST_IGNORE_NULLS(g.ATTEMPTED_TIME, gb.DUE_TIME) AS CLOCK_START,
+             IFF(g.VALID_IND AND g.GRADED_TIME IS NOT NULL, 1, 0) AS GRADED_IND
+      FROM {{ database }}.CDM_LMS.GRADEBOOK gb
+      JOIN {{ database }}.CDM_LMS.GRADE g ON g.GRADEBOOK_ID = gb.ID
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE pc ON pc.ID = g.PERSON_COURSE_ID AND pc.STUDENT_IND
+      LEFT JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = gb.COURSE_ITEM_ID
+      WHERE g.ATTEMPTED_TIME > '1970-01-01'::DATE
+        AND g.ROW_DELETED_TIME IS NULL
+        AND (g.ATTEMPTED_TIME < COALESCE(g.GRADED_TIME, '2100-01-01'::DATE) OR NOT g.VALID_IND)
+  )
+  SELECT gr.COURSE_ID, gr.GRADE_ID, gr.PERSON_COURSE_ID, gr.ITEM_TYPE, m.DISPLAY_NAME AS TYPE_NAME,
+         gr.DUE_TIME, gr.ATTEMPTED_TIME, gr.GRADED_TIME, gr.MANUAL_IND, gr.GRADED_IND,
+         CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME), 0)) AS RESPONSE_HOURS,
+         CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME) / 24, 0)) AS RESPONSE_DAYS
+  FROM grades gr
+  JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = gr.ITEM_TYPE AND m.GRADE_RESPONSE_IND = 1
+entities:
+  - {name: grade, column: GRADE_ID, type: primary}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person_course, column: PERSON_COURSE_ID, type: foreign}
+dimensions:
+  - {name: item_type, column: ITEM_TYPE, type: categorical}
+  - {name: type_name, column: TYPE_NAME, type: categorical, synonyms: [assignment type]}
+  - {name: graded, column: GRADED_IND, type: numeric, description: "1 when the grade is valid and has a graded time"}
+  - {name: manual_grade, column: MANUAL_IND, type: boolean, description: "Entered by hand rather than calculated"}
+  - {name: response_days_value, column: RESPONSE_DAYS, type: numeric, description: "Days from the later of attempt and due date to grading, rounded up"}
+  - {name: attempted_time, column: ATTEMPTED_TIME, type: time, grains: [day, week, month, quarter, year]}
+  - {name: graded_time, column: GRADED_TIME, type: time, grains: [day, week, month, quarter, year]}
+measures:
+  - {name: attempts, agg: count_distinct, expr: GRADE_ID, unit: grades}
+  - {name: graded_attempts, agg: count_distinct, expr: "IFF(GRADED_IND = 1, GRADE_ID, NULL)", unit: grades}
+  - {name: share_graded, agg: ratio, numerator: graded_attempts, denominator: attempts, unit: ratio}
+  - {name: avg_response_days, agg: avg, expr: RESPONSE_DAYS, unit: days, synonyms: [grading turnaround, feedback time]}
+  - {name: median_response_days, agg: median, expr: RESPONSE_DAYS, unit: days}
+  - {name: avg_response_hours, agg: avg, expr: RESPONSE_HOURS, unit: hours}
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: courses_graded_recently, agg: count_distinct, expr: "IFF(GRADED_TIME >= DATEADD(day, -7, CURRENT_TIMESTAMP()), COURSE_ID, NULL)", unit: courses, description: "Courses with a grade entered in the last 7 days"}
+filters:
+  - {name: graded_only, sql: "GRADED_IND = 1"}
+  - {name: manual_grades, sql: "MANUAL_IND"}
+pii_columns: [PERSON_COURSE_ID]
