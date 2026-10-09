@@ -40,3 +40,4 @@ dimensions:
 measures:
   - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions, description: "Sessions running in the slot; a session spanning slots counts in each"}
   - {name: rooms, agg: count_distinct, expr: ROOM_ID, unit: rooms}
+  - {name: session_slots, agg: count, expr: "*", unit: session-slots, description: "Session-slots: one per session per two-hour slot it ran in"}

@@ -12,7 +12,7 @@ source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__GR
 depends_on: [dataset.item_tool_map.v1]
 base_sql: |
   WITH grades AS (
-      SELECT gb.COURSE_ID, g.ID AS GRADE_ID, g.PERSON_COURSE_ID,
+      SELECT gb.COURSE_ID, g.ID AS GRADE_ID, g.PERSON_COURSE_ID, gb.NAME AS GRADEBOOK_NAME,
              COALESCE(IFF(ci.ITEM_TYPE IN ('SCORM_ENGINE', 'CONTENT_PACKAGE_SCORM', 'SCORM'), 'SCORM PACKAGE', ci.ITEM_TYPE), 'OTHER') AS ITEM_TYPE,
              gb.DUE_TIME, g.ATTEMPTED_TIME, g.GRADED_TIME, g.MANUAL_IND,
              GREATEST_IGNORE_NULLS(g.ATTEMPTED_TIME, gb.DUE_TIME) AS CLOCK_START,
@@ -26,9 +26,11 @@ base_sql: |
         AND (g.ATTEMPTED_TIME < COALESCE(g.GRADED_TIME, '2100-01-01'::DATE) OR NOT g.VALID_IND)
   )
   SELECT gr.COURSE_ID, gr.GRADE_ID, gr.PERSON_COURSE_ID, gr.ITEM_TYPE, m.DISPLAY_NAME AS TYPE_NAME,
-         gr.DUE_TIME, gr.ATTEMPTED_TIME, gr.GRADED_TIME, gr.MANUAL_IND, gr.GRADED_IND,
+         gr.GRADEBOOK_NAME, gr.DUE_TIME, gr.DUE_TIME IS NOT NULL AS HAS_DUE_DATE,
+         gr.ATTEMPTED_TIME, gr.GRADED_TIME, gr.MANUAL_IND, gr.GRADED_IND,
          CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME), 0)) AS RESPONSE_HOURS,
-         CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME) / 24, 0)) AS RESPONSE_DAYS
+         CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME) / 24, 0)) AS RESPONSE_DAYS,
+         LEAST(CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME) / 24, 0)), 91) AS RESPONSE_DAYS_CAPPED
   FROM grades gr
   JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = gr.ITEM_TYPE AND m.GRADE_RESPONSE_IND = 1
 entities:
@@ -41,6 +43,10 @@ dimensions:
   - {name: graded, column: GRADED_IND, type: numeric, description: "1 when the grade is valid and has a graded time"}
   - {name: manual_grade, column: MANUAL_IND, type: boolean, description: "Entered by hand rather than calculated"}
   - {name: response_days_value, column: RESPONSE_DAYS, type: numeric, description: "Days from the later of attempt and due date to grading, rounded up"}
+  - {name: response_days_capped, column: RESPONSE_DAYS_CAPPED, type: numeric, description: "Response days, with anything over 91 shown as 91"}
+  - {name: has_due_date, column: HAS_DUE_DATE, type: boolean, description: "The gradebook item has a due date"}
+  - {name: due_time, column: DUE_TIME, type: time, grains: [day, week, month, quarter, year]}
+  - {name: gradebook_name, column: GRADEBOOK_NAME, type: categorical, description: "The gradebook column's title", synonyms: [assignment, gradebook item]}
   - {name: attempted_time, column: ATTEMPTED_TIME, type: time, grains: [day, week, month, quarter, year]}
   - {name: graded_time, column: GRADED_TIME, type: time, grains: [day, week, month, quarter, year]}
 measures:
@@ -48,6 +54,10 @@ measures:
   - {name: graded_attempts, agg: count_distinct, expr: "IFF(GRADED_IND = 1, GRADE_ID, NULL)", unit: grades}
   - {name: share_graded, agg: ratio, numerator: graded_attempts, denominator: attempts, unit: ratio}
   - {name: avg_response_days, agg: avg, expr: RESPONSE_DAYS, unit: days, synonyms: [grading turnaround, feedback time]}
+  - {name: ungraded_attempts, agg: count_distinct, expr: "IFF(GRADED_IND = 0, GRADE_ID, NULL)", unit: attempts, description: "Attempts not yet graded"}
+  - {name: share_ungraded, agg: ratio, numerator: ungraded_attempts, denominator: attempts, unit: ratio, description: "Share of attempts not yet graded"}
+  - {name: min_response_days, agg: min, expr: RESPONSE_DAYS, unit: days, description: "Fastest response, in days"}
+  - {name: max_response_days, agg: max, expr: RESPONSE_DAYS, unit: days, description: "Slowest response, in days"}
   - {name: median_response_days, agg: median, expr: RESPONSE_DAYS, unit: days}
   - {name: avg_response_hours, agg: avg, expr: RESPONSE_HOURS, unit: hours}
   - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}

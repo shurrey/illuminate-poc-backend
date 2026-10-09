@@ -48,6 +48,7 @@ entities:
 dimensions:
   - {name: session_start, column: FIRST_ACCESSED_TIME, type: time, grains: [hour, day, week, month, quarter, year]}
   - {name: session_date, column: FIRST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: session_end_date, column: LAST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year], description: "The day the session last had activity (at most a day after it began)"}
   - {name: mobile, column: MOBILE_IND, type: boolean}
   - {name: institution_role, column: ROLE, type: categorical}
   - {name: institution_role_name, column: ROLE_NAME, type: categorical, synonyms: [role, user type]}
