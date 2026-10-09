@@ -159,3 +159,17 @@ Before the first dataset that reads `CDM_META` or `CDM_TLM` columns missing from
 | Phase 5 review | Filter-values schema `"items": {}` doesn't tell the model the value types | 6c |
 | Phase 5 review | A `cachePoint` after the history messages; verify the system and tools cache points on one live Bedrock call first | first deploy |
 | Phase 5 review | Query Builder and card builder run every generated query twice and receive full compiled SQL; `:param` parameter UI is dead | 6d, 6e (replaced) |
+| Phase 6 review | Delete has no `expected_version`; deleting a missing overlay returns 200 | 9b |
+| Phase 6 review | `provenance.overlays` lists every overlay on any dataset read, used or not; chat artifacts never fill it and the frontend type lacks it | 9b |
+| Phase 6 review | Parse errors reach the admin editor with ANSI escape codes | 9b |
+| Phase 6 review | A DynamoDB error or malformed row in the overlay list fails every request for that tenant; the 60s cache can show an admin stale state on another instance | 9b |
+| Phase 6 review | Chat prompt is built from the canonical catalog, so tenant-only filters and changed metric defaults are invisible to the model | 9b |
+| Phase 6 review | `kpiContract` drops every metric after the first without saying so | 9b |
+| Phase 6 review | `useDashboardCards` runs each card id once per mount: failed cards never retry, and a changed contract under the same id isn't refetched | 9b |
+| Phase 6 review | Mistyped filter values on numeric or time dimensions give an opaque warehouse error rather than a validation message | 9b |
+| Phase 6 review | Admin editor swallows overlay-list errors, doesn't reload after a 409, and new tenant filters aren't offered for metric defaults until reload | 9b |
+| Phase 6 review | Legacy metric overlay rows still apply on `/dashboard/metric` with no way left to edit them | 8 (removed with the route) |
+| Phase 6 review | `_check_tables` matches a quoted table name against a CTE case-insensitively (only canonical `base_sql` can reach it) | 9b |
+| Phase 2 review, carried | ETag weak, list and `*` comparison (RFC 9110) | 9b |
+| Phase 4 review, carried | Synonym collision ("course count" on `reportable_courses` and `courses`) | 9b |
+| Phase 5 review, carried | The card builder's preview re-runs a query the agent already ran | 9b |
