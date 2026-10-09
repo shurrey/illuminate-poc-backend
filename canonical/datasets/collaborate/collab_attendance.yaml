@@ -1,0 +1,53 @@
+id: dataset.collab_attendance.v1
+display_name: Collaborate attendance
+description: >
+  One row per Collaborate session attendance: the person, their role in the session, first join and
+  last leave dates in the institution's timezone, minutes attended, and the institution hierarchy
+  nodes of the courses linked to the session's room as a ';'-separated list (filter with contains).
+  Deviation: bbd-analytics finds the timezone through the session's hierarchy row, so attendance in
+  sessions not linked to a course is dated in UTC; here every attendance uses its instance's timezone.
+grain: one row per Collaborate attendance
+domain: collaborate
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_CLB_ATTENDANCE.sql
+base_sql: |
+  WITH room_ih AS (
+      SELECT cr.CLB_ROOM_ID AS ROOM_ID,
+             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+      FROM {{ database }}.CDM_MAP.COURSE_ROOM cr
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc ON ihc.COURSE_ID = cr.LMS_COURSE_ID
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+      GROUP BY cr.CLB_ROOM_ID
+  ),
+  instance_tz AS (
+      SELECT mi.CLB_INSTANCE_ID, ANY_VALUE(NVL(li.STAGE:timezone::STRING, 'UTC')) AS TZ
+      FROM {{ database }}.CDM_MAP.INSTANCE mi
+      JOIN {{ database }}.CDM_LMS.INSTANCE li ON li.ID = mi.LMS_INSTANCE_ID
+      GROUP BY mi.CLB_INSTANCE_ID
+  )
+  SELECT att.ID AS ATTENDANCE_ID, att.SESSION_ID, att.PERSON_ID, se.ROOM_ID,
+         att.ROLE, NVL(att.ROLE_SOURCE_DESC, att.ROLE) AS ROLE_NAME,
+         CONVERT_TIMEZONE(NVL(tz.TZ, 'UTC'), att.FIRST_JOIN_TIME)::DATE AS FIRST_JOIN_DATE,
+         CONVERT_TIMEZONE(NVL(tz.TZ, 'UTC'), att.LAST_LEAVE_TIME)::DATE AS LAST_LEAVE_DATE,
+         att.DURATION / 60 AS MINUTES,
+         ri.IH_NODES
+  FROM {{ database }}.CDM_CLB.ATTENDANCE att
+  LEFT JOIN {{ database }}.CDM_CLB.SESSION se ON se.ID = att.SESSION_ID
+  LEFT JOIN room_ih ri ON ri.ROOM_ID = se.ROOM_ID
+  LEFT JOIN instance_tz tz ON tz.CLB_INSTANCE_ID = att.INSTANCE_ID
+entities:
+  - {name: collab_attendance, column: ATTENDANCE_ID, type: primary}
+  - {name: collab_session, column: SESSION_ID, type: foreign}
+  - {name: collab_room, column: ROOM_ID, type: foreign}
+dimensions:
+  - {name: session_role, column: ROLE, type: categorical}
+  - {name: session_role_name, column: ROLE_NAME, type: categorical, synonyms: [role]}
+  - {name: join_date, column: FIRST_JOIN_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: leave_date, column: LAST_LEAVE_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+measures:
+  - {name: attendances, agg: count_distinct, expr: ATTENDANCE_ID, unit: attendances}
+  - {name: attendees, agg: count_distinct, expr: PERSON_ID, unit: people, synonyms: [unique attendees]}
+  - {name: sessions_attended, agg: count_distinct, expr: SESSION_ID, unit: sessions}
+  - {name: minutes_attended, agg: sum, expr: MINUTES, unit: minutes}
+  - {name: avg_minutes_attended, agg: avg, expr: MINUTES, unit: minutes}
+pii_columns: [PERSON_ID]
