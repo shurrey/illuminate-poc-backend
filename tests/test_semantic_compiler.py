@@ -241,3 +241,11 @@ def test_unqualified_tables_must_name_a_cte_in_scope():
               "DS_B AS (SELECT X FROM inner_cte) SELECT X FROM DS_B")
     with pytest.raises(CompileError, match="inner_cte"):
         _check_tables(leaked, "DB")
+
+
+def test_generator_is_the_only_table_function_allowed():
+    from semantic_layer.compiler import _check_tables
+
+    _check_tables("SELECT SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 10))", "DB")
+    with pytest.raises(CompileError):
+        _check_tables("SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "DB")

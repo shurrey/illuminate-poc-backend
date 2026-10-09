@@ -1,0 +1,27 @@
+id: dataset.calendar_hour.v1
+display_name: Calendar hours with two-hour slots
+description: >
+  Every hour from 1970-01-01 to today with its two-hour slot and a 12-hour slot label ('12 AM',
+  '02 AM', ... '10 PM'). Deviation: the labels drop the leading spaces bbd-analytics adds so
+  QuickSight sorts them; sort by slot_start_hour instead.
+grain: one row per hour
+domain: reference
+visibility: internal
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__0003_PLATFORM_DATE_HOUR.sql
+depends_on: [dataset.calendar_day.v1]
+base_sql: |
+  SELECT DATEADD(hour, h.HOUR_OF_DAY, d.DAY_DATE)::TIMESTAMP_LTZ AS DATE_HOUR,
+         d.DAY_DATE,
+         DATEADD(hour, h.HOUR_OF_DAY - MOD(h.HOUR_OF_DAY, 2), d.DAY_DATE)::TIMESTAMP_LTZ AS DATE_TWO_HOURS,
+         h.HOUR_OF_DAY - MOD(h.HOUR_OF_DAY, 2) AS SLOT_START_HOUR,
+         LPAD(IFF(MOD(h.HOUR_OF_DAY - MOD(h.HOUR_OF_DAY, 2), 12) = 0, 12, MOD(h.HOUR_OF_DAY - MOD(h.HOUR_OF_DAY, 2), 12))::STRING, 2, '0')
+           || IFF(h.HOUR_OF_DAY < 12, ' AM', ' PM') AS SLOT_LABEL
+  FROM {{ ref('dataset.calendar_day.v1') }} d
+  CROSS JOIN (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1 AS HOUR_OF_DAY FROM TABLE(GENERATOR(ROWCOUNT => 24))) h
+entities:
+  - {name: hour, column: DATE_HOUR, type: primary}
+  - {name: day, column: DAY_DATE, type: foreign}
+dimensions:
+  - {name: hour, column: DATE_HOUR, type: time, grains: [day, week, month]}
+  - {name: slot_start_hour, column: SLOT_START_HOUR, type: numeric, description: "0, 2, ... 22"}
+  - {name: slot_label, column: SLOT_LABEL, type: categorical}

@@ -197,6 +197,13 @@ def _unquoted_upper(ident: Optional[exp.Identifier]) -> str:
     return ident.name if ident.quoted else ident.name.upper()
 
 
+def _is_generator(table: exp.Table) -> bool:
+    """TABLE(GENERATOR(...)): Snowflake's row generator, which reads no data."""
+    fn = table.this
+    return (isinstance(fn, exp.Anonymous) and str(fn.this).upper() == "TABLE" and len(fn.expressions) == 1
+            and isinstance(fn.expressions[0], exp.Anonymous) and str(fn.expressions[0].this).upper() == "GENERATOR")
+
+
 def _ctes_in_scope(node: exp.Expression) -> set[str]:
     """CTE names visible from node: those of every WITH clause enclosing it."""
     names: set[str] = set()
@@ -215,6 +222,8 @@ def _check_tables(sql: str, database: str) -> None:
         schema = _unquoted_upper(table.args.get("db"))
         catalog = _unquoted_upper(table.args.get("catalog"))
         if not schema and not catalog and table.name.upper() in _ctes_in_scope(table):
+            continue
+        if _is_generator(table):
             continue
         if catalog != database.upper() or not schema.startswith("CDM_"):
             raise CompileError(

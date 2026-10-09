@@ -50,3 +50,12 @@ def test_course_count_metrics_exclude_deleted_courses(metric_id):
     assert "live" in metric.default_filters
     live = CATALOG.datasets[metric.dataset_id].filter("live")
     assert live is not None and "COURSE_DELETED_IND" in live.sql
+
+
+@pytest.mark.parametrize("ds_id", sorted(CATALOG.datasets), ids=str)
+def test_every_dataset_reads_only_cdm_tables_and_its_own_ctes(ds_id):
+    from semantic_layer.compiler import _check_tables, build_ctes
+
+    ctes = build_ctes(CATALOG, [ds_id], "DB")
+    sql = "WITH " + ",\n".join(f"{n} AS (\n{s}\n)" for n, s in ctes.items()) + f"\nSELECT * FROM {list(ctes)[-1]}"
+    _check_tables(sql, "DB")
