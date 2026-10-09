@@ -13,7 +13,7 @@ ADMIN_ROUTES = [
     ("get", "/api/v1/admin/overlays", None),
     ("get", f"/api/v1/admin/overlay/{TARGET}", None),
     ("put", f"/api/v1/admin/overlay/{TARGET}", {"expr": "1", "expected_version": 0}),
-    ("delete", f"/api/v1/admin/overlay/{TARGET}", None),
+    ("delete", f"/api/v1/admin/overlay/{TARGET}?expected_version=1", None),
     ("get", f"/api/v1/admin/overlay/{TARGET}/history", None),
     ("post", f"/api/v1/admin/overlay/{TARGET}/revert", {"version": 1, "expected_version": 1}),
 ]

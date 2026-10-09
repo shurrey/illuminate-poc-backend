@@ -94,9 +94,9 @@ def test_deleting_a_filter_that_a_metric_overlay_uses_is_refused(client):
     r = client.put("/api/v1/admin/overlay/metric:metric.average_grade.v1", headers=AUTH,
                    json={"default_filters": ["honours"], "expected_version": 0})
     assert r.status_code == 200, r.text
-    r = client.delete("/api/v1/admin/overlay/filter:dataset.student_grade.v1:honours", headers=AUTH)
+    r = client.delete("/api/v1/admin/overlay/filter:dataset.student_grade.v1:honours?expected_version=1", headers=AUTH)
     assert r.status_code == 400
-    assert client.delete("/api/v1/admin/overlay/metric:metric.average_grade.v1", headers=AUTH).status_code == 200
+    assert client.delete("/api/v1/admin/overlay/metric:metric.average_grade.v1?expected_version=1", headers=AUTH).status_code == 200
 
 
 def test_a_malformed_target_is_a_400(client):
@@ -132,4 +132,34 @@ def test_deleting_an_unrelated_overlay_is_not_blocked_by_a_stale_metric_overlay(
     table = overlay_store._get_table()
     _stale(table, "metric:metric.average_grade.v1", default_filters=["gone"])
     _put(client)
-    assert client.delete(URL, headers=AUTH).status_code == 200
+    assert client.delete(f"{URL}?expected_version=1", headers=AUTH).status_code == 200
+
+
+def test_delete_needs_the_current_version_and_a_missing_overlay_is_a_404(client):
+    _put(client)
+    assert client.delete(f"{URL}?expected_version=0", headers=AUTH).status_code == 409
+    assert client.delete(f"{URL}?expected_version=1", headers=AUTH).status_code == 200
+    assert client.delete(f"{URL}?expected_version=1", headers=AUTH).status_code == 404
+
+
+def test_provenance_names_only_the_overlays_the_query_used(client):
+    _put(client)
+    client.put("/api/v1/admin/overlay/filter:dataset.student_grade.v1:honours", headers=AUTH,
+               json={"sql": "GRADE_PERCENTAGE >= 90", "expected_version": 0})
+    compiled = client.post("/api/v1/semantic/compile", headers=AUTH, json={"metrics": ["metric.average_grade.v1"]}).json()
+    assert compiled["provenance"]["overlays"] == [f"{TARGET}@v1"]
+
+
+def test_validation_errors_carry_no_terminal_colour_codes(client):
+    r = _put(client, expr="GRADE_PERCENTAGE +* 2")
+    assert r.status_code == 400 and not any("\x1b" in e for e in r.json()["detail"]["errors"])
+
+
+def test_an_unreachable_overlay_store_falls_back_to_the_canonical_definitions(client, monkeypatch):
+    def down(tid):
+        raise RuntimeError("DynamoDB unavailable")
+
+    monkeypatch.setattr(overlay_store, "list_overlays", down)
+    lambda_handler._overlay_cache.clear()
+    r = client.post("/api/v1/semantic/compile", headers=AUTH, json={"metrics": ["metric.average_grade.v1"]})
+    assert r.status_code == 200 and r.json()["provenance"]["overlays"] == []
