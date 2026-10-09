@@ -87,18 +87,9 @@ def query_preview(schema: str, table: str, limit: int = 20) -> dict:
     Returns:
         {"columns": ["COL1", ...], "rows": [{"COL1": val, ...}, ...], "truncated": bool}, at most MAX_ROWS rows
     """
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        # Identifiers are double-quoted per Snowflake convention.
-        # Callers must validate schema/table before calling this function.
-        cursor.execute(f'SELECT * FROM "{schema}"."{table}" LIMIT {limit}')
-        columns = [desc[0] for desc in cursor.description]
-        fetched = cursor.fetchmany(MAX_ROWS + 1)
-        rows = [dict(zip(columns, row)) for row in fetched[:MAX_ROWS]]
-        return {"columns": columns, "rows": rows, "truncated": len(fetched) > MAX_ROWS}
-    finally:
-        cursor.close()
+    # Identifiers are double-quoted per Snowflake convention.
+    # Callers must validate schema/table before calling this function.
+    return _run(f'SELECT * FROM "{schema}"."{table}" LIMIT {limit}', None)
 
 
 def _in_filter(node) -> bool:
@@ -280,7 +271,36 @@ def query_sql(sql: str, params: dict | None = None) -> dict:
     if not (normalized.startswith("SELECT") or normalized.startswith("WITH")):
         raise ValueError("Only SELECT and WITH queries are allowed")
 
-    conn = get_connection()
+    return _run(sql, params)
+
+
+def _run(sql: str, params: dict | None) -> dict:
+    """Execute on the cached connection, reconnecting once if Snowflake has expired its session."""
+    try:
+        return _execute(get_connection(), sql, params)
+    except Exception as exc:
+        if getattr(exc, "errno", None) not in _SESSION_EXPIRED:
+            raise
+        logger.info("Snowflake session expired (%s); reconnecting", exc.errno)
+        _drop_connection()
+        return _execute(get_connection(), sql, params)
+
+
+# Session gone, or its session/master token expired: a new login fixes these.
+_SESSION_EXPIRED = {390111, 390112, 390114}
+
+
+def _drop_connection() -> None:
+    global _sf_connection
+    if _sf_connection is not None:
+        try:
+            _sf_connection.close()
+        except Exception:
+            pass
+    _sf_connection = None
+
+
+def _execute(conn, sql: str, params: dict | None) -> dict:
     cursor = conn.cursor()
     try:
         if params:
