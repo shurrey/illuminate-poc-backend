@@ -83,7 +83,7 @@ semantic_layer/
   pii.py         # PII column names, shared with the execution guard
   tool.py        # Bedrock tool specs
   (models.py and engine.py serve the legacy metrics until Phase 8 removes them)
-tests/fixtures/cdm_dictionary.json   # committed dictionary snapshot + refresh script
+semantic_layer/data/cdm_dictionary.json   # committed dictionary snapshot + refresh script
 ```
 
 ### 3.2 Dataset schema
@@ -131,7 +131,7 @@ Rules:
   `ratio` (with `numerator` and `denominator` measure names). `expr` is a column expression over the
   dataset's own columns.
 - `pii_columns` must list every output column whose lineage reaches a column the data dictionary
-  flags `isPii` (snapshot: `tests/fixtures/cdm_pii_columns.json`), plus any output named in
+  flags `isPii` (snapshot: `semantic_layer/data/cdm_pii_columns.json`), plus any output named in
   `semantic_layer/pii.py`. They can be used in filters and counted, but never selected as a dimension.
 - Every real table must be `{{ database }}.CDM_*.<table>`; unqualified names must be CTEs.
 - Only datasets marked `complete: true` (every instance of the primary entity has a row) supply
@@ -151,15 +151,13 @@ Rules:
   last_reviewed: 2026-10-08
   measure: dataset.active_students.v1:active_students
   default_filters: [active_only]
-  default_dimensions: []
-  default_time_dimension: course_start
-  comparison: {type: period_over_period, grain: term}   # optional; drives card change indicators
   synonyms: [...]
   example_questions: [...]
 ```
 
-A card is a rendering of one or more metrics with dimensions and filters. Change indicators come
-from `comparison`, not from bespoke SQL.
+A card is a rendering of one query contract. Cards carry their whole contract, so metrics do not
+declare default dimensions. Change indicators need a period comparison, and none is defined until
+the `activity_log` dataset exists; until then cards show a single value without one.
 
 ### 3.4 Tenant overlays
 
@@ -172,6 +170,11 @@ Overlays (DynamoDB `illuminate-overlays-{env}`) can override, per tenant:
 They cannot change `base_sql`, entities or grain. Every overlay passes through the same validator
 and sandboxed compiler as canonical definitions. Overlays carry a `version` and `updated_by`. The
 previous version is kept so a change can be reverted.
+
+An overlay expression is one row-level expression over the dataset's columns: no aggregates or
+window functions (the measure's `agg` applies), stars, `$n` positions, `IDENTIFIER()`, qualified
+UDFs, or functions sqlglot does not model beyond a short allowlist. Stored overlays are re-validated
+when applied; any that no longer validate are skipped and reported to admins.
 
 ### 3.5 Validation
 
@@ -273,6 +276,10 @@ in the same PR.
 | `TFV_FILTERS`, `TFV_FILTERS_IH` (as views) | `start_week`/`end_week` are TIMESTAMP_TZ in the view; the materialized tables store DATE, which downstream week arithmetic (`end_week + 7`) relies on | Datasets 1 and 2 cast both columns to DATE |
 | `TFV_STUDENT_GRADE` | Sums possible points of unscored items; a final grade with no possible points becomes the raw score (grades of about 8,500% live); enrollments with no scored work score 0%; `WIDTH_BUCKET` puts exactly 100% in '>100%' | Dataset 16 counts scored items only, sets those grades to NULL ('Not graded'), and bands full marks as 95-100% |
 | `COURSE_ROLE_ACTIVITY` | Course-level Collaborate minutes and sessions repeat on both the S and I rows | Dataset 10's Collaborate measures read the student row only |
+| `TFV_COURSE_FILTER` (COURSE_FILTER) | Counts deleted courses: 879 of 19,883 top-level courses (4.4%) live | Dataset 4 adds `course_deleted` and a `live` filter; the course count metrics apply it |
+| `ITEM_TOOL` (processItemTool) | Each run deletes a (course item, enrollment) row and re-inserts it summed over only the activity changed since the last run, losing earlier totals | Dataset 6 sums all activity at query time |
+| `COURSE_TOOL_ACTIVITY_HOUR` (processCourseItemToolActivityHour) | Counts an access once for its tool and again for its content item's tool; 1,889,729 of 1,893,378 tool rows in three years carry both, 1,459,346 for the same tool (minutes doubled) | Dataset 7 counts each access once, for its own tool or else its item's tool |
+| `TFV_COURSE_TOOL_USE` | A missing submission timestamp becomes 1970-01-01 in the course's first-activity date (471 of 10,002 courses with submissions have one); `INSTANCE` is joined on tenant only, multiplying rows when a tenant has several instances | Dataset 8 ignores missing timestamps and joins the course's own instance |
 
 The existing 18 metrics are re-expressed over these datasets, with their broken column references
 fixed. Each is re-added as soon as the dataset it needs exists. The `metric.dashboard.*` IDs are
@@ -365,13 +372,13 @@ The frontend never authors, stores or executes SQL.
 
 | Surface | Behaviour |
 |---|---|
-| API client | `services/semanticApi.ts` (catalog, query, compile), with types generated from the backend's Pydantic models and kept in step by a script. |
-| Cards (dashboard and custom) | `{id, title, viz, query: <contract>}`. The metric `comparison` field (§3.3) is added to the schema in this unit. Render via `/semantic/query`; "View SQL" via `/semantic/compile`. Change indicators come from metric `comparison`. Storage key is version-bumped and old state discarded. |
-| Card builder | Two paths: choose metrics, dimensions and filters from the catalog; or describe the card in natural language, in which case the agent returns a contract for preview. Ungoverned results cannot be saved. |
+| API client | `services/semanticApi.ts` (catalog, query, compile). Types in `src/types/semantic.ts` are handwritten to mirror `contract.py` and `catalog_view.py`. |
+| Cards (dashboard and custom) | `{id, label, description, contract, format}`: one metric or measure, one value. Render via `/semantic/query`; "View SQL" shows the SQL that query compiled. No change indicators until a comparison exists (§3.3). Storage key is version-bumped and old state discarded. |
+| Card builder | Two paths: choose a metric from the catalog; or describe the card in natural language, in which case the agent returns a contract for preview. Filtered cards come from the Query Builder's "Create card". Ungoverned results cannot be saved. |
 | Query Builder | A structured builder over the catalog. Natural language fills the builder (the agent returns a contract); "modify" edits the contract. Compiled SQL is read-only. Saved queries are contracts. |
 | Import Query | The agent maps pasted SQL to a contract and lists anything that does not map. Unmappable queries are reported and not saved. |
-| Chat | Renders structured artifacts. Governed results show provenance chips (metric and dataset names) and a "Pin as card" action. Fallback results show an "Ungoverned query" badge with the stated reason. |
-| Developer | A "Semantic layer" tab: datasets, relationships (Mermaid, from entities), measures and metrics. The raw CDM tab remains. |
+| Chat | Renders structured artifacts. Governed results show provenance chips (metric and measure IDs) and a "Pin as card" action. Fallback results show an "Ungoverned query" badge with the stated reason. |
+| Developer | A "Semantic layer" tab: datasets, relationships (as lists, from the catalog's `joins`), measures and metrics. The raw CDM tab remains. |
 | Admin definitions | Overlay editor for measures, filters and metric defaults, with history and revert. Hidden from users without the admin role, and enforced server-side. |
 | Settings | The Snowflake configuration editor is admin-only, and enforced server-side. |
 
