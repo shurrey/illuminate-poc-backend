@@ -37,13 +37,6 @@ const env: cdk.Environment = {
 const base = new BaseStack(app, `IlluminateBase-${environment}`, {
   env,
   environment,
-  // Snowflake credentials — read from .env, overridable via context
-  snowflakeAccount: app.node.tryGetContext('snowflakeAccount') || envVars['SNOWFLAKE_ACCOUNT'] || '',
-  snowflakeUser: app.node.tryGetContext('snowflakeUser') || envVars['SNOWFLAKE_USER'] || 'SVC_BLACKBOARD_DATA',
-  snowflakePassword: app.node.tryGetContext('snowflakePassword') || envVars['SNOWFLAKE_PASSWORD'] || '',
-  snowflakeDatabase: app.node.tryGetContext('snowflakeDatabase') || envVars['SNOWFLAKE_DATABASE'] || '',
-  snowflakeWarehouse: app.node.tryGetContext('snowflakeWarehouse') || envVars['SNOWFLAKE_WAREHOUSE'] || 'BLACKBOARD_DATA_WH',
-  snowflakeRole: app.node.tryGetContext('snowflakeRole') || envVars['SNOWFLAKE_ROLE'] || 'BBDATA_USER_ROLE',
   // Initial admin user — only created on first deploy
   initialUserEmail: app.node.tryGetContext('initialUserEmail') || envVars['COGNITO_USER_EMAIL'] || 'admin@example.com',
   initialUserPassword: app.node.tryGetContext('initialUserPassword') || envVars['COGNITO_USER_PASSWORD'] || '',
