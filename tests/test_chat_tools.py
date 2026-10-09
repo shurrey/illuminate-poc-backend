@@ -193,3 +193,13 @@ def test_warehouse_errors_reach_the_model_without_internal_object_or_role_names(
     out = tools.dispatch("execute_sql", {"sql": "SELECT 1", "reason": "testing the error path"}, called=SEARCHED)
     assert "SECRET_SCHEMA" not in out.content["error"] and "BBDATA_ROLE" not in out.content["error"]
     assert "does not exist" in out.content["error"]
+
+
+def test_query_semantic_provenance_lists_the_tenant_overlays_it_used():
+    from semantic_layer.overlays import Overlay
+    used = Overlay(target="metric:metric.reportable_courses.v1", default_filters=[], version=3)
+    unused = Overlay(target="metric:metric.average_grade.v1", default_filters=[], version=1)
+    tools = ChatTools(CATALOG, "DB", execute=FakeWarehouse([{"REPORTABLE_COURSES": 3}]), overlays=[used, unused])
+    out = tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
+    assert out.content["provenance"]["overlays"] == ["metric:metric.reportable_courses.v1@v3"]
+    assert all(a["provenance"]["overlays"] == ["metric:metric.reportable_courses.v1@v3"] for a in out.artifacts)

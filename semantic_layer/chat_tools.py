@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from .compiler import CompileError, compile_query, named_result
 from .dictionary import describe_table
+from .overlays import overlays_used
 from .contract import QueryContract
 from .schema import Catalog
 from .search import search_catalog
@@ -141,8 +142,11 @@ def _artifact(kind: str, title: str, data, **extra) -> dict:
 class ChatTools:
     def __init__(self, catalog: Catalog, database: str,
                  execute: Callable[..., dict] = _default_execute,
-                 describe: Callable[[str, str], Optional[list[dict]]] = describe_table):
+                 describe: Callable[[str, str], Optional[list[dict]]] = describe_table,
+                 overlays: Iterable = ()):
+        """overlays: the tenant overlays applied to catalog, reported in query provenance."""
         self.catalog, self.database, self.execute, self.describe = catalog, database, execute, describe
+        self.overlays = list(overlays)
 
     @property
     def specs(self) -> list[dict]:
@@ -173,6 +177,7 @@ class ChatTools:
 
         result = named_result(result)
         rows, columns = result["rows"], result["columns"]
+        compiled.provenance.overlays = overlays_used(compiled.provenance, self.catalog, self.overlays)
         provenance = compiled.provenance.model_dump()
         query = contract.model_dump(mode="json", exclude_defaults=True)
         title = tool_input.get("title") or "Query result"

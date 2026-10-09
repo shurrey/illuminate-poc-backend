@@ -288,7 +288,8 @@ def _engine_kwargs(user: Optional[dict]) -> dict:
     from semantic_layer.chat_tools import ChatTools
     from semantic_layer.prompt import build_system_prompt
 
-    return {"tools": ChatTools(catalog, _database), "system_prompt": build_system_prompt(catalog, _database)}
+    return {"tools": ChatTools(catalog, _database, overlays=overlays),
+            "system_prompt": build_system_prompt(catalog, _database)}
 
 
 async def send_message(
@@ -758,28 +759,15 @@ def _compile_contract(contract: QueryContract, authorization: str):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     from semantic_layer.compiler import CompileError, compile_query
+    from semantic_layer.overlays import overlays_used
 
     catalog, overlays = _catalog_for(user)
     try:
         compiled = compile_query(contract, catalog, _semantic_database())
     except CompileError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    compiled.provenance.overlays = _overlays_used(compiled.provenance, catalog, overlays)
+    compiled.provenance.overlays = overlays_used(compiled.provenance, catalog, overlays)
     return compiled
-
-
-def _overlays_used(provenance, catalog, overlays: list) -> list[str]:
-    """'<target>@v<version>' for the overlays that shaped this query's metrics, measures and their filters."""
-    measures = set(provenance.measures)
-    for ref in list(measures):
-        ds_id, _, name = ref.partition(":")
-        m = catalog.datasets[ds_id].measure(name)
-        if m.agg == "ratio":
-            measures |= {f"{ds_id}:{m.numerator}", f"{ds_id}:{m.denominator}"}
-    filters = {f"{catalog.metrics[mid].dataset_id}:{f}" for mid in provenance.metrics
-               for f in catalog.metrics[mid].default_filters}
-    used = {"metric": set(provenance.metrics), "measure": measures, "filter": filters}
-    return [f"{o.target}@v{o.version}" for o in overlays if o.target.split(":", 1)[1] in used[o.kind]]
 
 
 @app.post("/api/v1/semantic/compile")
