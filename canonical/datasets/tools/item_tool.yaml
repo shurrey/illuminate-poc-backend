@@ -1,0 +1,58 @@
+id: dataset.item_tool.v1
+display_name: Course item use per enrollment
+description: >
+  One row per course item and enrollment that used it: interactions, time spent and first and last
+  access date, with the item type (SCORM variants grouped as 'SCORM PACKAGE') and its calculation
+  flags. Deviation: bbd-analytics rebuilds each row from only the activity changed since its last
+  run, losing earlier totals; here totals cover all activity.
+grain: one row per course item x enrollment with activity
+domain: tools
+source: bbdata-bbd-analytics procedures/orchestration/itemTool/processItemTool.ts
+depends_on: [dataset.item_tool_map.v1]
+base_sql: |
+  WITH item_use AS (
+      SELECT ci.ID AS COURSE_ITEM_ID,
+             cia.PERSON_COURSE_ID,
+             ANY_VALUE(ci.COURSE_ID) AS COURSE_ID,
+             ANY_VALUE(cia.PERSON_ID) AS PERSON_ID,
+             ANY_VALUE(IFF(ci.ITEM_TYPE IN ('SCORM_ENGINE', 'CONTENT_PACKAGE_SCORM', 'SCORM'), 'SCORM PACKAGE', ci.ITEM_TYPE)) AS ITEM_TYPE,
+             SUM(cia.INTERACTION_CNT) AS INTERACTION_CNT,
+             SUM(NVL(cia.DURATION_SUM, 0)) / 60 AS MINUTES,
+             MIN(cia.FIRST_ACCESSED_TIME)::DATE AS FIRST_ACCESSED_DATE,
+             MAX(cia.LAST_ACCESSED_TIME)::DATE AS LAST_ACCESSED_DATE
+      FROM {{ database }}.CDM_LMS.COURSE_ITEM_ACTIVITY cia
+      JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = cia.COURSE_ITEM_ID
+      WHERE cia.PERSON_COURSE_ID IS NOT NULL
+      GROUP BY ci.ID, cia.PERSON_COURSE_ID
+  )
+  SELECT iu.COURSE_ITEM_ID, iu.PERSON_COURSE_ID, iu.COURSE_ID, iu.PERSON_ID, pc.COURSE_ROLE,
+         iu.ITEM_TYPE, NVL(m.DISPLAY_NAME, iu.ITEM_TYPE) AS ITEM_TYPE_NAME,
+         NVL(m.CONTENT_TIME_IND, 0) AS CONTENT_TIME_IND,
+         NVL(m.SOCIAL_INTERACTIONS_IND, 0) AS SOCIAL_INTERACTIONS_IND,
+         iu.INTERACTION_CNT, iu.MINUTES, iu.FIRST_ACCESSED_DATE, iu.LAST_ACCESSED_DATE
+  FROM item_use iu
+  JOIN {{ database }}.CDM_LMS.PERSON_COURSE pc ON pc.ID = iu.PERSON_COURSE_ID
+  LEFT JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = iu.ITEM_TYPE
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person_course, column: PERSON_COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: course_role, column: COURSE_ROLE, type: categorical, description: "S student, I instructor, and so on"}
+  - {name: item_type, column: ITEM_TYPE, type: categorical, synonyms: [tool, content type]}
+  - {name: item_type_name, column: ITEM_TYPE_NAME, type: categorical}
+  - {name: counts_as_content_time, column: CONTENT_TIME_IND, type: numeric}
+  - {name: counts_as_social, column: SOCIAL_INTERACTIONS_IND, type: numeric}
+  - {name: first_access, column: FIRST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: last_access, column: LAST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year]}
+measures:
+  - {name: items_used, agg: count_distinct, expr: COURSE_ITEM_ID, unit: items}
+  - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
+  - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
+  - {name: interactions, agg: sum, expr: INTERACTION_CNT, unit: interactions}
+  - {name: minutes, agg: sum, expr: MINUTES, unit: minutes, synonyms: [time in content]}
+  - {name: minutes_per_person, agg: ratio, numerator: minutes, denominator: people, unit: minutes}
+filters:
+  - {name: students, sql: "COURSE_ROLE = 'S'"}
+  - {name: content_time_items, sql: "CONTENT_TIME_IND = 1"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]
