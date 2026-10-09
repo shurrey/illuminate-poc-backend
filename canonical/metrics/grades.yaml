@@ -41,3 +41,14 @@ metrics:
     default_filters: [graded_only]
     synonyms: [grading turnaround, feedback turnaround, time to grade]
     example_questions: ["How long do instructors take to grade assignments?"]
+
+  - id: metric.graded_students.v1
+    display_name: Graded students
+    description: Students with a grade in a reportable course; break down by grade_band for the grade distribution.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.student_grade.v1:students
+    default_filters: [graded_only]
+    synonyms: [grade distribution, students by grade]
+    example_questions: ["What is the grade distribution?", "How many students are in each grade band?"]
