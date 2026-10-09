@@ -1,0 +1,62 @@
+id: dataset.lms_sessions.v1
+display_name: LMS sessions
+description: >
+  One row per LMS session with time in it: first and last access (the last capped at one day after
+  the first), mobile or not, the person's institution role, and the institution hierarchy nodes of
+  every course the session's login touched, as a ';'-separated list (filter with contains).
+  Deviation: bbd-analytics carries the role name in every locale for QuickSight; here it is English.
+grain: one row per LMS session with duration
+domain: platform
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_LMS_SESSION_ACTIVITY.sql
+base_sql: |
+  WITH login_courses AS (
+      SELECT DISTINCT LOGIN_SOURCE_ID, COURSE_ID FROM {{ database }}.CDM_LMS.ACTIVITY WHERE COURSE_ID IS NOT NULL
+      UNION
+      SELECT DISTINCT LOGIN_SOURCE_ID, COURSE_ID FROM {{ database }}.CDM_LMS.COURSE_ACTIVITY
+      UNION
+      SELECT DISTINCT LOGIN_SOURCE_ID, COURSE_ID FROM {{ database }}.CDM_LMS.COURSE_TOOL_ACTIVITY
+  ),
+  login_ih AS (
+      SELECT lc.LOGIN_SOURCE_ID,
+             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+      FROM login_courses lc
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc ON ihc.COURSE_ID = lc.COURSE_ID
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+      GROUP BY lc.LOGIN_SOURCE_ID
+  )
+  SELECT sa.ID AS SESSION_ID,
+         sa.PERSON_ID,
+         sa.FIRST_ACCESSED_TIME,
+         LEAST(DATEADD(day, 1, sa.FIRST_ACCESSED_TIME), sa.LAST_ACCESSED_TIME) AS LAST_ACCESSED_TIME,
+         sa.FIRST_ACCESSED_TIME::DATE AS FIRST_ACCESSED_DATE,
+         LEAST(DATEADD(day, 1, sa.FIRST_ACCESSED_TIME), sa.LAST_ACCESSED_TIME)::DATE AS LAST_ACCESSED_DATE,
+         sa.DURATION_SUM / 60 AS MINUTES,
+         sa.MOBILE_IND,
+         pe.INSTITUTION_ROLE_SOURCE_CODE AS ROLE,
+         NVL(tr.TRANSLATION_VALUE, pe.INSTITUTION_ROLE_SOURCE_DESC) AS ROLE_NAME,
+         li.IH_NODES
+  FROM {{ database }}.CDM_LMS.SESSION_ACTIVITY sa
+  LEFT JOIN {{ database }}.CDM_LMS.PERSON pe ON pe.ID = sa.PERSON_ID
+  LEFT JOIN {{ database }}.CDM_LMS.TRANSLATION tr
+    ON tr.TRANSLATION_KEY = pe.INSTITUTION_ROLE_SOURCE_DESC AND tr.LOCALE = 'en_US' AND tr.BUNDLE_NAME = 'institution_roles'
+  LEFT JOIN login_ih li ON li.LOGIN_SOURCE_ID = sa.LOGIN_SOURCE_ID
+  WHERE sa.DURATION_SUM > 0
+entities:
+  - {name: session, column: SESSION_ID, type: primary}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: session_start, column: FIRST_ACCESSED_TIME, type: time, grains: [hour, day, week, month, quarter, year]}
+  - {name: session_date, column: FIRST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: mobile, column: MOBILE_IND, type: boolean}
+  - {name: institution_role, column: ROLE, type: categorical}
+  - {name: institution_role_name, column: ROLE_NAME, type: categorical, synonyms: [role, user type]}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths of the courses the login touched; filter with contains"}
+measures:
+  - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions, synonyms: [logins]}
+  - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people, synonyms: [unique users]}
+  - {name: minutes, agg: sum, expr: MINUTES, unit: minutes}
+  - {name: avg_session_minutes, agg: avg, expr: MINUTES, unit: minutes}
+  - {name: mobile_sessions, agg: count_distinct, expr: "IFF(MOBILE_IND, SESSION_ID, NULL)", unit: sessions}
+  - {name: share_mobile, agg: ratio, numerator: mobile_sessions, denominator: sessions, unit: ratio}
+  - {name: sessions_per_person, agg: ratio, numerator: sessions, denominator: people, unit: sessions}
+pii_columns: [PERSON_ID]
