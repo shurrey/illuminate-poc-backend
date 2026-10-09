@@ -359,3 +359,13 @@ def test_a_filter_on_a_dataset_sharing_no_entity_is_still_refused():
     with pytest.raises(CompileError, match="cannot be reached"):
         _real(measures=CSA_STUDENTS,
               filters=[{"dimension": "dataset.collab_sessions_by_slot.v1:slot_label", "op": "eq", "values": ["8 AM"]}])
+
+
+def test_enrollment_measures_group_by_the_new_course_grain_dimensions():
+    sql = _real(measures=CSA_STUDENTS, dimensions=[
+        "dataset.courses.v1:course_duration", "dataset.courses.v1:delivery_method",
+        "dataset.courses.v1:course_weeks", "dataset.courses.v1:course_creation_date__month"])
+    outer = _outer(sql)
+    assert "LEFT JOIN DS_COURSES_V1" in outer
+    for column in ("COURSE_DURATION", "DELIVERY_METHOD", "COURSE_WEEKS", "COURSE_CREATION_DATE"):
+        assert column in outer
