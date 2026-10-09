@@ -1,0 +1,38 @@
+id: dataset.collab_storage_cumulative.v1
+display_name: Collaborate media storage over time
+description: >
+  One row per day from the first Collaborate media upload to today: bytes of (not deleted) media
+  created that day in the institution's timezone, and the running total. Deviations: bbd-analytics
+  reports days without uploads with no date, and looks up the timezone by the LMS instance's tenant,
+  which this CDM does not have; here every day is dated and the media's own instance timezone is used.
+grain: one row per day
+domain: collaborate
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_CLB_STORAGE_CUMULATIVE_SUM.sql
+depends_on: [dataset.calendar_day.v1]
+base_sql: |
+  WITH instance_tz AS (
+      SELECT mi.CLB_INSTANCE_ID, ANY_VALUE(NVL(li.STAGE:timezone::STRING, 'UTC')) AS TZ
+      FROM {{ database }}.CDM_MAP.INSTANCE mi
+      JOIN {{ database }}.CDM_LMS.INSTANCE li ON li.ID = mi.LMS_INSTANCE_ID
+      GROUP BY mi.CLB_INSTANCE_ID
+  ),
+  daily AS (
+      SELECT CONVERT_TIMEZONE(NVL(tz.TZ, 'UTC'), m.CREATED_TIME)::DATE AS CREATED_DATE, SUM(m.SIZE) AS BYTES_ADDED
+      FROM {{ database }}.CDM_CLB.MEDIA m
+      LEFT JOIN instance_tz tz ON tz.CLB_INSTANCE_ID = m.INSTANCE_ID
+      WHERE m.DELETED_TIME IS NULL
+      GROUP BY 1
+  )
+  SELECT d.DAY_DATE,
+         NVL(dl.BYTES_ADDED, 0) AS BYTES_ADDED,
+         SUM(NVL(dl.BYTES_ADDED, 0)) OVER (ORDER BY d.DAY_DATE ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS CUMULATIVE_BYTES
+  FROM {{ ref('dataset.calendar_day.v1') }} d
+  LEFT JOIN daily dl ON dl.CREATED_DATE = d.DAY_DATE
+  WHERE d.DAY_DATE >= (SELECT MIN(CREATED_DATE) FROM daily)
+entities:
+  - {name: day, column: DAY_DATE, type: primary}
+dimensions:
+  - {name: day, column: DAY_DATE, type: time, grains: [day, week, month, quarter, year]}
+measures:
+  - {name: gb_added, agg: sum, expr: "BYTES_ADDED / POWER(1024, 3)", unit: GB}
+  - {name: storage_gb, agg: max, expr: "CUMULATIVE_BYTES / POWER(1024, 3)", unit: GB, description: "Total stored at the end of the period", synonyms: [collaborate storage, recording storage]}
