@@ -217,7 +217,7 @@ def _unquoted_upper(ident: Optional[exp.Identifier]) -> str:
 _GENERATOR_MAX_ROWS = 1_000_000
 
 
-def _is_generator(table: exp.Table) -> bool:
+def is_bounded_generator(table: exp.Table) -> bool:
     """TABLE(GENERATOR(ROWCOUNT => n)) with a literal n up to _GENERATOR_MAX_ROWS; it reads no data."""
     fn = table.this
     if not (isinstance(fn, exp.Anonymous) and str(fn.this).upper() == "TABLE" and len(fn.expressions) == 1):
@@ -248,7 +248,7 @@ def _check_tables(sql: str, database: str) -> None:
     for table in tree.find_all(exp.Table):
         schema = _unquoted_upper(table.args.get("db"))
         catalog = _unquoted_upper(table.args.get("catalog"))
-        if _is_generator(table):
+        if is_bounded_generator(table):
             continue
         if (not schema and not catalog and isinstance(table.this, exp.Identifier)
                 and _unquoted_upper(table.this) in _ctes_in_scope(table)):
