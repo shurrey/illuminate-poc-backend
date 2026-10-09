@@ -1,0 +1,45 @@
+id: dataset.lms_sessions_by_slot.v1
+display_name: LMS sessions by two-hour slot
+description: >
+  One row per LMS session and two-hour slot it was active in (from its first access to its last,
+  capped at one day), with the slot's date, day of week and 12-hour label, for sessions-by-day-and-hour
+  heat maps. Deviation: bbd-analytics also emits every empty slot since 1970 with a zero count; here
+  only slots with sessions appear.
+grain: one row per LMS session x two-hour slot it spans
+domain: platform
+source: bbdata-bbd-analytics procedures/orchestration/lmsSessionByDay/processLmsSessionByDay.ts
+depends_on: [dataset.lms_sessions.v1]
+base_sql: |
+  WITH slots AS (
+      SELECT s.SESSION_ID, s.PERSON_ID, s.ROLE_NAME, s.IH_NODES,
+             DATEADD(hour, 2 * n.N, TIME_SLICE(s.FIRST_ACCESSED_TIME::TIMESTAMP_NTZ, 2, 'hour')) AS SLOT_START,
+             TIME_SLICE(s.LAST_ACCESSED_TIME::TIMESTAMP_NTZ, 2, 'hour') AS LAST_SLOT
+      FROM {{ ref('dataset.lms_sessions.v1') }} s
+      CROSS JOIN (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1 AS N FROM TABLE(GENERATOR(ROWCOUNT => 13))) n
+  )
+  SELECT SESSION_ID, PERSON_ID, ROLE_NAME, IH_NODES, SLOT_START,
+         SLOT_START::DATE AS SLOT_DATE,
+         HOUR(SLOT_START) AS SLOT_START_HOUR,
+         LPAD(IFF(MOD(HOUR(SLOT_START), 12) = 0, 12, MOD(HOUR(SLOT_START), 12))::STRING, 2, '0')
+           || IFF(HOUR(SLOT_START) < 12, ' AM', ' PM') AS SLOT_LABEL,
+         DAYNAME(SLOT_START) AS DAY_NAME,
+         DAYOFWEEKISO(SLOT_START) AS DAY_NUMBER
+  FROM slots
+  WHERE SLOT_START <= LAST_SLOT
+entities:
+  - {name: session, column: SESSION_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: slot_start, column: SLOT_START, type: time, grains: [hour, day, week, month, quarter, year]}
+  - {name: slot_date, column: SLOT_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: slot_start_hour, column: SLOT_START_HOUR, type: numeric, description: "0, 2, ... 22; sort slots by this"}
+  - {name: slot_label, column: SLOT_LABEL, type: categorical, description: "'12 AM', '02 AM', ... '10 PM'", synonyms: [time of day]}
+  - {name: day_of_week, column: DAY_NAME, type: categorical, synonyms: [weekday]}
+  - {name: day_of_week_number, column: DAY_NUMBER, type: numeric, description: "1 Monday to 7 Sunday; sort days by this"}
+  - {name: institution_role_name, column: ROLE_NAME, type: categorical, synonyms: [role]}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+measures:
+  - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions, description: "Sessions active in the slot; a session spanning slots counts in each"}
+  - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
+  - {name: session_slots, agg: count, expr: "*", unit: slots}
+pii_columns: [PERSON_ID]
