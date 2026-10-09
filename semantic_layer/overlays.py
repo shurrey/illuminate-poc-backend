@@ -161,3 +161,17 @@ def validate_overlay(ov: Overlay, catalog: Catalog) -> list[str]:
         except CompileError as e:
             errors.append(f"{metric_id}: {e}")
     return errors
+
+
+def overlays_used(provenance, catalog, overlays: list) -> list[str]:
+    """'<target>@v<version>' for the overlays that shaped this query's metrics, measures and their filters."""
+    measures = set(provenance.measures)
+    for ref in list(measures):
+        ds_id, _, name = ref.partition(":")
+        m = catalog.datasets[ds_id].measure(name)
+        if m.agg == "ratio":
+            measures |= {f"{ds_id}:{m.numerator}", f"{ds_id}:{m.denominator}"}
+    filters = {f"{catalog.metrics[mid].dataset_id}:{f}" for mid in provenance.metrics
+               for f in catalog.metrics[mid].default_filters}
+    used = {"metric": set(provenance.metrics), "measure": measures, "filter": filters}
+    return [f"{o.target}@v{o.version}" for o in overlays if o.target.split(":", 1)[1] in used[o.kind]]
