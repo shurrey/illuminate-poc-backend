@@ -96,3 +96,8 @@ def test_authors_get_identity(client, ran, monkeypatch):
     as_role(monkeypatch, "illuminate-authors")
     assert run(client, "roster").json()["contract"]["dimensions"] == ["person_email"]
     assert "PERSON_EMAIL" in ran[-1][ran[-1].rindex("\nSELECT"):]
+
+
+def test_a_malformed_value_is_a_400(client):
+    resp = run(client, "students", "current", {"dates": ["2026-01-01"]})
+    assert resp.status_code == 400 and "dates" in resp.json()["detail"]

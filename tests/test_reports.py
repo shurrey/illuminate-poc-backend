@@ -93,3 +93,61 @@ def test_duplicate_report_ids_are_refused(tmp_path):
 @pytest.mark.parametrize("report_id", sorted(load_reports(REPORTS_DIR)))
 def test_every_canonical_report_validates(report_id):
     assert validate_report(load_reports(REPORTS_DIR)[report_id], CATALOG) == []
+
+
+from semantic_layer.reports import Report, ReportValueError
+
+
+def _report(filters, visuals):
+    return Report(id="report.probe.v1", title="Probe", area="leading", description="", filters=filters,
+                  pages=[{"title": "P", "visuals": visuals}])
+
+
+TERM = {"id": "term", "label": "Term", "control": "multi_select", "dimension": "dataset.courses.v1:term_name"}
+DATES = {"id": "dates", "label": "Dates", "control": "date_range", "time_dimension": "event_time"}
+LOG = {"id": "log", "type": "kpi", "title": "Events",
+       "queries": {"main": {"measures": ["dataset.activity_log.v1:events"]}}}
+GRT_KPI = {"id": "grading", "type": "kpi", "title": "Attempts",
+           "queries": {"main": {"measures": ["dataset.grade_response_time.v1:attempts"]}}}
+
+
+def test_a_reachable_filter_is_applied_whatever_order_the_filters_merge_in():
+    report = _report([TERM, DATES], [LOG])
+    contract, ignored = merged_contract(report, report.visual("log"), "main",
+                                        {"term": ["Q4: 2026"], "dates": {"start": "2026-09-01"}}, CATALOG)
+    assert ignored == []
+    assert contract.filters[0].dimension == "dataset.courses.v1:term_name" and contract.time_range.dimension == "event_time"
+
+
+def test_string_values_are_converted_to_the_dimensions_type():
+    due = {"id": "due", "label": "Has due date", "control": "select", "dimension": "has_due_date"}
+    days = {"id": "days", "label": "Days", "control": "select", "dimension": "response_days_value"}
+    report = _report([due, days], [GRT_KPI])
+    contract, ignored = merged_contract(report, report.visual("grading"), "main", {"due": ["true"], "days": ["3"]}, CATALOG)
+    assert ignored == []
+    assert [f.values for f in contract.filters] == [[True], [3]]
+
+
+def test_a_value_of_the_wrong_type_is_an_error_not_an_ignored_filter():
+    days = {"id": "days", "label": "Days", "control": "select", "dimension": "response_days_value"}
+    report = _report([days], [GRT_KPI])
+    with pytest.raises(ReportValueError, match="days"):
+        merged_contract(report, report.visual("grading"), "main", {"days": ["soon"]}, CATALOG)
+    dated = _report([DATES], [LOG])
+    with pytest.raises(ReportValueError, match="dates"):
+        merged_contract(dated, dated.visual("log"), "main", {"dates": ["2026-01-01"]}, CATALOG)
+
+
+def test_validation_flags_a_filter_dimension_that_does_not_exist():
+    typo = {**TERM, "dimension": "dataset.courses.v1:term_nmae"}
+    assert any("term" in p and "term_nmae" in p for p in validate_report(_report([typo], [GRT_KPI]), CATALOG))
+
+
+def test_validation_flags_a_filter_no_visual_can_apply():
+    slots = {"id": "slot", "label": "Slot", "control": "select", "dimension": "dataset.collab_sessions_by_slot.v1:slot_label"}
+    assert any(p.startswith("filter slot:") for p in validate_report(_report([slots], [GRT_KPI]), CATALOG))
+
+
+def test_validation_flags_a_transform_reading_a_query_that_does_not_exist():
+    pop = {**GRT_KPI, "transform": {"kind": "period_over_period", "value": "main", "baseline": "previous", "field": "attempts"}}
+    assert any("previous" in p for p in validate_report(_report([], [pop]), CATALOG))
