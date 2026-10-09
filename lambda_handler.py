@@ -285,14 +285,15 @@ def _with_queries(text: str, queries: list[dict]) -> str:
 
 
 def _engine_kwargs(user: Optional[dict]) -> dict:
-    """A tool set over the caller's overlaid catalog, when their tenant has overlays."""
+    """Tools and a system prompt over the caller's overlaid catalog, when their tenant has overlays."""
     catalog, overlays = _catalog_for(user)
     if not overlays:
         return {}
     from chat_engine import _database
     from semantic_layer.chat_tools import ChatTools
+    from semantic_layer.prompt import build_system_prompt
 
-    return {"tools": ChatTools(catalog, _database)}
+    return {"tools": ChatTools(catalog, _database), "system_prompt": build_system_prompt(catalog, _database)}
 
 
 async def send_message(
