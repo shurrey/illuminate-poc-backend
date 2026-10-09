@@ -769,7 +769,11 @@ def _compile_contract(contract: QueryContract, authorization: str):
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return _compile_for(contract, user)
 
+
+def _compile_for(contract: QueryContract, user: dict):
+    """Compile against the caller's tenant catalog with their identity rights; 400 on a compile error."""
     from semantic_layer.compiler import CompileError, compile_query
     from semantic_layer.overlays import overlays_used
 
@@ -788,9 +792,13 @@ def _compile_contract(contract: QueryContract, authorization: str):
 
 
 def _selects_identity(contract: QueryContract, catalog) -> bool:
-    """True when a selected dimension, resolved on any dataset the query reads, is personally identifiable."""
-    names = {d.rpartition(":")[2].partition("__")[0] for d in contract.dimensions}
-    return any(ds.is_pii(dim.column) for ds in catalog.datasets.values() for dim in ds.dimensions if dim.name in names)
+    return any(_is_identity(d, catalog) for d in contract.dimensions)
+
+
+def _is_identity(ref: str, catalog) -> bool:
+    """True when a dimension of this name is personally identifiable on any dataset (may over-match)."""
+    name = ref.rpartition(":")[2].partition("__")[0]
+    return any(ds.is_pii(dim.column) for ds in catalog.datasets.values() for dim in ds.dimensions if dim.name == name)
 
 
 @app.post("/api/v1/semantic/compile")
@@ -833,20 +841,9 @@ async def semantic_catalog(
 async def semantic_query(contract: QueryContract, authorization: Optional[str] = Header(None)):
     """Compile a semantic query contract and run it through the execution guard."""
     compiled = _compile_contract(contract, authorization)
-
-    import asyncio
-    from snowflake_client import validate_and_execute
-
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, lambda: validate_and_execute(compiled.sql, compiled=True))
-    if "error" in result:
-        logger.error("Semantic query failed: %s", result["error"])
-        message = "The warehouse could not run this query." if result.get("warehouse_error") else result["error"]
-        raise HTTPException(status_code=502, detail={"error": message, "sql": compiled.sql})
+    result = await _execute(compiled)
     from fastapi.responses import JSONResponse
-    from semantic_layer.compiler import named_result
 
-    result = named_result(result)
     # jsonable_encoder turns Snowflake's Decimal into numbers; response-model serialisation makes them strings.
     return JSONResponse(_json_safe({
         "columns": result["columns"],
@@ -854,6 +851,135 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
         "sql": compiled.sql,
         "provenance": compiled.provenance,
     }))
+
+
+async def _execute(compiled) -> dict:
+    """Run compiled SQL through the guard; the named result, or a 502 carrying the SQL."""
+    import asyncio
+    from snowflake_client import validate_and_execute
+    from semantic_layer.compiler import named_result
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, lambda: validate_and_execute(compiled.sql, compiled=True))
+    if "error" in result:
+        logger.error("Semantic query failed: %s", result["error"])
+        message = "The warehouse could not run this query." if result.get("warehouse_error") else result["error"]
+        raise HTTPException(status_code=502, detail={"error": message, "sql": compiled.sql})
+    return named_result(result)
+
+
+# =============================================================================
+# Reports
+# =============================================================================
+
+_TERMS_TTL_SECONDS = 3600
+_terms_cache: dict[str, tuple[float, list]] = {}
+_loaded_reports: Optional[dict] = None
+
+
+def _reports() -> dict:
+    """The canonical report definitions, loaded once per instance."""
+    from semantic_layer.reports import load_reports
+    global _loaded_reports
+    if _loaded_reports is None:
+        _loaded_reports = load_reports()
+    return _loaded_reports
+
+
+def _current_terms() -> list[dict]:
+    """Every term's name, start and end, cached per instance for an hour."""
+    import time
+    from semantic_layer.catalog import default_catalog
+    from semantic_layer.compiler import compile_query, named_result
+    from snowflake_client import validate_and_execute
+
+    cached = _terms_cache.get("terms")
+    if cached and time.time() - cached[0] < _TERMS_TTL_SECONDS:
+        return cached[1]
+    contract = QueryContract(measures=["dataset.terms.v1:terms"], dimensions=["term_name", "term_start", "term_end"], limit=1000)
+    result = validate_and_execute(compile_query(contract, default_catalog(), _semantic_database()).sql, compiled=True)
+    if "error" in result:
+        logger.warning("Could not load terms for report defaults: %s", result["error"])
+        return []
+    rows = named_result(result)["rows"]
+    _terms_cache["terms"] = (time.time(), rows)
+    return rows
+
+
+def _report_or_404(report_id: str):
+    report = _reports().get(report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail=f"Unknown report {report_id}")
+    return report
+
+
+@app.get("/api/v1/reports")
+async def list_reports(authorization: Optional[str] = Header(None)):
+    """Every report's id, title, area and description."""
+    if not _get_user_from_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return {"reports": [{"id": r.id, "title": r.title, "area": r.area, "description": r.description}
+                        for r in _reports().values()]}
+
+
+@app.get("/api/v1/reports/{report_id}")
+async def get_report(report_id: str, authorization: Optional[str] = Header(None)):
+    """A report definition and its filters' default values (current term, last 30 days)."""
+    if not _get_user_from_token(authorization):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    import asyncio
+    from datetime import date
+    from semantic_layer.reports import resolve_defaults
+
+    report = _report_or_404(report_id)
+    terms = await asyncio.get_running_loop().run_in_executor(None, _current_terms)
+    return {"report": report.model_dump(mode="json"), "defaults": resolve_defaults(report, date.today(), terms)}
+
+
+class ReportRun(BaseModel):
+    visual: str
+    query: str
+    values: dict = {}
+
+
+@app.post("/api/v1/reports/{report_id}/run")
+async def run_report_query(report_id: str, request: ReportRun, authorization: Optional[str] = Header(None)):
+    """Run one query of one visual with the filter-bar values merged in.
+
+    Viewers never see identity: identity dimensions are dropped, and a query of nothing else is unavailable.
+    """
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    from roles import role_allows_identity
+    from semantic_layer.reports import merged_contract
+
+    report = _report_or_404(report_id)
+    visual = report.visual(request.visual)
+    if visual is None or request.query not in visual.queries:
+        raise HTTPException(status_code=404, detail=f"{report_id} has no query {request.visual}/{request.query}")
+    catalog, _ = _catalog_for(user)
+    contract, ignored = merged_contract(report, visual, request.query, request.values, catalog, _semantic_database())
+    if not role_allows_identity(user):
+        kept = [d for d in contract.dimensions if not _is_identity(d, catalog)]
+        if contract.dimensions and not kept:
+            return {"unavailable": "Requires Author access"}
+        if len(kept) != len(contract.dimensions):
+            kept_names = {d.rpartition(":")[2] for d in kept}
+            contract = contract.model_copy(update={
+                "dimensions": kept,
+                "order_by": [o for o in contract.order_by if o.field in kept_names or not _is_identity(o.field, catalog)],
+            })
+    compiled = _compile_for(contract, user)
+    result = await _execute(compiled)
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(_json_safe({
+        "columns": result["columns"], "rows": result["rows"], "truncated": result.get("truncated", False),
+        "sql": compiled.sql, "provenance": compiled.provenance,
+        "contract": contract.model_dump(mode="json", exclude_defaults=True), "ignored_filters": ignored,
+    }))
+
 
 
 # =============================================================================
