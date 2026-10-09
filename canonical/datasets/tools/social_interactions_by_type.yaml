@@ -1,0 +1,89 @@
+id: dataset.social_interactions_by_type.v1
+display_name: Interactions and submissions by item type
+description: >
+  Per enrollment, course and item type that takes submissions in the CDM: the course's items of the
+  type, how many the person accessed, interacted with and submitted to, their access rows and
+  submissions, and the last access and submission. Every enrollment in the course appears, including
+  ones with no activity. Deviation: bbd-analytics has no course role, so students and instructors
+  can't be told apart; here course_role is included.
+grain: one row per enrollment x item type with submissions in the course
+domain: tools
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_STUDENT_SOCIAL_INTERACT_AND_SUB_BY_TYPE.sql
+depends_on: [dataset.item_tool_map.v1]
+base_sql: |
+  WITH course_types AS (
+      SELECT ci.COURSE_ID, ci.ITEM_TYPE, COUNT(*) AS ITEMS_AVAILABLE
+      FROM {{ database }}.CDM_LMS.COURSE_ITEM ci
+      WHERE ci.ITEM_TYPE IN (SELECT DISTINCT ITEM_TYPE FROM {{ database }}.CDM_LMS.SUBMISSION)
+      GROUP BY ci.COURSE_ID, ci.ITEM_TYPE
+  ),
+  submissions AS (
+      SELECT su.PERSON_COURSE_ID, su.ITEM_TYPE,
+             COUNT(DISTINCT su.COURSE_ITEM_ID) AS ITEMS_SUBMITTED,
+             COUNT(*) AS SUBMISSIONS,
+             MAX(su.SUBMITTED_TIME) AS LAST_SUBMITTED_TIME
+      FROM {{ database }}.CDM_LMS.SUBMISSION su
+      GROUP BY su.PERSON_COURSE_ID, su.ITEM_TYPE
+  ),
+  accesses AS (
+      SELECT cia.PERSON_COURSE_ID, ci.ITEM_TYPE,
+             COUNT(DISTINCT cia.COURSE_ITEM_ID) AS ITEMS_INTERACTED,
+             COUNT(*) AS ACCESS_ROWS,
+             MAX(cia.LAST_ACCESSED_TIME) AS LAST_ACCESSED_TIME
+      FROM {{ database }}.CDM_LMS.COURSE_ITEM_ACTIVITY cia
+      JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = cia.COURSE_ITEM_ID
+      GROUP BY cia.PERSON_COURSE_ID, ci.ITEM_TYPE
+  ),
+  used AS (
+      SELECT PERSON_COURSE_ID, ITEM_TYPE, COUNT(DISTINCT COURSE_ITEM_ID) AS ITEMS_USED
+      FROM (
+          SELECT PERSON_COURSE_ID, ITEM_TYPE, COURSE_ITEM_ID FROM {{ database }}.CDM_LMS.SUBMISSION
+          UNION
+          SELECT cia.PERSON_COURSE_ID, ci.ITEM_TYPE, cia.COURSE_ITEM_ID
+          FROM {{ database }}.CDM_LMS.COURSE_ITEM_ACTIVITY cia
+          JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = cia.COURSE_ITEM_ID
+      )
+      GROUP BY PERSON_COURSE_ID, ITEM_TYPE
+  )
+  SELECT ct.COURSE_ID, p.ID AS PERSON_COURSE_ID, p.PERSON_ID, p.COURSE_ROLE,
+         ct.ITEM_TYPE, m.DISPLAY_NAME AS TYPE_NAME, m.SOCIAL_INTERACTIONS_IND,
+         ct.ITEMS_AVAILABLE,
+         NVL(u.ITEMS_USED, 0) AS ITEMS_USED,
+         NVL(a.ITEMS_INTERACTED, 0) AS ITEMS_INTERACTED,
+         NVL(s.ITEMS_SUBMITTED, 0) AS ITEMS_SUBMITTED,
+         NVL(a.ACCESS_ROWS, 0) AS ACCESS_ROWS,
+         NVL(s.SUBMISSIONS, 0) AS SUBMISSIONS,
+         a.LAST_ACCESSED_TIME,
+         s.LAST_SUBMITTED_TIME
+  FROM course_types ct
+  JOIN {{ ref('dataset.item_tool_map.v1') }} m
+    ON m.ITEM_TYPE = IFF(ct.ITEM_TYPE IN ('SCORM_ENGINE', 'CONTENT_PACKAGE_SCORM', 'SCORM'), 'SCORM PACKAGE', ct.ITEM_TYPE)
+  JOIN {{ database }}.CDM_LMS.PERSON_COURSE p ON p.COURSE_ID = ct.COURSE_ID
+  LEFT JOIN used u ON u.PERSON_COURSE_ID = p.ID AND u.ITEM_TYPE = ct.ITEM_TYPE
+  LEFT JOIN accesses a ON a.PERSON_COURSE_ID = p.ID AND a.ITEM_TYPE = ct.ITEM_TYPE
+  LEFT JOIN submissions s ON s.PERSON_COURSE_ID = p.ID AND s.ITEM_TYPE = ct.ITEM_TYPE
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person_course, column: PERSON_COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: course_role, column: COURSE_ROLE, type: categorical, description: "S student, I instructor, and so on"}
+  - {name: item_type, column: ITEM_TYPE, type: categorical}
+  - {name: type_name, column: TYPE_NAME, type: categorical, synonyms: [tool, content type]}
+  - {name: social, column: SOCIAL_INTERACTIONS_IND, type: numeric, description: "1 for types that count as social interactions"}
+  - {name: last_access, column: LAST_ACCESSED_TIME, type: time, grains: [day, week, month]}
+  - {name: last_submission, column: LAST_SUBMITTED_TIME, type: time, grains: [day, week, month]}
+measures:
+  - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
+  - {name: people_who_interacted, agg: count_distinct, expr: "IFF(ITEMS_INTERACTED > 0, PERSON_ID, NULL)", unit: people}
+  - {name: people_who_submitted, agg: count_distinct, expr: "IFF(ITEMS_SUBMITTED > 0, PERSON_ID, NULL)", unit: people}
+  - {name: share_who_submitted, agg: ratio, numerator: people_who_submitted, denominator: people, unit: ratio}
+  - {name: access_rows, agg: sum, expr: ACCESS_ROWS, unit: accesses}
+  - {name: submissions, agg: sum, expr: SUBMISSIONS, unit: submissions}
+  - {name: items_used, agg: sum, expr: ITEMS_USED, unit: items}
+  - {name: items_available, agg: sum, expr: ITEMS_AVAILABLE, unit: items, description: "The course's items of the type, summed per enrollment"}
+  - {name: share_of_items_used, agg: ratio, numerator: items_used, denominator: items_available, unit: ratio}
+filters:
+  - {name: students, sql: "COURSE_ROLE = 'S'"}
+  - {name: social_types, sql: "SOCIAL_INTERACTIONS_IND = 1"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]
