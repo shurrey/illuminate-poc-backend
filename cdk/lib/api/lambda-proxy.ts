@@ -145,6 +145,8 @@ export class LambdaProxy extends Construct {
         ACCOUNT_ID: cdk.Aws.ACCOUNT_ID,
         SNOWFLAKE_SECRET_NAME: `illuminate/${props.environment}/snowflake`,
         LOG_LEVEL: isProd ? 'WARN' : 'INFO',
+        // The OpenAPI docs are for local development only.
+        API_DOCS: 'off',
       },
     });
 

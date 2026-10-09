@@ -146,9 +146,8 @@ def _validate_token(token: str) -> Optional[dict]:
             issuer=f"https://cognito-idp.{AWS_REGION}.amazonaws.com/{USER_POOL_ID}",
             options={"verify_aud": False}
         )
-        # Verify client_id for access tokens or aud for ID tokens
-        token_client = claims.get("client_id") or claims.get("aud")
-        if token_client != USER_POOL_CLIENT_ID:
+        # Only ID tokens carry the tenant and group claims the API relies on.
+        if claims.get("token_use") != "id" or claims.get("aud") != USER_POOL_CLIENT_ID:
             return None
         return claims
 
@@ -368,10 +367,14 @@ async def send_message_streaming(
 # FastAPI Application
 # =============================================================================
 
+_API_DOCS = os.environ.get("API_DOCS", "on") == "on"
 app = FastAPI(
     title="Illuminate Conversational Intelligence - API",
-    description="FastAPI handler using chat_engine for LLM orchestration",
-    version="0.3.0"
+    description="Semantic-layer queries, catalog, admin overlays and Bedrock chat",
+    version="0.4.0",
+    docs_url="/docs" if _API_DOCS else None,
+    redoc_url="/redoc" if _API_DOCS else None,
+    openapi_url="/openapi.json" if _API_DOCS else None,
 )
 
 # CORS middleware
