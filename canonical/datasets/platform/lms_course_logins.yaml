@@ -1,0 +1,42 @@
+id: dataset.lms_course_logins.v1
+display_name: LMS course logins
+description: >
+  One row per course access in the LMS: the course, the person, the first and last access dates in
+  the institution's timezone, and the institution hierarchy nodes of the course as a ';'-separated
+  list (filter with contains). Deviation: bbd-analytics joins the instance on tenant alone, which
+  repeats every row once per instance; here the course's own instance is used.
+grain: one row per course activity (course login)
+domain: platform
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_LMS_COURSE_ACTIVITY.sql
+base_sql: |
+  WITH course_ih AS (
+      SELECT ihc.COURSE_ID,
+             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+      FROM {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+      GROUP BY ihc.COURSE_ID
+  )
+  SELECT ca.ID AS COURSE_ACTIVITY_ID, ca.COURSE_ID, ca.PERSON_ID,
+         CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), ca.FIRST_ACCESSED_TIME)::DATE AS FIRST_ACCESSED_DATE,
+         CONVERT_TIMEZONE(NVL(i.STAGE:timezone::STRING, 'UTC'), ca.LAST_ACCESSED_TIME)::DATE AS LAST_ACCESSED_DATE,
+         ca.MOBILE_IND,
+         ih.IH_NODES
+  FROM {{ database }}.CDM_LMS.COURSE_ACTIVITY ca
+  JOIN {{ database }}.CDM_LMS.COURSE c ON c.ID = ca.COURSE_ID
+  JOIN {{ database }}.CDM_LMS.INSTANCE i ON i.ID = c.INSTANCE_ID
+  LEFT JOIN course_ih ih ON ih.COURSE_ID = ca.COURSE_ID
+entities:
+  - {name: course_activity, column: COURSE_ACTIVITY_ID, type: primary}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: login_date, column: FIRST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: last_access_date, column: LAST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: mobile, column: MOBILE_IND, type: boolean}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths of the course; filter with contains"}
+measures:
+  - {name: course_logins, agg: count_distinct, expr: COURSE_ACTIVITY_ID, unit: logins, synonyms: [course visits, course accesses]}
+  - {name: courses_accessed, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
+  - {name: logins_per_course, agg: ratio, numerator: course_logins, denominator: courses_accessed, unit: logins}
+pii_columns: [PERSON_ID]
