@@ -5,12 +5,6 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 
 export interface StorageProps {
   environment: string;
-  snowflakeAccount: string;
-  snowflakeUser: string;
-  snowflakePassword: string;
-  snowflakeDatabase: string;
-  snowflakeWarehouse: string;
-  snowflakeRole: string;
 }
 
 export class Storage extends Construct {
@@ -27,17 +21,11 @@ export class Storage extends Construct {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    // Created with a generated placeholder; scripts/set-snowflake-secret.sh writes the credentials,
+    // so they never enter the template and redeploys leave them alone.
     this.snowflakeSecret = new secretsmanager.Secret(this, 'SnowflakeSecret', {
       secretName: `illuminate/${props.environment}/snowflake`,
-      description: 'Snowflake connection credentials',
-      secretStringValue: cdk.SecretValue.unsafePlainText(JSON.stringify({
-        account: props.snowflakeAccount,
-        user: props.snowflakeUser,
-        password: props.snowflakePassword,
-        database: props.snowflakeDatabase,
-        warehouse: props.snowflakeWarehouse,
-        role: props.snowflakeRole,
-      })),
+      description: 'Snowflake connection credentials; set with scripts/set-snowflake-secret.sh',
     });
   }
 }

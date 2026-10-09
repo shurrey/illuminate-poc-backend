@@ -9,12 +9,6 @@ import { Discovery } from './discovery';
 
 export interface BaseStackProps extends cdk.StackProps {
   environment: string;
-  snowflakeAccount: string;
-  snowflakeUser: string;
-  snowflakePassword: string;
-  snowflakeDatabase: string;
-  snowflakeWarehouse: string;
-  snowflakeRole: string;
   initialUserEmail?: string;
   initialUserPassword?: string;
   initialUserName?: string;
@@ -40,12 +34,6 @@ export class BaseStack extends cdk.Stack {
 
     const storage = new Storage(this, 'Storage', {
       environment: props.environment,
-      snowflakeAccount: props.snowflakeAccount,
-      snowflakeUser: props.snowflakeUser,
-      snowflakePassword: props.snowflakePassword,
-      snowflakeDatabase: props.snowflakeDatabase,
-      snowflakeWarehouse: props.snowflakeWarehouse,
-      snowflakeRole: props.snowflakeRole,
     });
     this.artifactsBucket = storage.artifactsBucket;
     this.snowflakeSecret = storage.snowflakeSecret;
