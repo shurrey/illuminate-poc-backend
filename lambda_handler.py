@@ -67,11 +67,7 @@ def _json_safe(value):
 
 
 def _scrub_pii(text: str) -> str:
-    """Scrub PII patterns from response text as a last-resort safety net.
-
-    Runs AFTER the LLM generates text, before returning to the user.
-    This catches anything the Bedrock Guardrail or prompt-based approach missed.
-    """
+    """Redact SSN, email, phone and card patterns from model text, before it is stored or returned."""
     for pattern, replacement in _PII_PATTERNS:
         text = pattern.sub(replacement, text)
     return text
@@ -315,6 +311,7 @@ async def send_message(
     response_text, _, artifacts = await loop.run_in_executor(
         None, lambda: engine_send(model_text, bedrock_history, **kwargs)
     )
+    response_text = _scrub_pii(response_text)
 
     save_turn(context_id, owner, message_text, response_text, _queries_from(artifacts))
 
@@ -347,7 +344,7 @@ async def send_message_streaming(
             if event["type"] == "status":
                 yield event
             elif event["type"] == "raw_complete":
-                full_text, artifacts = event["text"], event["artifacts"]
+                full_text, artifacts = _scrub_pii(event["text"]), event["artifacts"]
                 if full_text.strip():
                     await loop.run_in_executor(
                         None, save_turn, context_id, owner, message_text, full_text, _queries_from(artifacts))
@@ -359,7 +356,7 @@ async def send_message_streaming(
         yield {
             "type": "complete",
             "data": {
-                "text": _scrub_pii(full_text),
+                "text": full_text,
                 "artifacts": artifacts,
                 "contextId": context_id,
             },
@@ -441,7 +438,7 @@ async def chat(
         )
 
         return ChatResponse(
-            text=_scrub_pii(result.get("text", "")),
+            text=result.get("text", ""),
             artifacts=_json_safe(result["artifacts"]),
             context_id=result.get("contextId", context_id),
         )

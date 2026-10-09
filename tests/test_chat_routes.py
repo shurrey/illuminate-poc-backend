@@ -114,3 +114,19 @@ def test_chat_prompt_lists_the_tenants_own_filters(client, monkeypatch):
     monkeypatch.setattr(chat_engine, "send_message", fake_send)
     client.post("/api/chat", headers=AUTH, json={"message": "q"})
     assert "honours" in seen["system_prompt"]
+
+
+@pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+def test_stored_replies_are_pii_scrubbed(client, monkeypatch, path):
+    import chat_engine
+    import conversation_store
+    saved = []
+    monkeypatch.setattr(conversation_store, "save_turn", lambda cid, owner, q, a, *rest: saved.append(a))
+
+    async def fake_stream(message, history, **kw):
+        yield {"type": "raw_complete", "text": "Reach jane@example.edu", "messages": [], "artifacts": []}
+
+    monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
+    monkeypatch.setattr(chat_engine, "send_message", lambda m, h, **kw: ("Reach jane@example.edu", [], []))
+    client.post(path, headers=AUTH, json={"message": "q"})
+    assert saved == ["Reach [EMAIL REDACTED]"]
