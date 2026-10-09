@@ -773,13 +773,24 @@ def _compile_contract(contract: QueryContract, authorization: str):
     from semantic_layer.compiler import CompileError, compile_query
     from semantic_layer.overlays import overlays_used
 
+    from roles import role_allows_identity
+
     catalog, overlays = _catalog_for(user)
+    allow_identity = role_allows_identity(user)
     try:
-        compiled = compile_query(contract, catalog, _semantic_database())
+        compiled = compile_query(contract, catalog, _semantic_database(), allow_identity=allow_identity)
     except CompileError as e:
         raise HTTPException(status_code=400, detail=str(e))
     compiled.provenance.overlays = overlays_used(compiled.provenance, catalog, overlays)
+    if allow_identity and _selects_identity(contract, catalog):
+        logger.info("identity_query sub=%s contract=%s", user.get("sub"), contract.model_dump_json(exclude_defaults=True))
     return compiled
+
+
+def _selects_identity(contract: QueryContract, catalog) -> bool:
+    """True when a selected dimension, resolved on any dataset the query reads, is personally identifiable."""
+    names = {d.rpartition(":")[2].partition("__")[0] for d in contract.dimensions}
+    return any(ds.is_pii(dim.column) for ds in catalog.datasets.values() for dim in ds.dimensions if dim.name in names)
 
 
 @app.post("/api/v1/semantic/compile")
@@ -809,7 +820,8 @@ async def semantic_catalog(
     from fastapi.responses import JSONResponse
     from semantic_layer.catalog_view import public_catalog
 
-    body = public_catalog(_catalog_for(user)[0])
+    from roles import role_allows_identity
+    body = public_catalog(_catalog_for(user)[0], allow_identity=role_allows_identity(user))
     etag = '"' + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:32] + '"'
     headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
     if if_none_match and _etag_matches(if_none_match, etag):

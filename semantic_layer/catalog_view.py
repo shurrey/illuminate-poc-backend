@@ -18,7 +18,7 @@ _METRIC_FIELDS = {
 }
 
 
-def _dataset_view(ds: Dataset, joins: list[str]) -> dict:
+def _dataset_view(ds: Dataset, joins: list[str], allow_identity: bool) -> dict:
     return {
         "id": ds.id,
         "display_name": ds.display_name,
@@ -26,7 +26,7 @@ def _dataset_view(ds: Dataset, joins: list[str]) -> dict:
         "grain": ds.grain,
         "domain": ds.domain,
         "dimensions": [
-            d.model_dump(include=_DIMENSION_FIELDS) | {"selectable": not ds.is_pii(d.column)}
+            d.model_dump(include=_DIMENSION_FIELDS) | {"selectable": allow_identity or not ds.is_pii(d.column)}
             for d in ds.dimensions
         ],
         "measures": [m.model_dump(include=_MEASURE_FIELDS) for m in ds.measures],
@@ -36,11 +36,12 @@ def _dataset_view(ds: Dataset, joins: list[str]) -> dict:
     }
 
 
-def public_catalog(catalog: Catalog) -> dict:
+def public_catalog(catalog: Catalog, allow_identity: bool = False) -> dict:
     public = {i: d for i, d in catalog.datasets.items() if d.visibility == "public"}
     return {
         "datasets": [
-            _dataset_view(d, [j for j in joinable_datasets(d, catalog) if j in public]) for d in public.values()
+            _dataset_view(d, [j for j in joinable_datasets(d, catalog) if j in public], allow_identity)
+            for d in public.values()
         ],
         "metrics": [
             m.model_dump(mode="json", include=_METRIC_FIELDS)

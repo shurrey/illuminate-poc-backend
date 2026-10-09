@@ -56,6 +56,17 @@ export class Auth extends Construct {
       groupName: ADMIN_GROUP_NAME,
       description: 'Can edit tenant metric overlays',
     });
+    // Roles (roles.py): Authors and Developers see identity in reports; users in no group are Viewers.
+    new cognito.CfnUserPoolGroup(this, 'AuthorGroup', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: 'illuminate-authors',
+      description: 'Illuminate Authors',
+    });
+    new cognito.CfnUserPoolGroup(this, 'DeveloperGroup', {
+      userPoolId: this.userPool.userPoolId,
+      groupName: 'illuminate-developers',
+      description: 'Illuminate Developers',
+    });
 
     // Set UserPoolTier to LITE (not exposed in L2 construct)
     const cfnUserPool = this.userPool.node.defaultChild as cognito.CfnUserPool;

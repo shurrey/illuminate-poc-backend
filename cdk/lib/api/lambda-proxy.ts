@@ -111,7 +111,7 @@ export class LambdaProxy extends Construct {
           command: [
             'bash', '-c', [
               'pip install -q -t /asset-output --platform manylinux2014_x86_64 --implementation cp --python-version 3.11 --only-binary=:all: -r requirements-lambda.txt',
-              'cp lambda_handler.py chat_engine.py conversation_store.py snowflake_client.py overlay_store.py run.sh /asset-output/',
+              'cp lambda_handler.py chat_engine.py conversation_store.py snowflake_client.py overlay_store.py roles.py run.sh /asset-output/',
               // Semantic layer: the package (with its dictionary snapshot) and the canonical definitions
               'cp -r semantic_layer /asset-output/',
               'cp -r canonical /asset-output/',
