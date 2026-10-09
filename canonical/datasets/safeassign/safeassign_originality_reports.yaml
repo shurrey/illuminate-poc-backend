@@ -1,0 +1,15 @@
+id: dataset.safeassign_originality_reports.v1
+display_name: SafeAssign originality reports
+description: One row per a full SafeAssign originality report returned, with its date and time.
+grain: one row per returned report
+domain: safeassign
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_SAFEASSIGN_ORIGINALITY_REPORT.sql
+base_sql: |
+  SELECT EVENT_TIME, EVENT_TIME::DATE AS EVENT_DATE
+  FROM {{ database }}.CDM_TLM.SAFEASSIGN_EVENTS
+  WHERE EVENT_TYPE = 'ORIGINALITY_REPORT_RETURNED'
+dimensions:
+  - {name: event_date, column: EVENT_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: event_time, column: EVENT_TIME, type: time, grains: [hour, day]}
+measures:
+  - {name: reports, agg: count, expr: "*", unit: reports, synonyms: [plagiarism checks, originality checks]}
