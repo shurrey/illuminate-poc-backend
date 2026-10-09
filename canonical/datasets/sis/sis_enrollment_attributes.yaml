@@ -1,0 +1,61 @@
+id: dataset.sis_enrollment_attributes.v1
+display_name: SIS attributes of LMS enrollments
+description: >
+  One row per LMS enrollment whose person and course are mapped to the SIS: the student's program and
+  version, campus, grade level, enrollment status and dates, the class section's delivery method and
+  primary instructor, the course registration date, whether it is a retake, and the numeric grade
+  obtained. Deviation: bbd-analytics maps LMS to SIS tenants through a tenant map; this CDM holds one
+  tenant, so the SIS rows are joined directly.
+grain: one row per mapped LMS enrollment (person_course)
+domain: sis
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_SIS_PERSON_COURSE_ATTRIBUTES.sql
+base_sql: |
+  SELECT lms_pc.ID AS PERSON_COURSE_ID,
+         ANY_VALUE(lms_pc.COURSE_ID) AS COURSE_ID,
+         ANY_VALUE(lms_pc.PERSON_ID) AS PERSON_ID,
+         ANY_VALUE(sis_p.NAME) AS PROGRAM_NAME,
+         ANY_VALUE(sis_p.VERSION_NAME) AS PROGRAM_VERSION_NAME,
+         ANY_VALUE(sis_c.DELIVERY_METHOD_SOURCE_DESC) AS DELIVERY_METHOD,
+         ANY_VALUE(sis_staff.NAME) AS PRIMARY_INSTRUCTOR_NAME,
+         ANY_VALUE(sis_e.GRADE_LEVEL_SOURCE_DESC) AS GRADE_LEVEL,
+         ANY_VALUE(sis_cm.NAME) AS CAMPUS_NAME,
+         ANY_VALUE(sis_e.ENROLLMENT_DATE) AS ENROLLMENT_DATE,
+         ANY_VALUE(sis_e.ENROLLMENT_STATUS_SOURCE_DESC) AS ENROLLMENT_STATUS,
+         ANY_VALUE(sis_e.EXPECTED_GRADUATION_DATE) AS EXPECTED_GRADUATION_DATE,
+         ANY_VALUE(sis_scs.NUMERIC_GRADE_OBTAINED) AS NUMERIC_GRADE_OBTAINED,
+         MAX(sis_scs.COURSE_REGISTERED_DATE) AS COURSE_REGISTERED_DATE,
+         MAX(sis_scs.COURSE_RETAKE_IND) AS COURSE_RETAKE_IND
+  FROM {{ database }}.CDM_LMS.PERSON_COURSE lms_pc
+  JOIN {{ database }}.CDM_MAP.PERSON map_p ON map_p.LMS_PERSON_ID = lms_pc.PERSON_ID
+  JOIN {{ database }}.CDM_MAP.COURSE map_c ON map_c.LMS_COURSE_ID = lms_pc.COURSE_ID
+  LEFT JOIN {{ database }}.CDM_SIS.STUDENT sis_s ON sis_s.ID = map_p.SIS_STUDENT_ID
+  LEFT JOIN {{ database }}.CDM_SIS.CLASS_SECTION sis_c ON sis_c.ID = map_c.SIS_CLASS_SECTION_ID
+  LEFT JOIN {{ database }}.CDM_SIS.STAFF sis_staff ON sis_staff.ID = sis_c.PRIMARY_INSTRUCTOR_ID
+  LEFT JOIN {{ database }}.CDM_SIS.STUDENT_COURSE_SCHEDULE sis_scs
+    ON sis_scs.STUDENT_ID = sis_s.ID AND sis_scs.CLASS_SECTION_ID = sis_c.ID AND sis_scs.ROW_DELETED_TIME IS NULL
+  LEFT JOIN {{ database }}.CDM_SIS.ENROLLMENT sis_e ON sis_e.ID = sis_scs.ENROLLMENT_ID
+  LEFT JOIN {{ database }}.CDM_SIS.PROGRAM sis_p ON sis_p.ID = sis_e.PROGRAM_ID
+  LEFT JOIN {{ database }}.CDM_SIS.CAMPUS sis_cm ON sis_cm.ID = sis_s.CAMPUS_ID
+  GROUP BY lms_pc.ID
+entities:
+  - {name: person_course, column: PERSON_COURSE_ID, type: primary}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: program, column: PROGRAM_NAME, type: categorical, synonyms: [major, degree program]}
+  - {name: program_version, column: PROGRAM_VERSION_NAME, type: categorical}
+  - {name: delivery_method, column: DELIVERY_METHOD, type: categorical, synonyms: [modality, online or in person]}
+  - {name: primary_instructor_name, column: PRIMARY_INSTRUCTOR_NAME, type: categorical, description: "Filter only; never selectable"}
+  - {name: grade_level, column: GRADE_LEVEL, type: categorical, synonyms: [class year]}
+  - {name: campus, column: CAMPUS_NAME, type: categorical}
+  - {name: enrollment_status, column: ENROLLMENT_STATUS, type: categorical}
+  - {name: enrollment_date, column: ENROLLMENT_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: expected_graduation, column: EXPECTED_GRADUATION_DATE, type: time, grains: [month, quarter, year]}
+  - {name: course_registered, column: COURSE_REGISTERED_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: retake, column: COURSE_RETAKE_IND, type: boolean}
+measures:
+  - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
+  - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students}
+  - {name: retakes, agg: count_distinct, expr: "IFF(COURSE_RETAKE_IND, PERSON_COURSE_ID, NULL)", unit: enrollments}
+  - {name: avg_sis_grade, agg: avg, expr: NUMERIC_GRADE_OBTAINED, unit: points, description: "Average numeric grade recorded in the SIS"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID, PRIMARY_INSTRUCTOR_NAME]
