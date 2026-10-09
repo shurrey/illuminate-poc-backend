@@ -1,0 +1,49 @@
+id: dataset.collab_rooms.v1
+display_name: Collaborate rooms
+description: >
+  One row per Collaborate room: when it was created, its type and category, whether it is deleted or
+  allows guests, how many courses it is linked to, and the institution hierarchy nodes of those
+  courses as a ';'-separated list (filter with contains).
+grain: one row per Collaborate room
+domain: collaborate
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_CLB_ROOM.sql
+base_sql: |
+  WITH room_courses AS (
+      SELECT CLB_ROOM_ID AS ROOM_ID, COUNT(DISTINCT LMS_COURSE_ID) AS LINKED_COURSES
+      FROM {{ database }}.CDM_MAP.COURSE_ROOM
+      GROUP BY CLB_ROOM_ID
+  ),
+  room_ih AS (
+      SELECT cr.CLB_ROOM_ID AS ROOM_ID,
+             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+      FROM {{ database }}.CDM_MAP.COURSE_ROOM cr
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc ON ihc.COURSE_ID = cr.LMS_COURSE_ID
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+      GROUP BY cr.CLB_ROOM_ID
+  )
+  SELECT ro.ID AS ROOM_ID,
+         ro.CREATED_TIME::DATE AS CREATED_DATE,
+         NVL(ro.ROOM_TYPE_SOURCE_DESC, ro.ROOM_TYPE) AS ROOM_TYPE,
+         NVL(ro.ROOM_CATEGORY_SOURCE_DESC, ro.ROOM_CATEGORY) AS ROOM_CATEGORY,
+         NVL(ro.DELETED_IND, FALSE) AS DELETED_IND,
+         NVL(ro.ALLOW_GUEST_IND, FALSE) AS ALLOW_GUEST_IND,
+         NVL(rc.LINKED_COURSES, 0) AS LINKED_COURSES,
+         ri.IH_NODES
+  FROM {{ database }}.CDM_CLB.ROOM ro
+  LEFT JOIN room_courses rc ON rc.ROOM_ID = ro.ID
+  LEFT JOIN room_ih ri ON ri.ROOM_ID = ro.ID
+entities:
+  - {name: collab_room, column: ROOM_ID, type: primary}
+dimensions:
+  - {name: created_date, column: CREATED_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: room_type, column: ROOM_TYPE, type: categorical}
+  - {name: room_category, column: ROOM_CATEGORY, type: categorical}
+  - {name: deleted, column: DELETED_IND, type: boolean}
+  - {name: allows_guests, column: ALLOW_GUEST_IND, type: boolean}
+  - {name: linked_courses, column: LINKED_COURSES, type: numeric}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+measures:
+  - {name: rooms, agg: count_distinct, expr: ROOM_ID, unit: rooms, synonyms: [collaborate rooms]}
+  - {name: rooms_linked_to_courses, agg: count_distinct, expr: "IFF(LINKED_COURSES > 0, ROOM_ID, NULL)", unit: rooms}
+filters:
+  - {name: live, sql: "NOT DELETED_IND"}
