@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import urllib.request
 from functools import lru_cache
 from typing import Optional
@@ -33,10 +34,23 @@ def _tables() -> dict[tuple[str, str], list[dict]]:
     return tables
 
 
+_RETRY_SECONDS = 60
+_failed_at: Optional[float] = None
+
+
 def describe_table(schema: str, table: str) -> Optional[list[dict]]:
-    """Columns of SCHEMA.TABLE, or None when the dictionary has no such table or cannot be reached."""
+    """Columns of SCHEMA.TABLE, or None when the dictionary has no such table or cannot be reached.
+
+    After a failed fetch, calls return None for a minute rather than waiting on the dictionary again.
+    """
+    global _failed_at
+    if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_SECONDS:
+        return None
     try:
-        return _tables().get((schema.upper(), table.upper()))
+        tables = _tables()
     except Exception as e:
         logger.warning("Data dictionary unavailable: %s", e)
+        _failed_at = time.monotonic()
         return None
+    _failed_at = None
+    return tables.get((schema.upper(), table.upper()))

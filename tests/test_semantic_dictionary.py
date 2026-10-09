@@ -38,3 +38,18 @@ def test_unreachable_dictionary_returns_none(monkeypatch):
 
     monkeypatch.setattr(dictionary.urllib.request, "urlopen", down)
     assert dictionary.describe_table("CDM_LMS", "PERSON") is None
+
+
+def test_a_failed_dictionary_fetch_is_not_retried_immediately(monkeypatch):
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise OSError("down")
+
+    dictionary._tables.cache_clear()
+    monkeypatch.setattr(dictionary, "_failed_at", None, raising=False)
+    monkeypatch.setattr(dictionary.urllib.request, "urlopen", boom)
+    assert dictionary.describe_table("CDM_LMS", "COURSE") is None
+    assert dictionary.describe_table("CDM_LMS", "COURSE") is None
+    assert len(calls) == 1
