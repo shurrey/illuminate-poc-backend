@@ -1,0 +1,42 @@
+id: dataset.collab_sessions_by_slot.v1
+display_name: Collaborate sessions by two-hour slot
+description: >
+  One row per Collaborate session and two-hour slot it was running in (from the hour of first join to
+  the hour of last leave), with the slot's date, day of week and 12-hour label and the institution
+  hierarchy nodes of the courses linked to the session's room as a ';'-separated list, for
+  sessions-by-day-and-hour heat maps. Deviation: bbd-analytics also emits every empty slot since 1970
+  with a zero count; here only slots with sessions appear.
+grain: one row per Collaborate session x two-hour slot it spans
+domain: collaborate
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_CLB_SESSION_BY_DAY_OF_WEEK_AND_HOUR_OF_DAY.sql
+depends_on: [dataset.calendar_hour.v1]
+base_sql: |
+  WITH room_ih AS (
+      SELECT cr.CLB_ROOM_ID AS ROOM_ID,
+             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+      FROM {{ database }}.CDM_MAP.COURSE_ROOM cr
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc ON ihc.COURSE_ID = cr.LMS_COURSE_ID
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+      GROUP BY cr.CLB_ROOM_ID
+  )
+  SELECT DISTINCT s.ID AS SESSION_ID, s.ROOM_ID, h.DATE_TWO_HOURS AS SLOT_START, h.DAY_DATE AS SLOT_DATE,
+         h.SLOT_START_HOUR, h.SLOT_LABEL, DAYNAME(h.DATE_TWO_HOURS) AS DAY_NAME,
+         DAYOFWEEKISO(h.DATE_TWO_HOURS) AS DAY_NUMBER, ri.IH_NODES
+  FROM {{ database }}.CDM_CLB.SESSION s
+  JOIN {{ ref('dataset.calendar_hour.v1') }} h
+    ON h.DATE_HOUR BETWEEN DATE_TRUNC('hour', s.FIRST_JOIN_TIME) AND DATE_TRUNC('hour', s.LAST_LEAVE_TIME)
+  LEFT JOIN room_ih ri ON ri.ROOM_ID = s.ROOM_ID
+entities:
+  - {name: collab_session, column: SESSION_ID, type: foreign}
+  - {name: collab_room, column: ROOM_ID, type: foreign}
+dimensions:
+  - {name: slot_start, column: SLOT_START, type: time, grains: [hour, day, week, month, quarter, year]}
+  - {name: slot_date, column: SLOT_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: slot_start_hour, column: SLOT_START_HOUR, type: numeric, description: "0, 2, ... 22; sort slots by this"}
+  - {name: slot_label, column: SLOT_LABEL, type: categorical, description: "'12 AM', '02 AM', ... '10 PM'", synonyms: [time of day]}
+  - {name: day_of_week, column: DAY_NAME, type: categorical, synonyms: [weekday]}
+  - {name: day_of_week_number, column: DAY_NUMBER, type: numeric, description: "1 Monday to 7 Sunday; sort days by this"}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+measures:
+  - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions, description: "Sessions running in the slot; a session spanning slots counts in each"}
+  - {name: rooms, agg: count_distinct, expr: ROOM_ID, unit: rooms}
