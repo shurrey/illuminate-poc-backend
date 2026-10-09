@@ -1,0 +1,64 @@
+id: dataset.student_course_minutes.v1
+display_name: Student time in course content
+description: >
+  Per active student enrollment, time and interactions in course content (item types that count
+  towards time in content in CDM_META.BBD_CALCULATION_DETAIL) inside the course window, in total
+  and per course week, with items used, the last course access in the window and whether the
+  enrollment is active. Deviations: bbd-analytics divides interactions by course weeks once per
+  item type, shrinking the weekly figure, and repeats each enrollment per institutional hierarchy
+  node, which inflates sums across nodes; here weekly figures divide once and rows are per enrollment.
+grain: one row per active student enrollment with content activity
+domain: tools
+source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__HLP_STUDENT_COURSE_MINUTES_PER_CONTENT_ITEMS.sql
+depends_on: [dataset.active_students.v1, dataset.student_item_tool_activity.v1, dataset.item_tool_map.v1]
+base_sql: |
+  WITH content_use AS (
+      SELECT s.PERSON_COURSE_ID,
+             SUM(s.MINUTES) AS MINUTES,
+             SUM(s.USED) AS ITEMS_USED,
+             SUM(s.INTERACTION_CNT) AS INTERACTION_CNT
+      FROM {{ ref('dataset.student_item_tool_activity.v1') }} s
+      JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = s.TYPE AND m.CONTENT_TIME_IND = 1
+      WHERE s.ITEM_OR_TOOL = 'ITEM'
+      GROUP BY s.PERSON_COURSE_ID
+  ),
+  last_access AS (
+      SELECT ac.PERSON_COURSE_ID, MAX(ca.FIRST_ACCESSED_TIME) AS LAST_ACCESS_TIME
+      FROM {{ ref('dataset.active_students.v1') }} ac
+      JOIN {{ database }}.CDM_LMS.COURSE_ACTIVITY ca
+        ON ca.PERSON_COURSE_ID = ac.PERSON_COURSE_ID
+       AND ca.FIRST_ACCESSED_TIME BETWEEN ac.START_WEEK AND ac.END_WEEK + 7
+      GROUP BY ac.PERSON_COURSE_ID
+  )
+  SELECT ac.PERSON_COURSE_ID, ac.PERSON_ID, ac.COURSE_ID, ac.COURSE_WEEKS, ac.ACTIVE,
+         cu.MINUTES,
+         CEIL(cu.MINUTES / IFF(ac.COURSE_WEEKS > 0, ac.COURSE_WEEKS, 1)) AS MINUTES_PER_WEEK,
+         cu.ITEMS_USED,
+         cu.INTERACTION_CNT,
+         cu.INTERACTION_CNT / IFF(ac.COURSE_WEEKS > 0, ac.COURSE_WEEKS, 1) AS INTERACTIONS_PER_WEEK,
+         la.LAST_ACCESS_TIME
+  FROM {{ ref('dataset.active_students.v1') }} ac
+  JOIN content_use cu ON cu.PERSON_COURSE_ID = ac.PERSON_COURSE_ID
+  LEFT JOIN last_access la ON la.PERSON_COURSE_ID = ac.PERSON_COURSE_ID
+entities:
+  - {name: person_course, column: PERSON_COURSE_ID, type: primary}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: active, column: ACTIVE, type: numeric, description: "1 when the enrollment is available, enabled and not deleted"}
+  - {name: course_weeks, column: COURSE_WEEKS, type: numeric}
+  - {name: minutes_per_week_value, column: MINUTES_PER_WEEK, type: numeric, description: "The enrollment's content minutes per course week, rounded up"}
+  - {name: last_access, column: LAST_ACCESS_TIME, type: time, grains: [day, week, month]}
+measures:
+  - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students}
+  - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
+  - {name: content_minutes, agg: sum, expr: MINUTES, unit: minutes, synonyms: [time in content]}
+  - {name: avg_content_minutes, agg: avg, expr: MINUTES, unit: minutes}
+  - {name: avg_minutes_per_week, agg: avg, expr: MINUTES_PER_WEEK, unit: minutes, synonyms: [weekly time in content]}
+  - {name: median_minutes_per_week, agg: median, expr: MINUTES_PER_WEEK, unit: minutes}
+  - {name: items_used, agg: sum, expr: ITEMS_USED, unit: items}
+  - {name: interactions, agg: sum, expr: INTERACTION_CNT, unit: interactions}
+  - {name: avg_interactions_per_week, agg: avg, expr: INTERACTIONS_PER_WEEK, unit: interactions}
+filters:
+  - {name: active_only, sql: "ACTIVE = 1"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]
