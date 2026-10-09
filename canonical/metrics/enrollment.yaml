@@ -22,21 +22,21 @@ metrics:
     example_questions: ["How many students used their courses?"]
   - id: metric.student_enrollments.v1
     display_name: Student enrollments
-    description: Student enrollments in reportable courses, summed over courses; break down by term or course.
+    description: Student enrollments in reportable courses, summed over courses (enrollments, not distinct people); break down by term or course.
     owner: Blackboard
     authority: vendor-canonical
     last_reviewed: 2026-10-08
     measure: dataset.course_role_activity.v1:enrolled_people
     default_filters: [students]
-    synonyms: [enrollment count, enrollments, students enrolled]
+    synonyms: [enrollments, student enrollments, course enrollments]
     example_questions: ["How many student enrollments are there by term?", "Enrollments per course"]
   - id: metric.instructor_enrollments.v1
     display_name: Instructor enrollments
-    description: Instructor enrollments in reportable courses, summed over courses.
+    description: Instructor enrollments in reportable courses, summed over courses (enrollments, not distinct people).
     owner: Blackboard
     authority: vendor-canonical
     last_reviewed: 2026-10-08
     measure: dataset.course_role_activity.v1:enrolled_people
     default_filters: [instructors]
-    synonyms: [instructor count, how many instructors, teaching staff]
-    example_questions: ["How many instructors are teaching this term?"]
+    synonyms: [instructor enrollments, teaching assignments]
+    example_questions: ["How many instructor enrollments are there by term?"]

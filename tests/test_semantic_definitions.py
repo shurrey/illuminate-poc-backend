@@ -60,3 +60,32 @@ def test_every_dataset_reads_only_cdm_tables_and_its_own_ctes(ds_id):
     ctes = build_ctes(CATALOG, [ds_id], "DB")
     sql = "WITH " + ",\n".join(f"{n} AS (\n{s}\n)" for n, s in ctes.items()) + f"\nSELECT * FROM {list(ctes)[-1]}"
     _check_tables(sql, "DB")
+
+
+def test_activity_log_reads_ultra_clicks_in_either_case_once_each():
+    sql = CATALOG.datasets["dataset.activity_log.v1"].base_sql
+    assert "UPPER(ue.EVENT_TYPE) = 'CLICK'" in sql
+    assert "PARTITION BY ue.DATA:eventId" in sql
+    assert "ipAddress" not in sql and "userAgent" not in sql
+
+
+def test_assignment_submissions_ignore_deleted_grades():
+    assert "gr.ROW_DELETED_TIME IS NULL" in CATALOG.datasets["dataset.student_assignments.v1"].base_sql
+
+
+@pytest.mark.parametrize("metric_id", ["metric.student_enrollments.v1", "metric.instructor_enrollments.v1"])
+def test_enrollment_metrics_do_not_claim_to_count_people(metric_id):
+    m = CATALOG.metrics[metric_id]
+    assert not any("how many" in s or "count" in s for s in m.synonyms)
+    assert "not distinct people" in m.description
+
+
+def test_sis_students_measure_counts_students_and_instructor_names_are_gone():
+    ds = CATALOG.datasets["dataset.sis_enrollment_attributes.v1"]
+    assert "STUDENT_IND" in ds.measure("students").expr
+    assert ds.dimension("primary_instructor_name") is None and "STAFF" not in ds.base_sql
+
+
+def test_the_grade_distribution_counts_enrollments():
+    m = CATALOG.metrics["metric.graded_enrollments.v1"]
+    assert m.measure == "dataset.student_grade.v1:graded_enrollments"
