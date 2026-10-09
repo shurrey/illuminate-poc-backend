@@ -1,0 +1,37 @@
+id: report.sample.v1
+title: Sample report
+area: leading
+description: A fixture exercising filters, a KPI, a line and a text visual.
+filters:
+  - {id: term, label: Term, control: multi_select, dimension: "dataset.courses.v1:term_name", default: current_term}
+  - {id: dates, label: Date range, control: date_range, time_dimension: "dataset.courses.v1:course_start", default: last_30_days}
+  - {id: node, label: Institutional hierarchy, control: select, dimension: "dataset.course_filters_ih.v1:ih_level_1"}
+pages:
+  - title: Overview
+    visuals:
+      - id: students
+        type: kpi
+        title: Students
+        queries:
+          current: {measures: ["dataset.course_student_activity.v1:students"]}
+        encode: {value: students}
+      - id: sessions_by_day
+        type: line
+        title: Sessions by day
+        queries:
+          main: {measures: ["dataset.lms_sessions.v1:sessions"], dimensions: [session_date__day], time_dimension: session_date}
+        encode: {x: session_date__day, y: sessions}
+      - id: about
+        type: text
+        title: About this report
+        text: How to read this report.
+      - id: roster
+        type: table
+        title: Students
+        queries:
+          main: {measures: ["dataset.course_student_activity.v1:students"], dimensions: [person_email]}
+      - id: roster_by_term
+        type: table
+        title: Students by term
+        queries:
+          main: {measures: ["dataset.course_student_activity.v1:students"], dimensions: [person_email, term_name], order_by: [{field: person_email, direction: asc}]}
