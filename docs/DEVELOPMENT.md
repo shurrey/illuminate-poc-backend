@@ -1,460 +1,182 @@
-# Illuminate POC Backend - Developer Guide
+# Development Guide
 
-## Table of Contents
+## Setup
 
-- [Architecture Overview](#architecture-overview)
-- [Project Structure](#project-structure)
-- [Environment Setup](#environment-setup)
-- [Agent Development](#agent-development)
-  - [How Agents Work](#how-agents-work)
-  - [Modifying an Existing Agent](#modifying-an-existing-agent)
-  - [Adding a New Agent](#adding-a-new-agent)
-  - [Critical Constraint: Self-Contained Code](#critical-constraint-self-contained-code)
-  - [Agent Communication Pattern](#agent-communication-pattern)
-- [Lambda Proxy](#lambda-proxy)
-- [Infrastructure](#infrastructure)
-  - [CDK Stacks](#cdk-stacks)
-  - [Request Flow](#request-flow)
-- [Important Patterns and Gotchas](#important-patterns-and-gotchas)
-- [Troubleshooting](#troubleshooting)
-
----
-
-## Architecture Overview
-
-Illuminate POC Backend is a multi-agent conversational intelligence system that lets users query
-Snowflake data using natural language. The system is composed of:
-
-1. **Lambda Proxy** - Thin FastAPI handler running via Lambda Web Adapter (LWA) that
-   validates Cognito JWTs and forwards requests to the orchestrator with real SSE streaming
-2. **Orchestrator Agent** - Coordinates specialist agents to fulfill user queries
-3. **Specialist Agents** - SQL, Analyst, Writer, and Validator, each running as
-   independent Bedrock AgentCore container runtimes using the A2A (Agent-to-Agent) protocol
-
-All agent code runs in AWS Bedrock AgentCore as Docker containers (ARM64). There is no
-local development server for the backend -- both dev and prod environments are AWS-hosted.
-
-```
-API Client -> Lambda Function URL -> Lambda Proxy (LWA) -> Orchestrator AgentCore
-                                                                |
-                                                +---------------+----------------+
-                                                |        |       |               |
-                                              SQL    Analyst   Writer        Validator
-                                           (AgentCore container runtimes, A2A protocol)
-```
-
-## Project Structure
-
-```
-/
-├── agents/
-│   ├── Dockerfile              # Shared Dockerfile (uv + Python 3.13, ARM64)
-│   ├── orchestrator/           # Coordinates specialist agents
-│   │   ├── a2a_server.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile -> ../Dockerfile
-│   ├── sql/                    # Generates and executes Snowflake SQL
-│   │   ├── a2a_server.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile -> ../Dockerfile
-│   ├── analyst/                # Data analysis and interpretation
-│   │   ├── a2a_server.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile -> ../Dockerfile
-│   ├── writer/                 # Narrative report generation
-│   │   ├── a2a_server.py
-│   │   ├── requirements.txt
-│   │   └── Dockerfile -> ../Dockerfile
-│   └── validator/              # Result validation and quality checks
-│       ├── a2a_server.py
-│       ├── requirements.txt
-│       └── Dockerfile -> ../Dockerfile
-├── cdk/                        # AWS CDK infrastructure (TypeScript)
-│   ├── bin/illuminate.ts       # App entry point -- 3 stacks, reads .env
-│   ├── lib/
-│   │   ├── base/               # VPC, Cognito, S3, Secrets, WAF, SSM
-│   │   ├── agentcore/          # IAM, Memory (STM), 5x container runtimes
-│   │   └── api/                # Lambda + LWA + Function URL
-│   └── package.json
-├── lambda_handler.py            # API proxy Lambda (FastAPI + LWA)
-├── run.sh                       # LWA startup script (uvicorn on port 8080)
-├── requirements-lambda.txt      # Lambda Python dependencies
-└── docs/
-    └── DEVELOPMENT.md           # This file
-```
-
-## Environment Setup
-
-### Prerequisites
-
-- Python 3.11+
-- Node.js 20+
-- Docker (for building agent container images)
-- AWS CLI configured with credentials for account 856599266077
-- AWS CDK CLI (`npm install -g aws-cdk`)
-- Access to the `illuminate-agent-role-dev` IAM role
-
-### Python Environment
+Prerequisites: Python 3.11 (the Lambda runtime), plus Node.js and Docker if you will deploy (see
+[DEPLOYMENT.md](DEPLOYMENT.md)).
 
 ```bash
-# From the project root
+python3 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements-lambda.txt -r requirements-dev.txt
 ```
 
-The project uses a `.venv` directory.
+`requirements-lambda.txt` is what the Lambda bundle installs. It omits `boto3`, which the Lambda
+runtime provides; locally `moto` (in `requirements-dev.txt`) pulls it in.
 
-## Agent Development
+`sqlglot` is pinned to an exact version. The compiler and the execution guard walk its parse tree,
+whose shape changes between releases, so upgrade it only together with a full test run;
+`tests/test_dependency_pins.py` fails if the installed version differs from the pin.
 
-### How Agents Work
+## Tests
 
-Each agent is a self-contained Python application that:
+```bash
+python -m pytest                                   # everything (pytest.ini: testpaths = tests, -q)
+python -m pytest tests/test_semantic_definitions.py  # validate and compile every canonical definition
+python -m pytest -k overlay                        # a subset by name
+```
 
-1. Defines `@tool`-decorated functions as capabilities
-2. Creates a **Strands Agent** with a system prompt and tools
-3. Builds an ASGI app via `build_a2a_app(agent)` from `strands_a2a.a2a`
-4. Listens on **port 8080** (container convention)
-5. Is deployed to **Bedrock AgentCore** as a Docker container runtime
+Tests do not call Bedrock, Snowflake or AWS. DynamoDB is provided by `moto` (`mock_aws`); Bedrock is
+replaced by scripted `converse` stubs; Snowflake execution and token validation are monkeypatched;
+the data dictionary is read from the snapshot in `semantic_layer/data/`. Tests that import
+`chat_engine` set `SNOWFLAKE_DATABASE` so it does not look the database up in Secrets Manager.
 
-The orchestrator agent is special: it uses `@tool`-decorated functions that
-internally call other agents via `boto3.client("bedrock-agent-runtime").invoke_agent_runtime()`.
-This is how agent-to-agent communication works -- through SigV4-authenticated
-AWS SDK calls, not direct network connections.
+`cdk/test/check_template.py` asserts properties of the synthesized CloudFormation templates; see its
+docstring for the `cdk synth` command to run first.
 
-### Modifying an Existing Agent
+## Running locally
 
-1. Edit the agent's `a2a_server.py` file:
-   ```bash
-   # Example: modify the SQL agent
-   vim agents/sql/a2a_server.py
-   ```
+The API is a plain FastAPI app:
 
-2. Deploy the updated agent via CDK:
-   ```bash
-   cd cdk
-   npx cdk deploy IlluminateAgentCore-dev
-   ```
+```bash
+python lambda_handler.py          # uvicorn on 0.0.0.0:$PORT (default 8080)
+```
 
-   CDK will detect which Docker images changed and only rebuild those.
+`/docs` is available locally because `API_DOCS` defaults to `on`. The Python app does not read
+`.env`; set its variables in the shell. To use real AWS resources from a deployed `dev`
+environment, export AWS credentials and:
 
-### Adding a New Agent
+| Variable | Value |
+|----------|-------|
+| `USER_POOL_ID`, `USER_POOL_CLIENT_ID` | From SSM `/illuminate/dev/cognito-pool-id` and `/illuminate/dev/cognito-client-id`; needed to validate tokens |
+| `OVERLAY_TABLE` | `illuminate-overlays-dev`; unset, overlay reads fail and queries fall back to the canonical catalog |
+| `CONVERSATION_TABLE` | Defaults to `illuminate-conversations-dev` |
+| `SNOWFLAKE_SECRET_NAME` | Defaults to `illuminate/dev/snowflake` |
+| `SNOWFLAKE_DATABASE` | Optional; otherwise the `database` field of the Snowflake secret |
+| `ALLOWED_ORIGINS` | Defaults to `http://localhost:3000,http://localhost:5173` |
 
-1. Create the agent directory:
-   ```bash
-   mkdir agents/myagent
-   ```
+See [DEPLOYMENT.md](DEPLOYMENT.md#environment-variables) for the full list. Every route except
+`/health` needs a Cognito ID token from that user pool.
 
-2. Create a Dockerfile symlink:
-   ```bash
-   cd agents/myagent
-   ln -s ../Dockerfile Dockerfile
-   ```
-
-3. Write `agents/myagent/a2a_server.py` following this pattern:
-
-   ```python
-   """
-   MyAgent - Self-contained A2A server for AgentCore deployment.
-   Zero `from agents.*` imports.
-   """
-   import os
-   import sys
-
-   def log(msg):
-       print(msg, file=sys.stderr, flush=True)
-
-   try:
-       log("Initializing MyAgent ...")
-       from strands import Agent, tool
-       from strands.models.bedrock import BedrockModel
-       from strands_a2a.a2a import build_a2a_app
-
-       @tool
-       def my_capability(input_text: str) -> str:
-           """Description of what this tool does."""
-           # Implementation here
-           return "result"
-
-       model = BedrockModel(
-           model_id=os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6"),
-           region_name=os.environ.get("AWS_REGION", "us-east-1"),
-       )
-
-       agent = Agent(
-           model=model,
-           tools=[my_capability],
-           system_prompt="You are a specialist agent that ...",
-       )
-
-       app = build_a2a_app(agent)
-       log("MyAgent initialized successfully")
-
-   except Exception as e:
-       log(f"STARTUP ERROR: {e}")
-       from starlette.applications import Starlette
-       from starlette.responses import JSONResponse
-       from starlette.routing import Route
-
-       async def error_health(request):
-           return JSONResponse({"status": "error", "error": str(e)})
-
-       app = Starlette(routes=[Route("/health", error_health)])
-
-   if __name__ == "__main__":
-       import uvicorn
-       uvicorn.run(app, host="0.0.0.0", port=8080)
-   ```
-
-4. Write `agents/myagent/requirements.txt`:
-   ```
-   strands-agents[a2a]
-   strands-agents-tools
-   bedrock-agentcore
-   fastapi>=0.115.0
-   uvicorn>=0.32.0
-   pydantic>=2.0.0
-   boto3>=1.34.0
-   ```
-
-5. Add the agent to the CDK AgentCore stack in `cdk/lib/agentcore/`. This
-   involves adding a new `DockerImageAsset` and `CfnRuntime` resource.
-
-6. Deploy:
-   ```bash
-   cd cdk
-   npx cdk deploy IlluminateAgentCore-dev
-   ```
-
-7. Register the new agent in the orchestrator by adding a tool function to
-   `agents/orchestrator/a2a_server.py`:
-
-   ```python
-   @tool
-   def call_myagent(request: str) -> str:
-       """Call the MyAgent specialist for ..."""
-       return invoke_specialist(
-           agentcore_client,
-           os.environ["MYAGENT_RUNTIME_ARN"],
-           request,
-       )
-   ```
-
-   Add the new tool to the orchestrator's `tools` list and add the runtime ARN
-   as an environment variable in the CDK AgentCore stack.
-
-### Critical Constraint: Self-Contained Code
-
-**Every `a2a_server.py` must be completely self-contained with zero cross-agent
-imports.** This means:
-
-- No `from agents.shared import ...`
-- No `from agents.sql import ...`
-- No relative imports referencing other agent directories
-
-Each agent is built into its own Docker container. There is no shared
-filesystem between agents.
-
-If you need shared utility code, copy it directly into each agent's
-`a2a_server.py` file.
-
-### Agent Communication Pattern
-
-The orchestrator communicates with specialist agents through the
-`invoke_specialist()` function, which:
-
-1. Constructs a JSON-RPC 2.0 payload following the A2A protocol
-2. Calls `boto3.client("bedrock-agent-runtime").invoke_agent_runtime()`
-3. Parses the A2A response, extracting text from artifacts, message parts, or history
+To compile a contract without any AWS access, use the semantic layer directly:
 
 ```python
-# Simplified view of the invoke pattern
-payload = {
-    "jsonrpc": "2.0",
-    "method": "message/send",
-    "params": {
-        "message": {
-            "messageId": str(uuid.uuid4()),
-            "role": "user",
-            "parts": [{"kind": "text", "text": message}],
-        }
-    },
-    "id": str(uuid.uuid4()),
-}
+from semantic_layer.catalog import default_catalog
+from semantic_layer.compiler import compile_query
+from semantic_layer.contract import QueryContract
 
-response = client.invoke_agent_runtime(
-    agentRuntimeArn=runtime_arn,
-    contentType="application/json",
-    accept="application/json",
-    payload=json.dumps(payload).encode(),
-)
+print(compile_query(QueryContract(metrics=["metric.ongoing_courses.v1"], dimensions=["term_name"]),
+                    default_catalog(), "MY_DB").sql)
 ```
 
-Agent runtime ARNs are configured via environment variables set in the CDK
-AgentCore stack and passed to each container runtime.
+## Code layout
 
-## Lambda Proxy
+| Path | Contents |
+|------|----------|
+| `lambda_handler.py` | Routes, auth, tenant catalog cache, overlay admin endpoints |
+| `chat_engine.py` | Bedrock Converse loop |
+| `snowflake_client.py` | Connection, `validate_and_execute` (guard), `query_sql`, `query_preview` |
+| `overlay_store.py`, `conversation_store.py` | DynamoDB access |
+| `semantic_layer/schema.py` | Pydantic models for datasets, metrics and the catalog |
+| `semantic_layer/contract.py` | `QueryContract`, `CompiledQuery`, `Provenance` |
+| `semantic_layer/catalog.py` | Loads `canonical/` (`default_catalog()` is cached per process) |
+| `semantic_layer/render.py` | Restricted `base_sql` template rendering |
+| `semantic_layer/compiler.py` | Contract -> SQL |
+| `semantic_layer/validate.py` | Offline validation against the CDM dictionary snapshot |
+| `semantic_layer/overlays.py` | Overlay model, expression checks, apply and validate |
+| `semantic_layer/catalog_view.py` | The public catalog view (no SQL, no column names) |
+| `semantic_layer/search.py` | `search_catalog` ranking |
+| `semantic_layer/chat_tools.py` | Tool specs and handlers for the chat model |
+| `semantic_layer/prompt.py` | Chat system prompt |
+| `semantic_layer/pii.py` | Well-known PII column names and counting-aggregate check |
+| `semantic_layer/dictionary.py` | Live data dictionary lookups for `describe_cdm_table` |
+| `semantic_layer/data/` | CDM dictionary snapshot, supplement and PII column list |
+| `scripts/build_dictionary_snapshot.py` | Rebuilds `cdm_dictionary.json` and `cdm_pii_columns.json` |
+| `scripts/set-snowflake-secret.sh` | Writes the `SNOWFLAKE_*` values from `.env` to the Snowflake secret |
 
-The Lambda proxy (`lambda_handler.py`) is a FastAPI application running via
-**Lambda Web Adapter (LWA)** for real SSE streaming. It:
+## Adding a dataset
 
-1. Accepts requests at the Lambda Function URL
-2. Validates Cognito JWT tokens from the `Authorization` header
-3. Forwards the user message to the orchestrator agent via
-   `boto3.client("bedrock-agent-runtime").invoke_agent_runtime()` with
-   `RESPONSE_STREAM` for real-time streaming
-4. Detects `[TOOL_STATUS:name]` markers in the stream and sends them as status SSE events
-5. Extracts `[CHART_CONFIG]` markers from the response text and converts them
-   to chart artifact objects
-6. Extracts `[SQL_QUERY]` markers from the response text and converts them
-   to SQL artifact objects
-7. Returns the response as real-time SSE (streaming) or JSON (non-streaming)
+1. Create `canonical/datasets/<domain>/<name>.yaml`. Every `*.yaml` under `canonical/datasets/` is
+   loaded. A minimal shape:
 
-LWA works by:
-- `run.sh` starts uvicorn on port 8080
-- LWA's `/opt/bootstrap` proxies Lambda invocations to the uvicorn process
-- The Function URL is configured with `InvokeMode: RESPONSE_STREAM`
+   ```yaml
+   id: dataset.my_dataset.v1
+   display_name: My dataset
+   description: What one row is and what it covers.
+   grain: one row per course
+   domain: course
+   source: where the logic comes from
+   base_sql: |
+     SELECT c.ID AS COURSE_ID, c.NAME AS COURSE_NAME
+     FROM {{ database }}.CDM_LMS.COURSE c
+   entities:
+     - {name: course, column: COURSE_ID, type: foreign}
+   dimensions:
+     - {name: course_name, column: COURSE_NAME, type: categorical}
+   measures:
+     - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+   ```
 
-The Lambda Function URL uses `AuthType: NONE` (auth is handled at the application
-level via Cognito JWTs). This requires two Lambda permissions:
-- `InvokeFunctionUrl`
-- `InvokeFunction` with `InvokedViaFunctionUrl: true`
+   Rules the loader and validator enforce:
+   - `base_sql` may use only `{{ database }}` and `{{ ref('<dataset id>') }}`; each `ref()` target
+     must be in `depends_on`. Tables must be `{{ database }}.CDM_*.<table>`.
+   - Dimension, measure and filter names are lowercase `snake_case` and unique within the dataset.
+   - Time dimensions list their `grains`; ratio measures name a `numerator` and `denominator` from
+     the same dataset.
+   - Every output traced to a PII-flagged source column must be in `pii_columns`, or in
+     `pii_exempt` with a reason. Measures over PII columns must be `count` or `count_distinct`.
+   - Set `complete: true` only if every instance of the primary entity has a row; only complete
+     datasets lend their dimensions to other datasets.
+   - Set `visibility: internal` for helper datasets that should only be `ref()`'d.
+   - Set `required_time_range: <time dimension>` when queries must be bounded by date.
+2. If `base_sql` reads a table or column missing from the snapshot, regenerate the snapshot
+   (`python scripts/build_dictionary_snapshot.py <catalog.json> <definitions.json>`, see its
+   docstring) or, for tables the dictionary export omits, add them to
+   `semantic_layer/data/cdm_dictionary_supplement.json`.
+3. Run `python -m pytest tests/test_semantic_definitions.py`. It validates the dataset, compiles
+   every measure and dimension, and checks the SQL reads only CDM tables and its own CTEs.
 
-## Infrastructure
+## Adding a metric
 
-### CDK Stacks
+Append to the `metrics:` list in a file in `canonical/metrics/` (one file per domain):
 
-The infrastructure is managed by AWS CDK (TypeScript) organized into three stacks:
-
-| Stack | Directory | Purpose |
-|-------|-----------|---------|
-| `IlluminateBase-dev` | `cdk/lib/base/` | VPC, Cognito (LITE), S3, Secrets Manager, REGIONAL WAF, SSM parameters |
-| `IlluminateAgentCore-dev` | `cdk/lib/agentcore/` | IAM role, Memory (STM), 5x Docker container runtimes (ECR) |
-| `IlluminateAPI-dev` | `cdk/lib/api/` | Lambda + LWA + Function URL (`RESPONSE_STREAM`) |
-
-Deploy all stacks:
-```bash
-cd cdk && npx cdk deploy --all
+```yaml
+metrics:
+  - id: metric.my_metric.v1
+    display_name: My metric
+    description: What it counts, in one sentence.
+    owner: Blackboard
+    authority: vendor-canonical
+    last_reviewed: 2026-10-08
+    measure: dataset.my_dataset.v1:courses
+    default_filters: [some_filter]      # filter names on that dataset
+    synonyms: [phrases users say]
+    example_questions: ["How many ...?"]
 ```
 
-The CDK app reads `.env` automatically -- no context flags needed.
+The measure's dataset must be public. The metric's output column is its short name (`my_metric`).
+`synonyms` and `example_questions` feed `search_catalog`, and the metric is listed in the chat
+system prompt. Run `python -m pytest tests/test_semantic_definitions.py`; it also checks that no
+synonym names two different concepts.
 
-### Request Flow
+## Adding an overlay
 
-```
-API Client
-  |
-  v
-Lambda Function URL ---> Lambda Proxy (LWA)
-                          |
-                          v
-                Orchestrator AgentCore
-                (Docker container)
-                          |
-           +---------+----+----+---------+
-           |         |         |         |
-          SQL    Analyst    Writer   Validator
-       (AgentCore container runtimes, A2A)
-           |
-           v
-        Snowflake
-```
-
-### Key AWS Resources
-
-- **Account**: 856599266077
-- **Region**: us-east-1
-- **IAM Role**: `illuminate-agent-role-dev`
-- **Cognito User Pool**: `illuminate-users-dev`
-- **Secrets Manager**: `illuminate/dev/snowflake` (Snowflake credentials)
-
-## Important Patterns and Gotchas
-
-### Agent Code Must Be Self-Contained
-
-As described above, each agent is built into its own Docker container. No
-cross-directory imports will work. Copy any shared code directly into each
-agent's `a2a_server.py`.
-
-### Chart and SQL Markers Instead of Tool Calls
-
-Visualization data and SQL queries pass through the system as text markers
-(`[CHART_CONFIG]...[/CHART_CONFIG]` and `[SQL_QUERY]...[/SQL_QUERY]`) rather
-than structured tool call results. The Lambda proxy is responsible for
-extracting and parsing these into artifacts.
-
-### No Local Development Server
-
-There is no local backend. Both development and production use AWS-hosted
-infrastructure. To test changes:
-- **Agent changes**: Deploy with `npx cdk deploy IlluminateAgentCore-dev`
-- **Lambda changes**: Deploy with `npx cdk deploy IlluminateAPI-dev`
-
-### Docker Required for Agent Deployment
-
-CDK builds ARM64 Docker images locally via `DockerImageAsset`. Docker must be
-running before deploying the AgentCore stack. On Apple Silicon Macs, ARM64
-builds work natively. On x86 machines, QEMU emulation is required.
-
-### AgentCore Error Codes
-
-Common error codes when deploying or invoking agents:
-- **424**: Container never starts (check dependencies, entry point)
-- **502**: Application not responding (check port binding to 8080, health endpoint)
-- **"init time exceeded"**: Slow initialization (reduce import time, defer heavy imports)
-
-### Cognito Authentication
-
-API clients authenticate via Amazon Cognito. JWT tokens are attached to API
-requests via the `Authorization: Bearer <token>` header. The Lambda validates
-the token on every request using the Cognito JWKS endpoint.
-
-### Environment Variables
-
-Agent environment variables (including other agents' runtime ARNs) are set in
-the CDK AgentCore stack and passed as environment variables to each container
-runtime.
-
-## Troubleshooting
-
-### Agent deployment fails
+Overlays are per-tenant data, not files. Create one with the admin API as a member of
+`illuminate-admins` whose ID token carries `custom:tenant_id`:
 
 ```bash
-# Check CDK diff to see what changed
-cd cdk && npx cdk diff IlluminateAgentCore-dev
-
-# Check CloudWatch logs for the agent
-aws logs tail /aws/bedrock-agentcore/illuminate_<agent>_dev --follow
+curl -X PUT "$API_URL/api/v1/admin/overlay/measure:dataset.student_grade.v1:average_grade_percentage" \
+  -H "Authorization: Bearer $ID_TOKEN" -H "Content-Type: application/json" \
+  -d '{"expr": "ROUND(GRADE_PERCENTAGE, 0)", "description": "Whole-number grades", "expected_version": 0}'
 ```
 
-### Agent returns 424 on invoke
+See [API.md](API.md#admin-tenant-overlays) for targets, versioning, history and revert. In tests,
+`tests/test_overlay_routes.py` shows the pattern: a moto DynamoDB table patched into
+`overlay_store._table`, and `_get_user_from_token` patched to return an admin user.
 
-The container failed to start. Common causes:
-- Missing dependency in `requirements.txt`
-- Import error in `a2a_server.py` (check for cross-agent imports)
-- Dockerfile issue (check the shared `agents/Dockerfile`)
+## Changing the chat tools
 
-### Agent returns 502 on invoke
-
-The container started but the app is not responding. Common causes:
-- App not binding to port 8080
-- Crash after startup (check CloudWatch logs)
-- Missing environment variables
-
-### API calls fail
-
-- Verify the Lambda Function URL is accessible (check SSM parameter `/illuminate/dev/api-url`)
-- Check that the Cognito token is valid and not expired
-- Verify the Lambda Function URL permissions (both `InvokeFunctionUrl` and
-  `InvokeFunction` with `InvokedViaFunctionUrl: true` are required)
-
-### Charts not rendering in API response
-
-- Check that the agent response contains valid `[CHART_CONFIG]...[/CHART_CONFIG]`
-  markers
-- Verify the JSON inside the markers is valid and matches the `ChartConfig` schema
-- Check Lambda logs for extraction errors
-
-### SQL artifacts not appearing in API response
-
-- Check that the SQL agent response contains `[SQL_QUERY]...[/SQL_QUERY]` markers
-- Verify the Lambda proxy's regex is extracting them correctly
-- Check Lambda logs for parsing errors
+Tool specs and handlers are in `semantic_layer/chat_tools.py` (`SPECS` and `ChatTools._tool_<name>`);
+status messages shown while a tool runs are `_STATUS` in `chat_engine.py`; the rules the model
+follows are `_RULES` in `semantic_layer/prompt.py`. `tests/test_chat_tools.py` and
+`tests/test_chat_engine.py` cover them with stubbed execution and a scripted Bedrock client.
