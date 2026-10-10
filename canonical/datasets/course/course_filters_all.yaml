@@ -1,11 +1,14 @@
 id: dataset.course_filters_all.v1
 display_name: All courses by hierarchy level
 description: >
-  Every top-level course, including courses that have not started and courses with no
-  enrollments, with hierarchy levels 1-4 and the roles enrolled (preview and bbsupport test
-  users excluded). start_date and end_date are the Monday one week before the course or term
-  start/end week, as in bbd-analytics. Deviation: bbd-analytics drops courses with no
-  enrollments despite its "all courses" intent; they are kept here with a null course_role.
+  Every top-level course, including courses that have not started and courses with no enrollments,
+  with hierarchy levels 1-4 and the roles enrolled (preview and bbsupport test users excluded).
+  start_date and end_date are the Monday one week before the course or term start/end week. Courses
+  with no enrollments have a null course_role.
+notes: >
+  start_date and end_date are the Monday one week before the course or term start/end week, as in
+  bbd-analytics. Deviation: bbd-analytics drops courses with no enrollments despite its "all
+  courses" intent; they are kept here with a null course_role.
 grain: one row per course x institutional hierarchy node x course role
 domain: course
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_FILTERS_ALL_COURSES.sql

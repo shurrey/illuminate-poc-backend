@@ -2,9 +2,11 @@ id: dataset.lms_sessions_by_slot.v1
 display_name: LMS sessions by two-hour slot
 description: >
   One row per LMS session and two-hour slot it was active in (from its first access to its last,
-  capped at one day), with the slot's date, day of week and 12-hour label, for sessions-by-day-and-hour
-  heat maps. Deviation: bbd-analytics also emits every empty slot since 1970 with a zero count; here
-  only slots with sessions appear.
+  capped at one day), with the slot's date, day of week and 12-hour label, for
+  sessions-by-day-and-hour heat maps. Only slots with sessions appear.
+notes: >
+  Deviation: bbd-analytics also emits every empty slot since 1970 with a zero count; here only slots
+  with sessions appear.
 grain: one row per LMS session x two-hour slot it spans
 domain: platform
 source: bbdata-bbd-analytics procedures/orchestration/lmsSessionByDay/processLmsSessionByDay.ts

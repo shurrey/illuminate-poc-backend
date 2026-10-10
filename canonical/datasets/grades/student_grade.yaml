@@ -1,13 +1,17 @@
 id: dataset.student_grade.v1
 display_name: Student course grades
 description: >
-  One row per student enrollment in a reportable course: the final-grade column's score, the
-  summed score over the other gradebook items whose type is listed in CDM_META.BBD_CALCULATION_DETAIL,
+  One row per student enrollment in a reportable course: the final-grade column's score, the summed
+  score over the other gradebook items whose type counts towards the calculated grade,
   normalized-score statistics, and grade_percentage = the greater of the two as a percentage,
-  bucketed into 5-point bands. Deviation: bbd-analytics counts possible points of unscored items and
-  scores ungraded enrollments as 0%; here only scored items count, a final grade without possible
-  points is NULL, an enrollment with no scored work has a NULL grade_percentage ('Not graded'), and
-  exactly 100% falls in the 95-100% band rather than '>100%'.
+  bucketed into 5-point bands. Only scored items count, a final grade without possible points is
+  NULL, an enrollment with no scored work has a NULL grade_percentage ('Not graded'), and exactly
+  100% falls in the 95-100% band.
+notes: >
+  Item types are those listed in CDM_META.BBD_CALCULATION_DETAIL. Deviation: bbd-analytics counts
+  possible points of unscored items and scores ungraded enrollments as 0%; here only scored items
+  count, a final grade without possible points is NULL, an enrollment with no scored work has a NULL
+  grade_percentage ('Not graded'), and exactly 100% falls in the 95-100% band rather than '>100%'.
 grain: one row per student enrollment (person_course) in a reportable course
 domain: grades
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_STUDENT_GRADE.sql

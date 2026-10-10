@@ -4,9 +4,11 @@ description: >
   Per enrollment, course role and item or tool type used inside the course window: interactions,
   minutes, distinct items or tools accessed, and the course's total, new-or-updated and available
   items or tools of that type. Students come from active_students; other roles are every non-student
-  enrollment except preview and support users. Only types students used in the course are kept.
-  Deviation: bbd-analytics groups by the person's STAGE student_id, so everyone without one in a course and role collapses into a single
-  row; here rows are per enrollment.
+  enrollment except preview and support users. Only types students used in the course are kept. Rows
+  are per enrollment.
+notes: >
+  Deviation: bbd-analytics groups by the person's STAGE student_id, so everyone without one in a
+  course and role collapses into a single row; here rows are per enrollment.
 grain: one row per enrollment x item-or-tool x type used in the course window
 domain: tools
 source: bbdata-bbd-analytics procedures/orchestration/courseItemToolActivity/processCourseItemToolActivity.ts

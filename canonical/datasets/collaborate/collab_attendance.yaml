@@ -4,8 +4,11 @@ description: >
   One row per Collaborate session attendance: the person, their role in the session, first join and
   last leave dates in the institution's timezone, minutes attended, and the institution hierarchy
   nodes of the courses linked to the session's room as a ';'-separated list (filter with contains).
+  Every attendance is dated in its instance's timezone, including sessions not linked to a course.
+notes: >
   Deviation: bbd-analytics finds the timezone through the session's hierarchy row, so attendance in
-  sessions not linked to a course is dated in UTC; here every attendance uses its instance's timezone.
+  sessions not linked to a course is dated in UTC; here every attendance uses its instance's
+  timezone.
 grain: one row per Collaborate attendance
 domain: collaborate
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_CLB_ATTENDANCE.sql

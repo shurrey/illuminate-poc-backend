@@ -2,9 +2,12 @@ id: dataset.collab_storage_cumulative.v1
 display_name: Collaborate media storage over time
 description: >
   One row per day from the first Collaborate media upload to today: bytes of (not deleted) media
-  created that day in the institution's timezone, and the running total. Deviations: bbd-analytics
-  reports days without uploads with no date, and looks up the timezone by the LMS instance's tenant,
-  which this CDM does not have; here every day is dated and the media's own instance timezone is used.
+  created that day in the institution's timezone, and the running total. Every day is dated, and
+  each media item's own instance timezone is used.
+notes: >
+  Deviations: bbd-analytics reports days without uploads with no date, and looks up the timezone by
+  the LMS instance's tenant, which this CDM does not have; here every day is dated and the media's
+  own instance timezone is used.
 grain: one row per day
 domain: collaborate
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_CLB_STORAGE_CUMULATIVE_SUM.sql

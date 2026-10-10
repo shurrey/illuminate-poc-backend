@@ -2,11 +2,14 @@ id: dataset.student_course_minutes.v1
 display_name: Student time in course content
 description: >
   Per active student enrollment, time and interactions in course content (item types that count
-  towards time in content in CDM_META.BBD_CALCULATION_DETAIL) inside the course window, in total
-  and per course week, with items used, the last course access in the window and whether the
-  enrollment is active. Deviations: bbd-analytics divides interactions by course weeks once per
-  item type, shrinking the weekly figure, and repeats each enrollment per institutional hierarchy
-  node, which inflates sums across nodes; here weekly figures divide once and rows are per enrollment.
+  towards time in content) inside the course window, in total and per course week, with items used,
+  the last course access in the window and whether the enrollment is active. Weekly figures divide
+  interactions by course weeks once, and rows are per enrollment.
+notes: >
+  Item types are those flagged as time in content in CDM_META.BBD_CALCULATION_DETAIL. Deviations:
+  bbd-analytics divides interactions by course weeks once per item type, shrinking the weekly
+  figure, and repeats each enrollment per institutional hierarchy node, which inflates sums across
+  nodes; here weekly figures divide once and rows are per enrollment.
 grain: one row per active student enrollment with content activity
 domain: tools
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__HLP_STUDENT_COURSE_MINUTES_PER_CONTENT_ITEMS.sql

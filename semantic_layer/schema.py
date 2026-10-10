@@ -78,6 +78,8 @@ class Dataset(_Definition):
     id: str = Field(pattern=DATASET_ID_PATTERN)
     display_name: str
     description: str
+    # How the dataset was derived and where it departs from its source; for maintainers, never published.
+    notes: str = ""
     grain: str
     domain: str = Field(pattern=NAME_PATTERN)
     visibility: Literal["public", "internal"] = "public"

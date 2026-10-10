@@ -3,8 +3,10 @@ display_name: LMS course logins
 description: >
   One row per course access in the LMS: the course, the person, the first and last access dates in
   the institution's timezone, and the institution hierarchy nodes of the course as a ';'-separated
-  list (filter with contains). Deviation: bbd-analytics joins the instance on tenant alone, which
-  repeats every row once per instance; here the course's own instance is used.
+  list (filter with contains).
+notes: >
+  Deviation: bbd-analytics joins the instance on tenant alone, which repeats every row once per
+  instance; here the course's own instance is used.
 grain: one row per course activity (course login)
 domain: platform
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_LMS_COURSE_ACTIVITY.sql

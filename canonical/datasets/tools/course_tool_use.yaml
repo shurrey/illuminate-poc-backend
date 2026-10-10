@@ -4,8 +4,11 @@ description: >
   When each top-level course's tools were used: one row per course, tool and activity hour (from
   course_tool_activity, last three years) and per course, tool and distinct submission timestamps,
   with the course's start and end dates (term dates, then course dates, then its first and last
-  activity or submission). Deviation: bbd-analytics treats a missing submission timestamp as
-  1970-01-01 when finding a course's first activity; here missing timestamps are ignored.
+  activity or submission). Missing submission timestamps are ignored when finding a course's first
+  activity.
+notes: >
+  Deviation: bbd-analytics treats a missing submission timestamp as 1970-01-01 when finding a
+  course's first activity; here missing timestamps are ignored.
 grain: one row per course x tool x activity hour or submission event
 domain: tools
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_COURSE_TOOL_USE.sql

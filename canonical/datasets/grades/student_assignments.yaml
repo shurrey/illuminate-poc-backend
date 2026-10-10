@@ -4,10 +4,14 @@ description: >
   Per active student enrollment, item type and whether the items count towards the grade, over
   gradebook items with a due date: items available, interacted with and submitted; submissions on
   time, late, overdue and upcoming; time and interactions on those items; and the last access and
-  submission. Deviation: bbd-analytics reports 1970-01-01 as the last access when the student never
-  opened an item, and counts deleted grade rows as submissions; here the last access is NULL and only
-  live grades count. Standalone grade center columns take no submissions, so past their
-  due date they always count as overdue (as in bbd-analytics); the submittable filter leaves them out.
+  submission. The last access is NULL when the student never opened an item, and only live grades
+  count as submissions. Standalone grade center columns take no submissions, so past their due date
+  they always count as overdue; the submittable filter leaves them out.
+notes: >
+  Deviation: bbd-analytics reports 1970-01-01 as the last access when the student never opened an
+  item, and counts deleted grade rows as submissions; here the last access is NULL and only live
+  grades count. Standalone grade center columns take no submissions, so past their due date they
+  always count as overdue (as in bbd-analytics); the submittable filter leaves them out.
 grain: one row per active student enrollment x item type x counts-towards-grade flag
 domain: grades
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_STUDENT_ASSIGNMENTS.sql

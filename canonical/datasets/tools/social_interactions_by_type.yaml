@@ -4,8 +4,11 @@ description: >
   Per enrollment, course and item type that takes submissions in the CDM: the course's items of the
   type, how many the person accessed, interacted with and submitted to, their access rows and
   submissions, and the last access and submission. Every enrollment in the course appears, including
-  ones with no activity, except preview and support users. Deviation: bbd-analytics has no course role, so students and instructors
-  can't be told apart; here course_role is included.
+  ones with no activity, except preview and support users. course_role is included so students and
+  instructors can be told apart.
+notes: >
+  Deviation: bbd-analytics has no course role, so students and instructors can't be told apart; here
+  course_role is included.
 grain: one row per enrollment x item type with submissions in the course
 domain: tools
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_STUDENT_SOCIAL_INTERACT_AND_SUB_BY_TYPE.sql

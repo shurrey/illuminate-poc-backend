@@ -1,12 +1,15 @@
 id: dataset.sis_enrollment_attributes.v1
 display_name: SIS attributes of LMS enrollments
 description: >
-  One row per LMS enrollment whose person and course are mapped to the SIS: the student's program and
-  version, campus, grade level, enrollment status and dates, the class section's delivery method, the
-  course registration date, whether it is a retake, and the numeric grade obtained. Every mapped
-  enrollment appears (all roles); attributes are only as complete as CDM_MAP's SIS links. The primary
-  instructor's name is left out so outcomes can't be reported per named instructor. Deviation: bbd-analytics maps LMS to SIS tenants through a tenant map; this CDM holds one
-  tenant, so the SIS rows are joined directly.
+  One row per LMS enrollment whose person and course are mapped to the SIS: the student's program
+  and version, campus, grade level, enrollment status and dates, the class section's delivery
+  method, the course registration date, whether it is a retake, and the numeric grade obtained.
+  Every mapped enrollment appears (all roles); attributes are only as complete as CDM_MAP's SIS
+  links. The primary instructor's name is left out so outcomes can't be reported per named
+  instructor.
+notes: >
+  Deviation: bbd-analytics maps LMS to SIS tenants through a tenant map; this CDM holds one tenant,
+  so the SIS rows are joined directly.
 grain: one row per mapped LMS enrollment (person_course)
 domain: sis
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_SIS_PERSON_COURSE_ATTRIBUTES.sql
