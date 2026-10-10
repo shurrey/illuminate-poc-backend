@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from semantic_layer.catalog import load_catalog
-from semantic_layer.reports import (REPORTS_DIR, ReportError, load_reports, merged_contract, resolve_defaults,
+from semantic_layer.reports import (REPORTS_DIR, ReportError, ReportValueError, load_reports, merged_contract, resolve_defaults,
                                     validate_report)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "reports"
@@ -525,3 +525,38 @@ def test_ai_usage_over_time_covers_the_whole_history_within_its_row_limit():
 def test_ai_items_with_no_creator_are_labelled():
     from semantic_layer.compiler import build_ctes
     assert "'Unknown creator'" in build_ctes(CATALOG, ["dataset.course_item_ai_usage.v1"], "DB")["DS_COURSE_ITEM_AI_USAGE_V1"]
+
+
+METRIC = {"id": "metric", "label": "Key metric", "control": "choice", "options": ["User count", "Time spent (minutes)"],
+          "default": ["User count"]}
+BY_TOOL = {"id": "by_tool", "type": "bar", "title": "Tools",
+           "queries": {"main": {"dimensions": ["tool_name"],
+                                "measure_from": {"filter": "metric", "as": "value", "measures": {
+                                    "User count": "dataset.course_tool_activity.v1:people",
+                                    "Time spent (minutes)": "dataset.course_tool_activity.v1:minutes"}},
+                                "order_by": [{"field": "value", "direction": "desc"}]}},
+           "encode": {"x": "tool_name", "y": "value"}}
+
+
+@pytest.mark.parametrize("values, measure", [({}, "people"), ({"metric": ["User count"]}, "people"),
+                                             ({"metric": ["Time spent (minutes)"]}, "minutes")])
+def test_measure_from_uses_the_chosen_metric_and_returns_it_under_its_alias(values, measure):
+    from semantic_layer.reports import output_renames
+    report = _report([METRIC], [BY_TOOL])
+    contract, ignored = merged_contract(report, report.visual("by_tool"), "main", values, CATALOG)
+    assert contract.measures == [f"dataset.course_tool_activity.v1:{measure}"] and ignored == []
+    assert [o.field for o in contract.order_by] == [measure] and contract.filters == []
+    assert output_renames(report, report.visual("by_tool"), "main", values) == {measure: "value"}
+    assert resolve_defaults(report, date(2026, 10, 10), [])["metric"] == ["User count"]
+
+
+def test_an_unknown_metric_is_a_value_error_and_validation_checks_choices():
+    report = _report([METRIC], [BY_TOOL])
+    with pytest.raises(ReportValueError):
+        merged_contract(report, report.visual("by_tool"), "main", {"metric": ["Nope"]}, CATALOG)
+    assert validate_report(report, CATALOG) == []
+    partial = {**BY_TOOL, "queries": {"main": {**BY_TOOL["queries"]["main"], "measure_from": {
+        "filter": "metric", "as": "value", "measures": {"User count": "dataset.course_tool_activity.v1:people"}}}}}
+    assert any("measure_from" in p for p in validate_report(_report([METRIC], [partial]), CATALOG))
+    with pytest.raises(Exception):
+        _report([{**METRIC, "default": ["Missing"]}], [])

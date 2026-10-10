@@ -48,7 +48,9 @@ class ReportFilter(_Definition):
     id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     label: str
     # number: a value (e.g. a threshold) that queries use through param_filters, not a filter on its own.
-    control: Literal["multi_select", "select", "date_range", "number"]
+    # choice: one of `options` (default `[option]`) that queries use through measure_from.
+    control: Literal["multi_select", "select", "date_range", "number", "choice"]
+    options: list[str] = Field(default_factory=list)
     dimension: Optional[str] = None
     # Ordered alternatives to `dimension`: a query applies the first one its datasets can reach.
     dimensions: list[FilterDimension] = Field(default_factory=list)
@@ -66,6 +68,11 @@ class ReportFilter(_Definition):
         if self.control == "number":
             if not isinstance(self.default, (int, float)):
                 raise ValueError(f"filter {self.id}: a number control needs a numeric default")
+            return self
+        if self.control == "choice":
+            if not self.options or not (isinstance(self.default, list) and len(self.default) == 1
+                                        and self.default[0] in self.options):
+                raise ValueError(f"filter {self.id}: a choice needs options and a default of [one option]")
             return self
         if self.control != "date_range" and bool(self.dimension) == bool(self.dimensions):
             raise ValueError(f"filter {self.id}: needs a dimension or a list of dimensions, not both")
@@ -155,6 +162,8 @@ class QuerySpec(BaseModel):
     # {filters, dimensions, as}: group by dimensions[k], k = how many leading filters have a value;
     # /run returns that column as `as`.
     child_of: Optional[dict[str, Any]] = None
+    # {filter, measures: {option: ref}, as}: the chosen option's measure first; /run returns it as `as`.
+    measure_from: Optional[dict[str, Any]] = None
 
 
 def query_contract(spec: dict[str, Any]) -> QuerySpec:
@@ -162,9 +171,26 @@ def query_contract(spec: dict[str, Any]) -> QuerySpec:
     time_dimension, date_filter = spec.pop("time_dimension", None), spec.pop("date_filter", None)
     time_overlap, filters_ignored = spec.pop("time_overlap", None), spec.pop("filters_ignored", [])
     param_filters, child_of = spec.pop("param_filters", []), spec.pop("child_of", None)
+    measure_from = spec.pop("measure_from", None)
+    if measure_from and measure_from.get("measures"):
+        # The first option stands in until merged_contract puts the chosen one in its place.
+        spec["measures"] = [next(iter(measure_from["measures"].values())), *spec.get("measures", [])]
     return QuerySpec(contract=QueryContract(**spec), time_dimension=time_dimension, date_filter=date_filter,
                      time_overlap=time_overlap, filters_ignored=filters_ignored, param_filters=param_filters,
-                     child_of=child_of)
+                     child_of=child_of, measure_from=measure_from)
+
+
+def _chosen_measure(report: Report, measure_from: dict[str, Any], values: dict[str, Any]) -> str:
+    """The measure ref for the choice's current value (or its default). Raises ReportValueError for a value
+    that is not one of its options."""
+    choice = next((f for f in report.filters if f.id == measure_from["filter"] and f.control == "choice"), None)
+    if choice is None:
+        raise ReportValueError(f"measure_from: {measure_from['filter']!r} is not a choice control")
+    raw = values.get(choice.id) or choice.default
+    picked = raw[0] if isinstance(raw, list) and raw else raw
+    if picked not in measure_from["measures"]:
+        raise ReportValueError(f"filter {choice.id}: {picked!r} is not one of {sorted(measure_from['measures'])}")
+    return measure_from["measures"][picked]
 
 
 def _child_dimension(child_of: dict[str, Any], values: dict[str, Any]) -> str:
@@ -178,11 +204,14 @@ def _child_dimension(child_of: dict[str, Any], values: dict[str, Any]) -> str:
 
 
 def output_renames(report: Report, visual: Visual, query_name: str, values: dict[str, Any]) -> dict[str, str]:
-    """Result column -> the name /run returns it under (a child_of column becomes its alias)."""
-    child_of = query_contract(visual.queries[query_name]).child_of
-    if not child_of:
-        return {}
-    return {_child_dimension(child_of, values).rpartition(":")[2]: child_of["as"]}
+    """Result column -> the name /run returns it under (child_of and measure_from columns become their alias)."""
+    spec = query_contract(visual.queries[query_name])
+    renames = {}
+    if spec.child_of:
+        renames[_child_dimension(spec.child_of, values).rpartition(":")[2]] = spec.child_of["as"]
+    if spec.measure_from:
+        renames[_chosen_measure(report, spec.measure_from, values).rpartition(":")[2]] = spec.measure_from["as"]
+    return renames
 
 
 def _coerce(filter_id: str, values: list, dim_type: str) -> list:
@@ -220,7 +249,7 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
     time_range = contract.time_range
     for f in report.filters:
         value = values.get(f.id)
-        if f.control == "number" or f.id in visual.filters_ignored or f.id in spec.filters_ignored or not value:
+        if f.control in ("number", "choice") or f.id in visual.filters_ignored or f.id in spec.filters_ignored or not value:
             continue
         if f.control == "date_range":
             if f.id != date_filter:
@@ -274,13 +303,22 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
         filters.append(ContractFilter(dimension=pf["dimension"], op=pf["op"],
                                       values=_coerce(param.id, raw if isinstance(raw, list) else [raw], "numeric")[:1]))
     update: dict[str, Any] = {"filters": filters, "time_range": time_range}
+    order_by = list(contract.order_by)
     if spec.child_of:
         ref = _child_dimension(spec.child_of, values)
-        name = ref.rpartition(":")[2]
         update["dimensions"] = [ref, *contract.dimensions]
-        update["order_by"] = [o.model_copy(update={"field": name}) if o.field == spec.child_of["as"] else o
-                              for o in contract.order_by]
+        order_by = _renamed_order(order_by, spec.child_of["as"], ref)
+    if spec.measure_from:
+        ref = _chosen_measure(report, spec.measure_from, values)
+        update["measures"] = [ref, *contract.measures[1:]]
+        order_by = _renamed_order(order_by, spec.measure_from["as"], ref)
+    update["order_by"] = order_by
     return contract.model_copy(update=update), ignored
+
+
+def _renamed_order(order_by: list, alias: str, ref: str) -> list:
+    name = ref.rpartition(":")[2]
+    return [o.model_copy(update={"field": name}) if o.field == alias else o for o in order_by]
 
 
 def _dimension_named(ref: str, catalog: Catalog):
@@ -321,7 +359,7 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
     problems = []
     sample: dict[str, Any] = {}
     for f in report.filters:
-        if f.control == "number":
+        if f.control in ("number", "choice"):
             continue
         dim = _filter_target(f, catalog)
         unknown_parents = sorted(set(f.depends_on) - {g.id for g in report.filters})
@@ -343,7 +381,9 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
                 contract = spec.contract
                 if spec.date_filter is not None and spec.date_filter not in date_ids:
                     raise ValueError(f"date_filter {spec.date_filter!r} is not one of the report's date ranges {date_ids}")
-                if not spec.child_of:
+                if spec.measure_from:
+                    _check_measure_from(report, spec)
+                if not spec.child_of and not spec.measure_from:
                     compile_query(contract, catalog, database, allow_identity=True)
                 merged, ignored = merged_contract(report, v, name, sample, catalog, database)
                 compile_query(merged, catalog, database, allow_identity=True)
@@ -355,7 +395,8 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
             own_date = spec.date_filter or (date_ids[0] if date_ids else None)
             applied |= {fid for fid in sample if fid not in ignored and fid not in v.filters_ignored
                         and fid not in spec.filters_ignored and (fid not in date_ids or fid == own_date)}
-            returned |= _output_names(contract, catalog) | ({spec.child_of["as"]} if spec.child_of else set())
+            aliased = [x for x in (spec.child_of, spec.measure_from) if x]
+            returned |= _output_names(contract, catalog) | {x["as"] for x in aliased}
         if v.transform is not None:
             inputs = [v.transform.get(k) for k in ("value", "baseline", "query", "days_query") if v.transform.get(k)]
             named = v.transform.get("queries") or []
@@ -373,6 +414,14 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
         if f.id in sample and f.id not in applied:
             problems.append(f"filter {f.id}: no visual can apply it")
     return problems
+
+
+def _check_measure_from(report: Report, spec: QuerySpec) -> None:
+    mf = spec.measure_from
+    choice = next((f for f in report.filters if f.id == mf.get("filter") and f.control == "choice"), None)
+    if choice is None or not mf.get("as") or set(mf.get("measures", {})) != set(choice.options):
+        raise ValueError(f"measure_from needs `as`, a choice filter and one measure per option "
+                         f"({choice.options if choice else 'no such choice'})")
 
 
 def _check_child_of(report: Report, spec: QuerySpec, catalog: Catalog, database: str) -> None:
