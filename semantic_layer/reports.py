@@ -281,6 +281,8 @@ def _output_names(contract: QueryContract, catalog: Catalog) -> set[str]:
 
 
 _SAMPLE = {"boolean": [True], "numeric": [1], "time": ["2026-01-01"]}
+# Encode keys that name result columns; the rest (unit, donut, stacked…) are display options.
+_ENCODE_COLUMNS = ("x", "y", "value", "label", "series", "x_sort", "columns")
 
 
 def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATION_DB) -> list[str]:
@@ -324,12 +326,15 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
             returned |= _output_names(contract, catalog)
         if v.transform is not None:
             inputs = [v.transform.get(k) for k in ("value", "baseline", "query", "days_query") if v.transform.get(k)]
-            inputs += list((v.transform.get("queries") or {}).values())
+            named = v.transform.get("queries") or []
+            inputs += list(named.values()) if isinstance(named, dict) else list(named)
             missing = sorted(str(q) for q in inputs if q not in v.queries)
             if missing:
                 problems.append(f"{v.id}/transform: reads queries {missing} the visual does not have")
         elif returned:
-            missing = sorted(c for c in v.encode.values() if isinstance(c, str) and c not in returned)
+            named = [v.encode.get(k) for k in _ENCODE_COLUMNS]
+            columns = [c for n in named for c in (n if isinstance(n, list) else [n]) if isinstance(c, str)]
+            missing = sorted(c for c in columns if c not in returned)
             if missing:
                 problems.append(f"{v.id}/encode: columns {missing} are not returned by its queries")
     for f in report.filters:
