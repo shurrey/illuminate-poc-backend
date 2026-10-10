@@ -53,10 +53,13 @@ equal length), and the date-range filter shifts it accordingly. Without it, peri
 - **Course Administration.** Plan `2026-10-10-standard-reports-phase-2e-course-administration.md`; B #143, #145–#146,
   F #44. Adds `child_of` grouping by the child nodes of the selected hierarchy node, and search in long filter lists.
 
-All five were reviewed, fixed and checked live.
+- **AI Design Assistant Adoption.** Plan `2026-10-10-standard-reports-phase-2f-ai-design-assistant.md`; B #147–#149,
+  #153.
 
-**In progress:** AI Design Assistant Adoption, plan `2026-10-10-standard-reports-phase-2f-ai-design-assistant.md`;
-B #147–#149.
+All six were reviewed, fixed and checked live.
+
+**In progress:** Learning Tools Adoption, plan `2026-10-10-standard-reports-phase-2g-learning-tools-adoption.md`;
+B #151–#152, F #45. Adds choice controls that switch a visual's measure.
 
 Deferred minors:
 - a cleared comparison range runs all-time;
@@ -88,6 +91,13 @@ Deferred minors:
   - courses attached directly to the chosen node are labelled '-';
   - depth counts only leading filters;
   - every query re-aggregates enrollments and items.
+- AI Design Assistant Adoption:
+  - the filter search box can be missed or lose focus at its edges;
+  - shared links freeze defaulted values;
+  - the month boundary is computed in UTC;
+  - namesakes without email merge in the instructor table;
+  - Viewers can filter PII dimensions with `contains`;
+  - items with no creation time form a null month.
 
 Each report is one PR in B (its definition) and is verified live in F. Datasets and definitions it needs land first,
 in their own PRs.
