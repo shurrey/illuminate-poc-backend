@@ -263,3 +263,21 @@ def test_platform_hierarchy_paths_start_with_a_separator():
     from semantic_layer.compiler import build_ctes
     sql = build_ctes(CATALOG, ["dataset.lms_sessions.v1"], "DB")["DS_LMS_SESSIONS_V1"]
     assert "';' || LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';')" in sql
+
+
+def test_a_date_range_can_apply_as_an_overlap_of_two_dimensions():
+    courses = {"id": "courses", "type": "kpi", "title": "Active courses",
+               "queries": {"main": {"measures": ["dataset.courses.v1:courses"],
+                                    "time_overlap": {"start": "course_start", "end": "course_end"}}}}
+    report = _report([{**PRIMARY, "time_dimension": "dataset.courses.v1:course_start"}], [courses])
+    contract, ignored = merged_contract(report, report.visual("courses"), "main",
+                                        {"dates": {"start": "2026-09-01", "end": "2026-09-30"}}, CATALOG)
+    assert ignored == [] and contract.time_range is None
+    assert [(f.dimension, f.op, f.values) for f in contract.filters] == [
+        ("course_start", "lte", ["2026-09-30"]), ("course_end", "gte", ["2026-09-01"])]
+    assert validate_report(report, CATALOG) == []
+
+
+def test_average_by_and_part_of_whole_are_known_transforms():
+    for kind in ("average_by", "part_of_whole"):
+        _report([], [{**SESSIONS, "transform": {"kind": kind, "query": "main"}}])

@@ -19,7 +19,8 @@ from .contract import ContractFilter, FilterValue, QueryContract, TimeRange
 from .schema import Catalog
 
 REPORTS_DIR = CANONICAL_DIR / "reports"
-TRANSFORM_KINDS = {"period_over_period", "percent_of_total", "unpivot", "top_n_other", "side_by_side", "per_weekday_average"}
+TRANSFORM_KINDS = {"period_over_period", "percent_of_total", "unpivot", "top_n_other", "side_by_side", "per_weekday_average",
+                   "average_by", "part_of_whole"}
 _VALIDATION_DB = "VALIDATION_DB"
 
 
@@ -139,12 +140,16 @@ class QuerySpec(BaseModel):
     contract: QueryContract
     time_dimension: Optional[str] = None
     date_filter: Optional[str] = None
+    # {start, end}: the date range applies as start <= range end AND end >= range start.
+    time_overlap: Optional[dict[str, str]] = None
 
 
 def query_contract(spec: dict[str, Any]) -> QuerySpec:
     spec = dict(spec)
     time_dimension, date_filter = spec.pop("time_dimension", None), spec.pop("date_filter", None)
-    return QuerySpec(contract=QueryContract(**spec), time_dimension=time_dimension, date_filter=date_filter)
+    time_overlap = spec.pop("time_overlap", None)
+    return QuerySpec(contract=QueryContract(**spec), time_dimension=time_dimension, date_filter=date_filter,
+                     time_overlap=time_overlap)
 
 
 def _coerce(filter_id: str, values: list, dim_type: str) -> list:
@@ -190,6 +195,17 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
             if not isinstance(value, dict):
                 raise ReportValueError(f"filter {f.id}: a date range is {{start, end}}")
             if not (value.get("start") or value.get("end")):
+                continue
+            if spec.time_overlap:
+                start_ref, end_ref = spec.time_overlap["start"], spec.time_overlap["end"]
+                dims = [filter_dimension(contract, r, catalog) for r in (start_ref, end_ref)]
+                if any(d is None or d.type != "time" for d in dims):
+                    ignored.append(f.id)
+                    continue
+                if value.get("end"):
+                    filters.append(ContractFilter(dimension=start_ref, op="lte", values=[str(value["end"])]))
+                if value.get("start"):
+                    filters.append(ContractFilter(dimension=end_ref, op="gte", values=[str(value["start"])]))
                 continue
             ref = time_dimension or f.time_dimension
             dim = filter_dimension(contract, ref, catalog)
