@@ -560,3 +560,33 @@ def test_an_unknown_metric_is_a_value_error_and_validation_checks_choices():
     assert any("measure_from" in p for p in validate_report(_report([METRIC], [partial]), CATALOG))
     with pytest.raises(Exception):
         _report([{**METRIC, "default": ["Missing"]}], [])
+
+
+LTA_VALUES = {"dates": {"start": "2026-09-01", "end": "2026-09-30"}, "comparison": {"start": "2026-08-01", "end": "2026-08-31"},
+              "term": ["Q4: 2026"], "ih1": ["Arts"], "role": ["Student"], "course": ["BIO-101 - Biology"], "tool": ["Assignment"]}
+METRIC_VISUALS = {"top_tools", "by_node", "over_time", "over_time_primary", "over_time_comparison"}
+
+
+def _lta():
+    return load_reports()["report.learning_tools_adoption.v1"]
+
+
+def test_the_key_metric_switches_the_measure_of_the_metric_visuals_only():
+    report = _lta()
+    for v in report.visuals():
+        for q in v.queries:
+            users, _ = merged_contract(report, v, q, {**LTA_VALUES, "metric": ["User count"]}, CATALOG)
+            minutes, _ = merged_contract(report, v, q, {**LTA_VALUES, "metric": ["Time spent on tools (minutes)"]}, CATALOG)
+            assert (users.measures != minutes.measures) == (v.id in METRIC_VISUALS), v.id
+    assert {v.id for v in report.visuals()} >= METRIC_VISUALS
+
+
+def test_learning_tools_comparison_queries_use_only_the_comparison_range_and_filters_apply():
+    report = _lta()
+    for v in report.visuals():
+        for q in v.queries:
+            contract, ignored = merged_contract(report, v, q, LTA_VALUES, CATALOG)
+            expected = ["role", "tool"] if v.id == "coverage" else []
+            assert sorted(ignored + list(report.visual(v.id).queries[q].get("filters_ignored", []))) == expected, (v.id, q)
+            comparison = v.id.endswith("_comparison") or q == "previous"
+            assert str(contract.time_range.start) == ("2026-08-01" if comparison else "2026-09-01"), (v.id, q)

@@ -429,7 +429,8 @@ def _check_child_of(report: Report, spec: QuerySpec, catalog: Catalog, database:
     filters, dims = child_of.get("filters", []), child_of.get("dimensions", [])
     if not child_of.get("as") or not dims or len(filters) != len(dims) or not set(filters) <= ids:
         raise ValueError(f"child_of needs `as` and equal-length filters (known: {sorted(ids)}) and dimensions")
-    order = [o for o in spec.contract.order_by if o.field != child_of["as"]]
+    aliases = {child_of["as"], *([spec.measure_from["as"]] if spec.measure_from else [])}
+    order = [o for o in spec.contract.order_by if o.field not in aliases]
     for ref in dims:
         compile_query(spec.contract.model_copy(update={"dimensions": [ref, *spec.contract.dimensions], "order_by": order}),
                       catalog, database, allow_identity=True)

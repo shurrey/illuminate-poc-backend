@@ -1,0 +1,326 @@
+id: report.learning_tools_adoption.v1
+title: Learning Tools Adoption
+area: leading
+description: 'How learning tools are adopted: who uses them, which tools, where in the hierarchy, and how use changes over
+  time.'
+filters:
+- id: dates
+  label: Primary date range
+  control: date_range
+  time_dimension: dataset.course_tool_activity.v1:activity_date
+  default: last_30_days
+- id: comparison
+  label: Comparison date range
+  control: date_range
+  time_dimension: dataset.course_tool_activity.v1:activity_date
+  default: previous_30_days
+- id: metric
+  label: Key metric
+  control: choice
+  options:
+  - User count
+  - Course count
+  - Tool count
+  - Time spent on tools (minutes)
+  default:
+  - User count
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+  default: current_term
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  dimension: dataset.courses.v1:ih_level_1
+  exclude_values:
+  - '-'
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  dimension: dataset.courses.v1:ih_level_2
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  dimension: dataset.courses.v1:ih_level_3
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  dimension: dataset.courses.v1:ih_level_4
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+- id: role
+  label: Role
+  control: select
+  dimension: dataset.course_tool_activity.v1:course_role_description
+- id: course
+  label: Course ID / name
+  control: multi_select
+  dimension: dataset.courses.v1:course_id_name
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+  - ih4
+- id: tool
+  label: Course item or tool name
+  control: multi_select
+  dimension: dataset.course_tool_activity.v1:tool_name
+pages:
+- title: Overview
+  visuals:
+  - id: overview_help
+    type: text
+    title: Tools adoption overview
+    text: 'How learning tools and course items are used, measured by the key metric you choose: the number of users, courses
+      or tools with activity, or the minutes spent in tools, within the primary date range.'
+  - id: users_by_role
+    type: pie
+    title: How many users are using tools?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:people
+        dimensions:
+        - course_role_description
+        time_dimension: activity_date
+        order_by:
+        - field: people
+          direction: desc
+    encode:
+      label: course_role_description
+      value: people
+      donut: true
+  - id: top_tools
+    type: bar
+    title: What are the most used tools?
+    queries:
+      main:
+        dimensions:
+        - tool_name
+        measure_from:
+          filter: metric
+          measures:
+            User count: dataset.course_tool_activity.v1:people
+            Course count: dataset.course_tool_activity.v1:courses
+            Tool count: dataset.course_tool_activity.v1:tools_used
+            Time spent on tools (minutes): dataset.course_tool_activity.v1:minutes
+          as: value
+        time_dimension: activity_date
+        order_by:
+        - field: value
+          direction: desc
+        limit: 20
+    encode:
+      x: tool_name
+      y: value
+      horizontal: true
+  - id: by_node
+    type: bar
+    title: How are tools being used by institutional hierarchy node?
+    queries:
+      main:
+        measure_from:
+          filter: metric
+          measures:
+            User count: dataset.course_tool_activity.v1:people
+            Course count: dataset.course_tool_activity.v1:courses
+            Tool count: dataset.course_tool_activity.v1:tools_used
+            Time spent on tools (minutes): dataset.course_tool_activity.v1:minutes
+          as: value
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        time_dimension: activity_date
+        order_by:
+        - field: value
+          direction: desc
+        limit: 200
+    encode:
+      x: node
+      y: value
+      horizontal: true
+  - id: over_time
+    type: line
+    title: How are tools being used over time?
+    queries:
+      main:
+        dimensions:
+        - activity_date__week
+        measure_from:
+          filter: metric
+          measures:
+            User count: dataset.course_tool_activity.v1:people
+            Course count: dataset.course_tool_activity.v1:courses
+            Tool count: dataset.course_tool_activity.v1:tools_used
+            Time spent on tools (minutes): dataset.course_tool_activity.v1:minutes
+          as: value
+        time_dimension: activity_date
+        order_by:
+        - field: activity_date__week
+          direction: asc
+        limit: 400
+    encode:
+      x: activity_date__week
+      y: value
+- title: Comparison
+  visuals:
+  - id: comparison_help
+    type: text
+    title: Tools adoption comparison
+    text: Compares tool use in the primary date range with the comparison date range. Choose a term, quarter or year by setting
+      the two ranges to it.
+  - id: over_time_primary
+    type: line
+    title: Primary range - How are tools being used over time?
+    queries:
+      main:
+        dimensions:
+        - activity_date__week
+        measure_from:
+          filter: metric
+          measures:
+            User count: dataset.course_tool_activity.v1:people
+            Course count: dataset.course_tool_activity.v1:courses
+            Tool count: dataset.course_tool_activity.v1:tools_used
+            Time spent on tools (minutes): dataset.course_tool_activity.v1:minutes
+          as: value
+        time_dimension: activity_date
+        order_by:
+        - field: activity_date__week
+          direction: asc
+        limit: 400
+    encode:
+      x: activity_date__week
+      y: value
+  - id: over_time_comparison
+    type: line
+    title: Comparison range - How are tools being used over time?
+    queries:
+      main:
+        dimensions:
+        - activity_date__week
+        measure_from:
+          filter: metric
+          measures:
+            User count: dataset.course_tool_activity.v1:people
+            Course count: dataset.course_tool_activity.v1:courses
+            Tool count: dataset.course_tool_activity.v1:tools_used
+            Time spent on tools (minutes): dataset.course_tool_activity.v1:minutes
+          as: value
+        time_dimension: activity_date
+        order_by:
+        - field: activity_date__week
+          direction: asc
+        limit: 400
+        date_filter: comparison
+    encode:
+      x: activity_date__week
+      y: value
+  - id: users_kpi
+    type: kpi
+    title: Users engaging with tools
+    queries:
+      current:
+        measures:
+        - dataset.course_tool_activity.v1:people
+        time_dimension: activity_date
+      previous:
+        measures:
+        - dataset.course_tool_activity.v1:people
+        time_dimension: activity_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: people
+    encode:
+      value: value
+  - id: courses_kpi
+    type: kpi
+    title: Courses engaging with tools
+    queries:
+      current:
+        measures:
+        - dataset.course_tool_activity.v1:courses
+        time_dimension: activity_date
+      previous:
+        measures:
+        - dataset.course_tool_activity.v1:courses
+        time_dimension: activity_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: courses
+    encode:
+      value: value
+  - id: coverage
+    type: bar
+    title: Are tools being accessed?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_tool_activity.v1:coverage
+        dimensions:
+        - type_name
+        time_dimension: last_access
+        filters_ignored:
+        - role
+        - tool
+        order_by:
+        - field: coverage
+          direction: desc
+        limit: 30
+    encode:
+      x: type_name
+      y: coverage
+      horizontal: true
+  - id: courses_most
+    type: table
+    title: Which courses are using the tools the most?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:people
+        - dataset.course_tool_activity.v1:minutes
+        - dataset.course_tool_activity.v1:tools_used
+        - dataset.course_tool_activity.v1:activity_rows
+        dimensions:
+        - dataset.courses.v1:course_id_name
+        time_dimension: activity_date
+        order_by:
+        - field: minutes
+          direction: desc
+        limit: 1000
+    encode:
+      columns:
+      - course_id_name
+      - people
+      - minutes
+      - tools_used
+      - activity_rows
