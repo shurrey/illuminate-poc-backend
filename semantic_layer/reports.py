@@ -57,7 +57,7 @@ class ReportFilter(_Definition):
     # Option values the filter does not offer (placeholders such as '-' for "no node at this level").
     exclude_values: list[str] = Field(default_factory=list)
     time_dimension: Optional[str] = None
-    default: Optional[Union[Literal["current_term", "last_30_days", "previous_30_days"], list[FilterValue], float]] = None
+    default: Optional[Union[Literal["current_term", "last_30_days", "previous_30_days", "last_month", "month_before_last"], list[FilterValue], float]] = None
 
     @model_validator(mode="after")
     def _targets(self) -> "ReportFilter":
@@ -395,7 +395,8 @@ def _as_date(value: Any) -> Optional[date]:
 def resolve_defaults(report: Report, today: date, terms: list[dict[str, Any]]) -> dict[str, Any]:
     """Filter id -> its default value. current_term: the terms spanning today, else every term sharing the
     latest end date before today (rows carry term_name, term_start, term_end). last_30_days and
-    previous_30_days are consecutive 30-day windows ending today."""
+    previous_30_days are consecutive 30-day windows ending today; last_month and month_before_last are
+    the two latest completed calendar months."""
     dated = [(t["term_name"], _as_date(t["term_start"]), _as_date(t["term_end"])) for t in terms]
     dated = [t for t in dated if t[1] and t[2]]
     current = [name for name, start, end in dated if start <= today <= end]
@@ -412,6 +413,11 @@ def resolve_defaults(report: Report, today: date, terms: list[dict[str, Any]]) -
             defaults[f.id] = {"start": (today - timedelta(days=29)).isoformat(), "end": today.isoformat()}
         elif f.default == "previous_30_days":
             defaults[f.id] = {"start": (today - timedelta(days=59)).isoformat(), "end": (today - timedelta(days=30)).isoformat()}
+        elif f.default in ("last_month", "month_before_last"):
+            end = today.replace(day=1) - timedelta(days=1)
+            if f.default == "month_before_last":
+                end = end.replace(day=1) - timedelta(days=1)
+            defaults[f.id] = {"start": end.replace(day=1).isoformat(), "end": end.isoformat()}
         elif isinstance(f.default, (int, float)):
             defaults[f.id] = [f.default]
         elif f.default is not None:

@@ -454,3 +454,18 @@ def test_course_readiness_counts_each_course_once_and_reads_course_attributes_by
     from semantic_layer.catalog import load_catalog
     cte = build_ctes(load_catalog(), [CR], "DB")["DS_COURSE_READINESS_V1"]
     assert "ZEROIFNULL" in cte and "ROW_DELETED_TIME IS NULL" in cte
+
+
+AI = "dataset.course_item_ai_usage.v1"
+
+
+def test_ai_usage_counts_courses_once_and_keeps_creators_identifiable():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    sql = _outer(_real(measures=[f"{AI}:{m}" for m in ("items", "ai_items", "pct_ai_items", "courses", "ai_courses",
+                                                         "ai_creators", "available_ai_items", "unavailable_ai_items")],
+                       dimensions=["item_type_name", "ai_used", "course_uses_ai", "created_date__week", "dataset.courses.v1:ih_level_1"]))
+    assert "COUNT(DISTINCT IFF(AI_USED = 'Yes', COURSE_ID, NULL))" in sql.replace("b.", "") and "LEFT JOIN DS_COURSES_V1" in sql
+    ds = cat.datasets[AI]
+    assert all(ds.is_pii(ds.dimension(n).column) for n in ("creator_name", "creator_email"))
+    assert "CONVERT_TIMEZONE" in build_ctes(cat, [AI], "DB")[f"DS_COURSE_ITEM_AI_USAGE_V1"]
