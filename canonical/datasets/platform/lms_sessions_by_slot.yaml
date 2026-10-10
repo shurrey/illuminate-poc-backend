@@ -10,11 +10,16 @@ domain: platform
 source: bbdata-bbd-analytics procedures/orchestration/lmsSessionByDay/processLmsSessionByDay.ts
 depends_on: [dataset.lms_sessions.v1]
 base_sql: |
-  WITH slots AS (
+  -- Login sessions aren't tied to a course, so slots use the institution's (first instance's) timezone.
+  WITH tz AS (
+      SELECT NVL(ANY_VALUE(i.STAGE:timezone::STRING), 'UTC') AS TZ FROM {{ database }}.CDM_LMS.INSTANCE i
+  ),
+  slots AS (
       SELECT s.SESSION_ID, s.PERSON_ID, s.ROLE_NAME, s.IH_NODES,
-             DATEADD(hour, 2 * n.N, TIME_SLICE(s.FIRST_ACCESSED_TIME::TIMESTAMP_NTZ, 2, 'hour')) AS SLOT_START,
-             TIME_SLICE(s.LAST_ACCESSED_TIME::TIMESTAMP_NTZ, 2, 'hour') AS LAST_SLOT
+             DATEADD(hour, 2 * n.N, TIME_SLICE(CONVERT_TIMEZONE(tz.TZ, s.FIRST_ACCESSED_TIME)::TIMESTAMP_NTZ, 2, 'hour')) AS SLOT_START,
+             TIME_SLICE(CONVERT_TIMEZONE(tz.TZ, s.LAST_ACCESSED_TIME)::TIMESTAMP_NTZ, 2, 'hour') AS LAST_SLOT
       FROM {{ ref('dataset.lms_sessions.v1') }} s
+      CROSS JOIN tz
       CROSS JOIN (SELECT ROW_NUMBER() OVER (ORDER BY SEQ4()) - 1 AS N FROM TABLE(GENERATOR(ROWCOUNT => 13))) n
   )
   SELECT SESSION_ID, PERSON_ID, ROLE_NAME, IH_NODES, SLOT_START,
@@ -40,6 +45,7 @@ dimensions:
   - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
 measures:
   - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions, description: "Sessions active in the slot; a session spanning slots counts in each"}
+  - {name: days, agg: count_distinct, expr: SLOT_DATE, unit: days, description: "Days with at least one session; the divisor for per-weekday averages"}
   - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
   - {name: session_slots, agg: count, expr: "*", unit: slots}
 pii_columns: [PERSON_ID]

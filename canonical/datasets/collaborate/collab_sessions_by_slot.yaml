@@ -18,13 +18,21 @@ base_sql: |
       JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc ON ihc.COURSE_ID = cr.LMS_COURSE_ID
       JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
       GROUP BY cr.CLB_ROOM_ID
+  ),
+  instance_tz AS (
+      SELECT mi.CLB_INSTANCE_ID, ANY_VALUE(NVL(li.STAGE:timezone::STRING, 'UTC')) AS TZ
+      FROM {{ database }}.CDM_MAP.INSTANCE mi
+      JOIN {{ database }}.CDM_LMS.INSTANCE li ON li.ID = mi.LMS_INSTANCE_ID
+      GROUP BY mi.CLB_INSTANCE_ID
   )
   SELECT DISTINCT s.ID AS SESSION_ID, s.ROOM_ID, h.DATE_TWO_HOURS AS SLOT_START, h.DAY_DATE AS SLOT_DATE,
          h.SLOT_START_HOUR, h.SLOT_LABEL, DAYNAME(h.DATE_TWO_HOURS) AS DAY_NAME,
          DAYOFWEEKISO(h.DATE_TWO_HOURS) AS DAY_NUMBER, ri.IH_NODES
   FROM {{ database }}.CDM_CLB.SESSION s
+  LEFT JOIN instance_tz tz ON tz.CLB_INSTANCE_ID = s.INSTANCE_ID
   JOIN {{ ref('dataset.calendar_hour.v1') }} h
-    ON h.DATE_HOUR BETWEEN DATE_TRUNC('hour', s.FIRST_JOIN_TIME) AND DATE_TRUNC('hour', s.LAST_LEAVE_TIME)
+    ON h.DATE_HOUR BETWEEN DATE_TRUNC('hour', CONVERT_TIMEZONE(NVL(tz.TZ, 'UTC'), s.FIRST_JOIN_TIME)::TIMESTAMP_NTZ)
+                       AND DATE_TRUNC('hour', CONVERT_TIMEZONE(NVL(tz.TZ, 'UTC'), s.LAST_LEAVE_TIME)::TIMESTAMP_NTZ)
   LEFT JOIN room_ih ri ON ri.ROOM_ID = s.ROOM_ID
 entities:
   - {name: collab_session, column: SESSION_ID, type: foreign}
@@ -39,5 +47,6 @@ dimensions:
   - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
 measures:
   - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions, description: "Sessions running in the slot; a session spanning slots counts in each"}
+  - {name: days, agg: count_distinct, expr: SLOT_DATE, unit: days, description: "Days with at least one session; the divisor for per-weekday averages"}
   - {name: rooms, agg: count_distinct, expr: ROOM_ID, unit: rooms}
   - {name: session_slots, agg: count, expr: "*", unit: session-slots, description: "Session-slots: one per session per two-hour slot it ran in"}

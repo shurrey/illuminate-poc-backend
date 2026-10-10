@@ -391,3 +391,12 @@ def test_a_semi_join_matches_every_shared_entity_when_the_targets_key_is_not_sha
     sql = _flat(_outer(_real(measures=["dataset.lms_course_logins.v1:people"],
         filters=[{"dimension": "dataset.sis_enrollment_attributes.v1:program", "op": "in", "values": ["BSN"]}])))
     assert "(COURSE_ID, PERSON_ID) IN (SELECT COURSE_ID, PERSON_ID FROM DS_SIS_ENROLLMENT_ATTRIBUTES_V1" in sql
+
+
+@pytest.mark.parametrize("ds", ["dataset.lms_sessions_by_slot.v1", "dataset.collab_sessions_by_slot.v1"])
+def test_slots_are_cut_in_the_institutions_timezone_and_count_the_days_present(ds):
+    from semantic_layer.catalog import load_catalog
+    from semantic_layer.render import cte_name
+    cat = load_catalog()
+    assert "CONVERT_TIMEZONE" in build_ctes(cat, [ds], "DB")[cte_name(ds)]
+    assert "COUNT(DISTINCT SLOT_DATE)" in _outer(_real(measures=[f"{ds}:days"], dimensions=["day_of_week"]))
