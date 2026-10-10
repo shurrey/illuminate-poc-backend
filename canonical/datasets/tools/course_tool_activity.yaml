@@ -86,6 +86,8 @@ measures:
   - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
   - {name: tools_used, agg: count_distinct, expr: COURSE_TOOL_ID, unit: tools}
   - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses, description: "Courses with tool activity"}
+  - {name: days, agg: count_distinct, expr: ACTIVITY_DATE, unit: days, description: "Days with tool activity; the divisor for per-weekday averages"}
+  - {name: person_days, agg: count_distinct, expr: "PERSON_ID || '|' || ACTIVITY_DATE", unit: person-days, description: "Each person counted once per day of activity; summed over days, the total of daily distinct users"}
   - {name: minutes, agg: sum, expr: MINUTES, unit: minutes, synonyms: [time in tools]}
   - {name: activity_rows, agg: sum, expr: ACTIVITY_COUNT, unit: activities}
   - {name: minutes_per_person, agg: ratio, numerator: minutes, denominator: people, unit: minutes}

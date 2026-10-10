@@ -294,3 +294,21 @@ def test_a_query_can_ignore_a_filter_its_visual_otherwise_takes():
     part, _ = merged_contract(report, report.visual("pie"), "using", {"tool": ["Content Folder"]}, CATALOG)
     assert (whole.filters, [f.dimension for f in part.filters]) == ([], ["dataset.course_tool_activity.v1:tool_name"])
     assert validate_report(report, CATALOG) == []
+
+
+def test_a_query_can_take_both_an_overlap_and_a_time_range():
+    using = {"id": "using", "type": "kpi", "title": "Using",
+             "queries": {"main": {"measures": ["dataset.course_tool_use.v1:courses"], "time_dimension": "event_time",
+                                  "time_overlap": {"start": "course_start_date", "end": "course_end_date"}}}}
+    report = _report([{**PRIMARY, "time_dimension": "dataset.course_tool_use.v1:event_time"}], [using])
+    contract, _ = merged_contract(report, report.visual("using"), "main", {"dates": {"start": "2026-09-01", "end": "2026-09-30"}}, CATALOG)
+    assert [(f.dimension, f.op) for f in contract.filters] == [("course_start_date", "lte"), ("course_end_date", "gte")]
+    assert (contract.time_range.dimension, str(contract.time_range.start)) == ("event_time", "2026-09-01")
+
+
+def test_tool_activity_counts_days_and_person_days():
+    from semantic_layer.compiler import compile_query
+    from semantic_layer.contract import QueryContract
+    sql = compile_query(QueryContract(measures=["dataset.course_tool_activity.v1:days", "dataset.course_tool_activity.v1:person_days"],
+                                      dimensions=["day_of_week"]), CATALOG, "DB").sql
+    assert "COUNT(DISTINCT ACTIVITY_DATE)" in sql and "PERSON_ID" in sql

@@ -140,7 +140,8 @@ class QuerySpec(BaseModel):
     contract: QueryContract
     time_dimension: Optional[str] = None
     date_filter: Optional[str] = None
-    # {start, end}: the date range applies as start <= range end AND end >= range start.
+    # {start, end}: the date range applies as start <= range end AND end >= range start; with a
+    # time_dimension too, it bounds that dimension as well.
     time_overlap: Optional[dict[str, str]] = None
     # Filters this query alone does not take (e.g. the whole in a part-of-whole visual).
     filters_ignored: list[str] = []
@@ -208,7 +209,9 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
                     filters.append(ContractFilter(dimension=start_ref, op="lte", values=[str(value["end"])]))
                 if value.get("start"):
                     filters.append(ContractFilter(dimension=end_ref, op="gte", values=[str(value["start"])]))
-                continue
+                # With a time_dimension as well, the range also bounds that dimension (e.g. activity in the range).
+                if not time_dimension:
+                    continue
             ref = time_dimension or f.time_dimension
             dim = filter_dimension(contract, ref, catalog)
             if dim is None or dim.type != "time":
