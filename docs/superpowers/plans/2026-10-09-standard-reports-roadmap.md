@@ -48,10 +48,15 @@ equal length), and the date-range filter shifts it accordingly. Without it, peri
 - **Assessment & Grades.** Plan `2026-10-10-standard-reports-phase-2c-assessment-grades.md`; B #135–#137, #139–#140,
   F #40–#43.
 
-All three were reviewed, fixed and checked live.
+- **Collaboration Session Activity.** Plan `2026-10-10-standard-reports-phase-2d-collaboration-sessions.md`; B #138,
+  #142, #144.
+- **Course Administration.** Plan `2026-10-10-standard-reports-phase-2e-course-administration.md`; B #143, #145–#146,
+  F #44. Adds `child_of` grouping by the child nodes of the selected hierarchy node, and search in long filter lists.
 
-**In progress:** Collaboration Session Activity, plan `2026-10-10-standard-reports-phase-2d-collaboration-sessions.md`.
-Its datasets are in (B #138).
+All five were reviewed, fixed and checked live.
+
+**In progress:** AI Design Assistant Adoption, plan `2026-10-10-standard-reports-phase-2f-ai-design-assistant.md`;
+B #147–#149.
 
 Deferred minors:
 - a cleared comparison range runs all-time;
@@ -73,6 +78,16 @@ Deferred minors:
   - hierarchy filters match any node while grouping uses the primary one;
   - `courses.v1` level synonyms differ from `course_filters_ih`;
   - an empty current term has no hint to clear it.
+- Collaboration Session Activity:
+  - event queries scan all of `COLLAB_EVENTS`;
+  - day charts keep the oldest 400 days on long ranges;
+  - session-uid uniqueness isn't enforced;
+  - the instance timezone uses `ANY_VALUE`.
+- Course Administration:
+  - a malformed `child_of` raises instead of being reported;
+  - courses attached directly to the chosen node are labelled '-';
+  - depth counts only leading filters;
+  - every query re-aggregates enrollments and items.
 
 Each report is one PR in B (its definition) and is verified live in F. Datasets and definitions it needs land first,
 in their own PRs.
