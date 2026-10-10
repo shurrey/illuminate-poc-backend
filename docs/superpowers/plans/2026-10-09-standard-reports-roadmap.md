@@ -56,10 +56,10 @@ equal length), and the date-range filter shifts it accordingly. Without it, peri
 - **AI Design Assistant Adoption.** Plan `2026-10-10-standard-reports-phase-2f-ai-design-assistant.md`; B #147–#149,
   #153.
 
-All six were reviewed, fixed and checked live.
+- **Learning Tools Adoption.** Plan `2026-10-10-standard-reports-phase-2g-learning-tools-adoption.md`; B #151–#152,
+  #156, F #45. Adds choice controls that switch a visual's measure.
 
-**In progress:** Learning Tools Adoption, plan `2026-10-10-standard-reports-phase-2g-learning-tools-adoption.md`;
-B #151–#152, F #45. Adds choice controls that switch a visual's measure.
+Phase 2 is complete: all seven reports were reviewed, fixed and checked live.
 
 Deferred minors:
 - a cleared comparison range runs all-time;
@@ -98,6 +98,11 @@ Deferred minors:
   - namesakes without email merge in the instructor table;
   - Viewers can filter PII dimensions with `contains`;
   - items with no creation time form a null month.
+- Learning Tools Adoption:
+  - an unhashable choice value returns 500;
+  - encode validation accepts the `measure_from` placeholder name;
+  - a stale choice value in a URL is sent while the dropdown shows the default;
+  - "Tool count" by tool is close to Course count.
 
 Each report is one PR in B (its definition) and is verified live in F. Datasets and definitions it needs land first,
 in their own PRs.
@@ -115,6 +120,10 @@ in their own PRs.
 The first report's PR in F removes the mock reports (`mockReports`, `mockChartData`, `ReportChartArea`).
 
 ## Phase 3: Instructional Practices
+
+**In progress.** Plan `2026-10-10-standard-reports-phase-3-instructional-practices.md`; B #155, #157–#160. Each
+page reads a course-grain dataset, so per-course statistics are plain aggregates and bins are SQL dimensions.
+
 
 P4 (group by IH node) · P10 (CRA instructor definitions) · `course_items` (P11) · `course_groups` (P16) ·
 `collab_course_media` (P17) · bin transform · the report.
