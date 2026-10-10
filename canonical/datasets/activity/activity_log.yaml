@@ -1,12 +1,15 @@
 id: dataset.activity_log.v1
 display_name: Activity log
 description: >
-  Every LMS activity, submission and Ultra click in the last year, one row per event: when, who
-  (by person id only), the course, the item or tool, the event type (Login, Logout, Item Access,
-  Tool Access, Course Access, Session Continuation, Submission, Ultra Click), a readable context and
-  seconds spent. Ultra clicks carry the clicked UI object as item type and tool and the content id as
-  item, and are counted once per event id. Deviation: bbd-analytics puts the item's "type: name" in
-  the tool column for submissions; here it is the tool's name. Queries must give a time_range start on event_time.
+  Every LMS activity, submission and Ultra click in the last year, one row per event: when, who (by
+  person id only), the course, the item or tool, the event type (Login, Logout, Item Access, Tool
+  Access, Course Access, Session Continuation, Submission, Ultra Click), a readable context and
+  seconds spent. Ultra clicks carry the clicked UI object as item type and tool and the content id
+  as item, and are counted once per event id. For submissions the tool column holds the tool's name.
+  Queries must give a time_range start on event_time.
+notes: >
+  Deviation: bbd-analytics puts the item's "type: name" in the tool column for submissions; here it
+  is the tool's name.
 grain: one row per event in the last year
 domain: activity
 source: bbdata-bbd-analytics procedures/orchestration/activityLog/

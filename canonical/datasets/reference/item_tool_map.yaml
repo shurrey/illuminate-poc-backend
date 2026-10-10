@@ -1,9 +1,10 @@
 id: dataset.item_tool_map.v1
 display_name: Item and tool calculation flags
 description: >
-  One row per course item type with the calculations it takes part in, from
-  CDM_META.BBD_CALCULATION_DETAIL. Deviation: bbd-analytics' MAP_ITEM_TOOL is a hard-coded copy of
-  some of these flags that can disagree with the table; here every flag comes from the table.
+  One row per course item type with the calculations it takes part in.
+notes: >
+  From CDM_META.BBD_CALCULATION_DETAIL. Deviation: bbd-analytics' MAP_ITEM_TOOL is a hard-coded copy
+  of some of these flags that can disagree with the table; here every flag comes from the table.
 grain: one row per item type
 domain: reference
 visibility: internal

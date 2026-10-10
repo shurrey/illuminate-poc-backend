@@ -3,8 +3,10 @@ display_name: Course item use per enrollment
 description: >
   One row per course item and enrollment that used it: interactions, time spent and first and last
   access date, with the item type (SCORM variants grouped as 'SCORM PACKAGE') and its calculation
-  flags. Deviation: bbd-analytics rebuilds each row from only the activity changed since its last
-  run, losing earlier totals; here totals cover all activity.
+  flags. Totals cover all activity.
+notes: >
+  Deviation: bbd-analytics rebuilds each row from only the activity changed since its last run,
+  losing earlier totals; here totals cover all activity.
 grain: one row per course item x enrollment with activity
 domain: tools
 source: bbdata-bbd-analytics procedures/orchestration/itemTool/processItemTool.ts

@@ -1,11 +1,14 @@
 id: dataset.grade_response_time.v1
 display_name: Grade response time
 description: >
-  One row per student attempt on a gradebook item whose type counts towards grade response time
-  (CDM_META.BBD_CALCULATION_DETAIL): the hours and days from the later of the attempt and the due
-  date to grading, whether it is graded, and whether the grade was entered manually. Deviation:
-  bbd-analytics measures from the due date only when there is one and otherwise returns no response
-  time (49% of graded attempts live); here attempts without a due date are measured from the attempt.
+  One row per student attempt on a gradebook item whose type counts towards grade response time: the
+  hours and days from the later of the attempt and the due date to grading, whether it is graded,
+  and whether the grade was entered manually. Attempts without a due date are measured from the
+  attempt.
+notes: >
+  Item types are those in CDM_META.BBD_CALCULATION_DETAIL. Deviation: bbd-analytics measures from
+  the due date only when there is one and otherwise returns no response time (49% of graded attempts
+  live); here attempts without a due date are measured from the attempt.
 grain: one row per student grade with an attempt
 domain: grades
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__GRADES_COURSE_ITEM_RESPONSE_TIME.sql

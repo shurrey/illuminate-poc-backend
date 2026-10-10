@@ -2,11 +2,14 @@ id: dataset.course_tool_activity.v1
 display_name: Course tool activity by hour
 description: >
   Activity in each top-level course's tools over the last three years, per person and hour: minutes
-  and activity rows, with the tool, the person's course role and availability flags. Deviation:
-  bbd-analytics counts an access once for its tool and again for its content item's tool (99.8% of
-  rows carry both), doubling or splitting minutes; here each access counts once, for its own tool when
-  it has one and otherwise for its content item's tool. Rows are per hour rather than per access time,
-  and tool names are translated to English.
+  and activity rows, with the tool, the person's course role and availability flags. Each access
+  counts once, for its own tool when it has one and otherwise for its content item's tool. Rows are
+  per hour rather than per access time, and tool names are in English.
+notes: >
+  Deviation: bbd-analytics counts an access once for its tool and again for its content item's tool
+  (99.8% of rows carry both), doubling or splitting minutes; here each access counts once, for its
+  own tool when it has one and otherwise for its content item's tool. Rows are per hour rather than
+  per access time, and tool names are translated to English.
 grain: one row per course tool x person x hour with activity
 domain: tools
 source: bbdata-bbd-analytics procedures/orchestration/courseToolActivityHour/processCourseItemToolActivityHour.ts

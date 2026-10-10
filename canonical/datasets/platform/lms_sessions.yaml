@@ -3,7 +3,9 @@ display_name: LMS sessions
 description: >
   One row per LMS session with time in it: first and last access (the last capped at one day after
   the first), mobile or not, the person's institution role, and the institution hierarchy nodes of
-  every course the session's login touched, as a ';'-separated list (filter with contains).
+  every course the session's login touched, as a ';'-separated list (filter with contains). Role
+  names are in English.
+notes: >
   Deviation: bbd-analytics carries the role name in every locale for QuickSight; here it is English.
 grain: one row per LMS session with duration
 domain: platform

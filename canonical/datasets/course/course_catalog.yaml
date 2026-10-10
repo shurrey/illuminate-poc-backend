@@ -3,10 +3,13 @@ display_name: Course catalog with status flags
 description: >
   Every course, including child courses and courses not yet started, with its hierarchy levels,
   dates (creation, start, end, real end, first and last student activity), roles enrolled (preview
-  and bbsupport users excluded), design mode, and status flags. Deviations: course_weeks uses the
-  week-truncated definition shared with course_filters; design mode is looked up by the course's
-  canonical code rather than its source code. Deleted courses are included, as in bbd-analytics; the
-  course metrics exclude them with the live filter.
+  and bbsupport users excluded), design mode, and status flags. course_weeks uses the week-truncated
+  definition shared with course_filters. Deleted courses are included; the course metrics exclude
+  them with the live filter.
+notes: >
+  Deviations: course_weeks uses the week-truncated definition shared with course_filters; design
+  mode is looked up by the course's canonical code rather than its source code. Deleted courses are
+  included, as in bbd-analytics; the course metrics exclude them with the live filter.
 grain: one row per course x institutional hierarchy node x course role
 domain: course
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_COURSE_FILTER.sql

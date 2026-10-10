@@ -1,10 +1,12 @@
 id: dataset.courses.v1
 display_name: Courses (conformed course dimension)
 description: >
-  Every course exactly once, with its term, design mode, dates, duration, delivery method and status. Course-grain datasets and
-  enrollment-grain datasets take their course and term dimensions from here, so a grouping by term
-  or course never depends on which students had activity. Not a bbd-analytics product; it applies
-  the course and term logic of COURSE_FILTER at course grain.
+  Every course exactly once, with its term, design mode, dates, duration, delivery method and
+  status. Course-grain datasets and enrollment-grain datasets take their course and term dimensions
+  from here, so a grouping by term or course never depends on which students had activity.
+notes: >
+  Not a bbd-analytics product; it applies the course and term logic of COURSE_FILTER at course
+  grain.
 grain: one row per course
 domain: course
 complete: true

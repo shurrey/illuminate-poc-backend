@@ -101,3 +101,18 @@ def test_expressions_reflect_the_tenants_overrides():
     measure = next(m for m in _dataset_view(public_catalog(catalog), "dataset.student_grade.v1")["measures"]
                    if m["name"] == "average_grade_percentage")
     assert measure["expr"] == "ROUND(GRADE_PERCENTAGE, 0)"
+
+
+def test_nothing_users_see_names_the_systems_the_layer_was_built_from():
+    import re
+    from semantic_layer.catalog import load_catalog
+    text = json.dumps(public_catalog(load_catalog(), allow_identity=True))
+    assert not re.findall(r"bbd|quicksight|deviation", text, re.I)
+
+
+def test_dataset_notes_stay_out_of_the_catalog():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    noted = next(d for d in cat.datasets.values() if d.notes)
+    view = next(d for d in public_catalog(cat)["datasets"] if d["id"] == noted.id)
+    assert noted.notes not in json.dumps(view)

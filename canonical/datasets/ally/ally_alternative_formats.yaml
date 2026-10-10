@@ -1,8 +1,12 @@
 id: dataset.ally_alternative_formats.v1
 display_name: Ally alternative format downloads
 description: >
-  One row per completed download of an Ally alternative format (audio, ePub, tagged PDF and so on): the date, the content object, the format, the course, and the course's institution hierarchy nodes as a ';'-separated list (filter with contains). Deviation: bbd-analytics also emits a row with no date for every day without events; here
-  only events appear.
+  One row per completed download of an Ally alternative format (audio, ePub, tagged PDF and so on):
+  the date, the content object, the format, the course, and the course's institution hierarchy nodes
+  as a ';'-separated list (filter with contains). Days without events have no row.
+notes: >
+  Deviation: bbd-analytics also emits a row with no date for every day without events; here only
+  events appear.
 grain: one row per completed alternative-format download
 domain: ally
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_ALLY_ALTERNATIVE_FORMAT.sql

@@ -1,8 +1,12 @@
 id: dataset.ally_instructor_feedback.v1
 display_name: Ally instructor feedback views
 description: >
-  One row per time an instructor opened Ally accessibility feedback on a content object: the date, the object, the course, and the course's institution hierarchy nodes as a ';'-separated list (filter with contains). Deviation: bbd-analytics also emits a row with no date for every day without events; here
-  only events appear.
+  One row per time an instructor opened Ally accessibility feedback on a content object: the date,
+  the object, the course, and the course's institution hierarchy nodes as a ';'-separated list
+  (filter with contains). Days without events have no row.
+notes: >
+  Deviation: bbd-analytics also emits a row with no date for every day without events; here only
+  events appear.
 grain: one row per instructor feedback event
 domain: ally
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_ALLY_INSTRUCTOR_FEEDBACK.sql

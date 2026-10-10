@@ -2,9 +2,12 @@ id: dataset.student_item_tool_activity.v1
 display_name: Student item and tool use
 description: >
   Per active student enrollment and item or tool type used inside the course window: interactions,
-  minutes, distinct items or tools used and the last access. Deviation: bbd-analytics adds a row with
-  no type for every student without tool activity and files activity in tools that have no tool type
-  under no type; here only types actually used appear, and tools without a tool type are left out.
+  minutes, distinct items or tools used and the last access. Only types actually used appear, and
+  tools without a tool type are left out.
+notes: >
+  Deviation: bbd-analytics adds a row with no type for every student without tool activity and files
+  activity in tools that have no tool type under no type; here only types actually used appear, and
+  tools without a tool type are left out.
 grain: one row per active student enrollment x item-or-tool x type
 domain: tools
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__TFV_STUDENT_ITEM_TOOL_ACTIVITY.sql

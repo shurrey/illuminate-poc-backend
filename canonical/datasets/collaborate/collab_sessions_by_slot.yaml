@@ -1,11 +1,13 @@
 id: dataset.collab_sessions_by_slot.v1
 display_name: Collaborate sessions by two-hour slot
 description: >
-  One row per Collaborate session and two-hour slot it was running in (from the hour of first join to
-  the hour of last leave), with the slot's date, day of week and 12-hour label and the institution
-  hierarchy nodes of the courses linked to the session's room as a ';'-separated list, for
-  sessions-by-day-and-hour heat maps. Deviation: bbd-analytics also emits every empty slot since 1970
-  with a zero count; here only slots with sessions appear.
+  One row per Collaborate session and two-hour slot it was running in (from the hour of first join
+  to the hour of last leave), with the slot's date, day of week and 12-hour label and the
+  institution hierarchy nodes of the courses linked to the session's room as a ';'-separated list,
+  for sessions-by-day-and-hour heat maps. Only slots with sessions appear.
+notes: >
+  Deviation: bbd-analytics also emits every empty slot since 1970 with a zero count; here only slots
+  with sessions appear.
 grain: one row per Collaborate session x two-hour slot it spans
 domain: collaborate
 source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PLATFORM_CLB_SESSION_BY_DAY_OF_WEEK_AND_HOUR_OF_DAY.sql
