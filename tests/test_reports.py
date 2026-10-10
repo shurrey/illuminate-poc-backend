@@ -354,3 +354,25 @@ def test_encode_options_are_not_mistaken_for_columns():
     bar = {**SESSIONS, "id": "bar", "type": "bar", "encode": {"x": "sessions", "y": ["sessions", "missing"], "stacked": True}}
     problems = validate_report(_report([], [kpi, bar]), CATALOG)
     assert problems == ["bar/encode: columns ['missing'] are not returned by its queries"]
+
+
+def test_inside_the_grading_time_includes_the_expected_day_itself():
+    report = load_reports()["report.assessment_grades.v1"]
+    ops = {(v.id, q): [f.op for f in merged_contract(report, v, q, {"kpi": ["21"]}, CATALOG)[0].filters
+                       if f.dimension.endswith("response_days_value")]
+           for v in report.visuals() for q in v.queries if v.queries[q].get("param_filters")}
+    assert ops and all(o == ["lte"] for o in ops.values())
+
+
+def test_response_days_exist_only_for_graded_attempts():
+    from semantic_layer.compiler import build_ctes
+    cte = build_ctes(CATALOG, ["dataset.grade_response_time.v1"], "DB")["DS_GRADE_RESPONSE_TIME_V1"]
+    for column in ("RESPONSE_HOURS", "RESPONSE_DAYS", "RESPONSE_DAYS_CAPPED"):
+        assert f"IFF(gr.GRADED_IND = 1, " in cte.split(f"AS {column},")[0].rsplit("\n", 1)[-1]
+
+
+def test_joined_node_and_term_queries_read_the_same_ordered_window():
+    report = load_reports()["report.assessment_grades.v1"]
+    v = report.visual("by_node_term")
+    orders = [v.queries[q].get("order_by") for q in ("main", "inside")]
+    assert orders[0] and orders[0] == orders[1]

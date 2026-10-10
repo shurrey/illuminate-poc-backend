@@ -96,7 +96,8 @@ pages:
     type: text
     title: How many submissions need to be graded?
     text: Submissions are student attempts on gradebook items that count towards grading time. The clock starts at the later
-      of the attempt and the item's due date.
+      of the attempt and the item's due date. A submission is inside the grading time when it was graded within the
+      expected number of days; submissions not yet graded count as outside.
   - id: inside_share
     type: pie
     title: How many submissions were graded inside the grading time?
@@ -111,7 +112,7 @@ pages:
         time_overlap: *id001
         param_filters: &id002
         - dimension: response_days_value
-          op: lt
+          op: lte
           param: kpi
     transform:
       kind: part_of_whole
@@ -232,6 +233,11 @@ pages:
         dimensions:
         - dataset.courses.v1:ih_level_1
         - dataset.courses.v1:term_name
+        order_by:
+        - field: ih_level_1
+          direction: asc
+        - field: term_name
+          direction: asc
         limit: 1000
       inside:
         measures:
@@ -241,6 +247,11 @@ pages:
         - dataset.courses.v1:ih_level_1
         - dataset.courses.v1:term_name
         param_filters: *id002
+        order_by:
+        - field: ih_level_1
+          direction: asc
+        - field: term_name
+          direction: asc
         limit: 1000
     transform:
       kind: join
