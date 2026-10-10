@@ -20,7 +20,7 @@ from .schema import Catalog
 
 REPORTS_DIR = CANONICAL_DIR / "reports"
 TRANSFORM_KINDS = {"period_over_period", "percent_of_total", "unpivot", "top_n_other", "side_by_side", "per_weekday_average",
-                   "average_by", "part_of_whole"}
+                   "average_by", "part_of_whole", "join"}
 _VALIDATION_DB = "VALIDATION_DB"
 
 
@@ -47,7 +47,8 @@ class FilterDimension(_Definition):
 class ReportFilter(_Definition):
     id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     label: str
-    control: Literal["multi_select", "select", "date_range"]
+    # number: a value (e.g. a threshold) that queries use through param_filters, not a filter on its own.
+    control: Literal["multi_select", "select", "date_range", "number"]
     dimension: Optional[str] = None
     # Ordered alternatives to `dimension`: a query applies the first one its datasets can reach.
     dimensions: list[FilterDimension] = Field(default_factory=list)
@@ -56,12 +57,16 @@ class ReportFilter(_Definition):
     # Option values the filter does not offer (placeholders such as '-' for "no node at this level").
     exclude_values: list[str] = Field(default_factory=list)
     time_dimension: Optional[str] = None
-    default: Optional[Union[Literal["current_term", "last_30_days", "previous_30_days"], list[FilterValue]]] = None
+    default: Optional[Union[Literal["current_term", "last_30_days", "previous_30_days"], list[FilterValue], float]] = None
 
     @model_validator(mode="after")
     def _targets(self) -> "ReportFilter":
         if self.control == "date_range" and not self.time_dimension:
             raise ValueError(f"filter {self.id}: a date_range needs a time_dimension")
+        if self.control == "number":
+            if not isinstance(self.default, (int, float)):
+                raise ValueError(f"filter {self.id}: a number control needs a numeric default")
+            return self
         if self.control != "date_range" and bool(self.dimension) == bool(self.dimensions):
             raise ValueError(f"filter {self.id}: needs a dimension or a list of dimensions, not both")
         return self
@@ -145,14 +150,17 @@ class QuerySpec(BaseModel):
     time_overlap: Optional[dict[str, str]] = None
     # Filters this query alone does not take (e.g. the whole in a part-of-whole visual).
     filters_ignored: list[str] = []
+    # [{dimension, op, param}]: a filter whose value is a number control's current value.
+    param_filters: list[dict[str, str]] = []
 
 
 def query_contract(spec: dict[str, Any]) -> QuerySpec:
     spec = dict(spec)
     time_dimension, date_filter = spec.pop("time_dimension", None), spec.pop("date_filter", None)
     time_overlap, filters_ignored = spec.pop("time_overlap", None), spec.pop("filters_ignored", [])
+    param_filters = spec.pop("param_filters", [])
     return QuerySpec(contract=QueryContract(**spec), time_dimension=time_dimension, date_filter=date_filter,
-                     time_overlap=time_overlap, filters_ignored=filters_ignored)
+                     time_overlap=time_overlap, filters_ignored=filters_ignored, param_filters=param_filters)
 
 
 def _coerce(filter_id: str, values: list, dim_type: str) -> list:
@@ -190,7 +198,7 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
     time_range = contract.time_range
     for f in report.filters:
         value = values.get(f.id)
-        if f.id in visual.filters_ignored or f.id in spec.filters_ignored or not value:
+        if f.control == "number" or f.id in visual.filters_ignored or f.id in spec.filters_ignored or not value:
             continue
         if f.control == "date_range":
             if f.id != date_filter:
@@ -236,6 +244,13 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
             else:
                 match = [str(raw[0])] if alt.op == "contains" else _coerce(f.id, raw, dim.type)
                 filters.append(ContractFilter(dimension=alt.ref, op=alt.op, values=match))
+    for pf in spec.param_filters:
+        param = next((f for f in report.filters if f.id == pf["param"] and f.control == "number"), None)
+        if param is None:
+            raise ReportValueError(f"query {query_name}: param {pf['param']!r} is not a number control")
+        raw = values.get(param.id) or [param.default]
+        filters.append(ContractFilter(dimension=pf["dimension"], op=pf["op"],
+                                      values=_coerce(param.id, raw if isinstance(raw, list) else [raw], "numeric")[:1]))
     return contract.model_copy(update={"filters": filters, "time_range": time_range}), ignored
 
 
@@ -275,6 +290,8 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
     problems = []
     sample: dict[str, Any] = {}
     for f in report.filters:
+        if f.control == "number":
+            continue
         dim = _filter_target(f, catalog)
         unknown_parents = sorted(set(f.depends_on) - {g.id for g in report.filters})
         if unknown_parents:
@@ -347,6 +364,8 @@ def resolve_defaults(report: Report, today: date, terms: list[dict[str, Any]]) -
             defaults[f.id] = {"start": (today - timedelta(days=29)).isoformat(), "end": today.isoformat()}
         elif f.default == "previous_30_days":
             defaults[f.id] = {"start": (today - timedelta(days=59)).isoformat(), "end": (today - timedelta(days=30)).isoformat()}
+        elif isinstance(f.default, (int, float)):
+            defaults[f.id] = [f.default]
         elif f.default is not None:
             defaults[f.id] = f.default
     return defaults

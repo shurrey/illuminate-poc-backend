@@ -33,7 +33,8 @@ base_sql: |
          gr.ATTEMPTED_TIME, gr.GRADED_TIME, gr.MANUAL_IND, gr.GRADED_IND,
          CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME), 0)) AS RESPONSE_HOURS,
          CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME) / 24, 0)) AS RESPONSE_DAYS,
-         LEAST(CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME) / 24, 0)), 91) AS RESPONSE_DAYS_CAPPED
+         LEAST(CEIL(GREATEST(DATEDIFF(hour, gr.CLOCK_START, gr.GRADED_TIME) / 24, 0)), 91) AS RESPONSE_DAYS_CAPPED,
+         IFF(RESPONSE_DAYS_CAPPED >= 91, '91+', RESPONSE_DAYS_CAPPED::STRING) AS RESPONSE_DAYS_BUCKET
   FROM grades gr
   JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = gr.ITEM_TYPE AND m.GRADE_RESPONSE_IND = 1
 entities:
@@ -46,6 +47,7 @@ dimensions:
   - {name: graded, column: GRADED_IND, type: numeric, description: "1 when the grade is valid and has a graded time"}
   - {name: manual_grade, column: MANUAL_IND, type: boolean, description: "Entered by hand rather than calculated"}
   - {name: response_days_value, column: RESPONSE_DAYS, type: numeric, description: "Days from the later of attempt and due date to grading, rounded up"}
+  - {name: response_days_bucket, column: RESPONSE_DAYS_BUCKET, type: categorical, description: "Response days as a label, '0' to '90' or '91+'; sort by response_days_capped"}
   - {name: response_days_capped, column: RESPONSE_DAYS_CAPPED, type: numeric, description: "Response days, with anything over 91 shown as 91"}
   - {name: has_due_date, column: HAS_DUE_DATE, type: boolean, description: "The gradebook item has a due date"}
   - {name: due_time, column: DUE_TIME, type: time, grains: [day, week, month, quarter, year]}
