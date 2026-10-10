@@ -459,3 +459,22 @@ def test_a_child_of_visual_validates_against_its_alias_and_its_lists_must_match(
                                            "child_of": {"filters": ["ih1", "nope"], "dimensions": ["dataset.courses.v1:ih_level_1"], "as": "node"}}}}
     problems = validate_report(_report(IH_FILTERS, [bad]), CATALOG)
     assert any("child_of" in p for p in problems)
+
+
+CA_VALUES = {"dates": {"start": "2026-01-01", "end": "2026-06-30"}, "term": ["Q4: 2026"], "duration": ["Fixed"],
+             "ih1": ["Arts"], "course": ["BIO-101"]}
+
+
+def test_course_administration_applies_every_filter_to_every_query():
+    report = load_reports()["report.course_administration.v1"]
+    for v in report.visuals():
+        for q in v.queries:
+            contract, ignored = merged_contract(report, v, q, CA_VALUES, CATALOG)
+            assert ignored == [], (v.id, q)
+            assert contract.time_range.dimension == "dataset.courses.v1:course_creation_date", (v.id, q)
+
+
+def test_course_administration_node_bars_show_the_children_of_the_chosen_node():
+    report = load_reports()["report.course_administration.v1"]
+    contract, _ = merged_contract(report, report.visual("readiness_by_node"), "main", CA_VALUES, CATALOG)
+    assert contract.dimensions[0] == "dataset.courses.v1:ih_level_2"
