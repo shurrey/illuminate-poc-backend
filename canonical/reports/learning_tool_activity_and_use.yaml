@@ -1,0 +1,244 @@
+id: report.learning_tool_activity_and_use.v1
+title: Learning Tool Activity & Use
+area: leading
+description: 'Who uses learning tools and when: minutes and distinct users by day and time of week, by date and by role, and
+  how many active courses use tools.'
+filters:
+- id: dates
+  label: Primary date range
+  control: date_range
+  time_dimension: dataset.course_tool_activity.v1:activity_date
+  default: last_30_days
+- id: comparison
+  label: Comparison date range
+  control: date_range
+  time_dimension: dataset.course_tool_activity.v1:activity_date
+  default: previous_30_days
+- id: role
+  label: Role
+  control: select
+  dimension: dataset.course_tool_activity.v1:course_role_description
+- id: tool
+  label: Tool
+  control: select
+  dimension: dataset.course_tool_activity.v1:tool_name
+pages:
+- title: User Activity
+  visuals:
+  - id: users
+    type: kpi
+    title: What's the number of distinct users?
+    queries:
+      current:
+        measures:
+        - dataset.course_tool_activity.v1:people
+      previous:
+        measures:
+        - dataset.course_tool_activity.v1:people
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: people
+    encode:
+      value: value
+  - id: minutes
+    type: kpi
+    title: What's the total course tool activity in minutes?
+    queries:
+      current:
+        measures:
+        - dataset.course_tool_activity.v1:minutes
+      previous:
+        measures:
+        - dataset.course_tool_activity.v1:minutes
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: minutes
+    encode:
+      value: value
+  - id: users_by_role
+    type: pie
+    title: What's the number of distinct users by role?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:people
+        dimensions:
+        - course_role_description
+        order_by:
+        - field: people
+    transform:
+      kind: top_n_other
+      query: main
+      field: people
+      label: course_role_description
+      n: 5
+    encode:
+      label: course_role_description
+      value: people
+      donut: true
+  - id: minutes_heat
+    type: heatmap
+    title: What's the weekly average distribution of total course tool activity?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:minutes
+        dimensions:
+        - activity_date__day
+        - day_of_week
+        - hour_group
+        - hour_group_start
+        limit: 1000
+    transform:
+      kind: average_by
+      query: main
+      field: minutes
+      by:
+      - day_of_week
+      - hour_group
+      - hour_group_start
+    encode:
+      x: hour_group
+      y: day_of_week
+      value: minutes
+      x_sort: hour_group_start
+      y_order: &id001
+      - Sun
+      - Mon
+      - Tue
+      - Wed
+      - Thu
+      - Fri
+      - Sat
+  - id: users_heat
+    type: heatmap
+    title: What's the weekly average distribution of distinct users?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:people
+        dimensions:
+        - activity_date__day
+        - day_of_week
+        - hour_group
+        - hour_group_start
+        limit: 1000
+    transform:
+      kind: average_by
+      query: main
+      field: people
+      by:
+      - day_of_week
+      - hour_group
+      - hour_group_start
+    encode:
+      x: hour_group
+      y: day_of_week
+      value: people
+      x_sort: hour_group_start
+      y_order: *id001
+  - id: heat_help
+    type: text
+    title: Reading the weekly distributions
+    text: Each cell is the average for that day of the week and time of day across the selected date range. For example, Sunday
+      shows the average of every Sunday in the period. Times are in your institution's time zone.
+  - id: minutes_by_date
+    type: line
+    title: What's the total course tool activity in minutes by date?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:minutes
+        dimensions:
+        - activity_date__day
+        order_by:
+        - field: activity_date__day
+          direction: asc
+        limit: 400
+    encode:
+      x: activity_date__day
+      y: minutes
+  - id: users_by_date
+    type: line
+    title: What's the number of distinct users by date?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:people
+        dimensions:
+        - activity_date__day
+        order_by:
+        - field: activity_date__day
+          direction: asc
+        limit: 400
+    encode:
+      x: activity_date__day
+      y: people
+  - id: users_help
+    type: text
+    title: Distinct users
+    text: Every user has a distinct ID, so the same user is not counted twice, for instance if they use the same tool twice.
+- title: Course Activity
+  visuals:
+  - id: courses_using_tools
+    type: pie
+    title: How many active and available courses use learning tools?
+    queries:
+      all:
+        measures:
+        - dataset.courses.v1:courses
+        time_overlap:
+          start: course_start
+          end: course_end
+        filters:
+        - dimension: course_deleted
+          op: eq
+          values:
+          - false
+        - dimension: is_child_course
+          op: eq
+          values:
+          - 0
+        - dimension: course_available
+          op: eq
+          values:
+          - true
+        filters_ignored:
+        - tool
+      using:
+        measures:
+        - dataset.course_tool_activity.v1:courses
+        filters:
+        - dimension: course_available
+          op: eq
+          values:
+          - true
+        - dimension: dataset.courses.v1:course_deleted
+          op: eq
+          values:
+          - false
+    transform:
+      kind: part_of_whole
+      whole: all
+      part: using
+      field: courses
+      labels:
+      - Using learning tools
+      - Not using learning tools
+    encode:
+      label: category
+      value: value
+      donut: true
+    filters_ignored:
+    - role
+  - id: courses_help
+    type: text
+    title: Active and available courses
+    text: Active courses are available courses that run during the selected date range. A course is using learning tools when
+      it has tool activity in that range.

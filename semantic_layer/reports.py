@@ -142,14 +142,16 @@ class QuerySpec(BaseModel):
     date_filter: Optional[str] = None
     # {start, end}: the date range applies as start <= range end AND end >= range start.
     time_overlap: Optional[dict[str, str]] = None
+    # Filters this query alone does not take (e.g. the whole in a part-of-whole visual).
+    filters_ignored: list[str] = []
 
 
 def query_contract(spec: dict[str, Any]) -> QuerySpec:
     spec = dict(spec)
     time_dimension, date_filter = spec.pop("time_dimension", None), spec.pop("date_filter", None)
-    time_overlap = spec.pop("time_overlap", None)
+    time_overlap, filters_ignored = spec.pop("time_overlap", None), spec.pop("filters_ignored", [])
     return QuerySpec(contract=QueryContract(**spec), time_dimension=time_dimension, date_filter=date_filter,
-                     time_overlap=time_overlap)
+                     time_overlap=time_overlap, filters_ignored=filters_ignored)
 
 
 def _coerce(filter_id: str, values: list, dim_type: str) -> list:
@@ -187,7 +189,7 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
     time_range = contract.time_range
     for f in report.filters:
         value = values.get(f.id)
-        if f.id in visual.filters_ignored or not value:
+        if f.id in visual.filters_ignored or f.id in spec.filters_ignored or not value:
             continue
         if f.control == "date_range":
             if f.id != date_filter:
@@ -298,7 +300,7 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
                 continue
             own_date = spec.date_filter or (date_ids[0] if date_ids else None)
             applied |= {fid for fid in sample if fid not in ignored and fid not in v.filters_ignored
-                        and (fid not in date_ids or fid == own_date)}
+                        and fid not in spec.filters_ignored and (fid not in date_ids or fid == own_date)}
             returned |= _output_names(contract, catalog)
         if v.transform is not None:
             inputs = [v.transform.get(k) for k in ("value", "baseline", "query", "days_query") if v.transform.get(k)]
