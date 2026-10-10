@@ -1,14 +1,14 @@
 id: dataset.course_item_types.v1
 display_name: Course items by type
 description: >
-  One row per course and course item type used in course design (types that count towards tools per
+  One row per top-level course that has started and has a student, and course item type used in course design (types that count towards tools per
   course; test questions, rubric criteria and calendar events are not counted), with its group
   (Assessment, Content, Tool, Other) and how many items of that type the course has. Statistics over
   rows (median, minimum, maximum items) are per course for each type.
 grain: one row per course x course item type
 domain: course
 source: CDM_LMS.COURSE_ITEM, CDM_META.BBD_CALCULATION_DETAIL
-depends_on: [dataset.item_tool_map.v1]
+depends_on: [dataset.item_tool_map.v1, dataset.course_filters.v1]
 base_sql: |
   SELECT ci.COURSE_ID, ci.ITEM_TYPE,
          NVL(ANY_VALUE(m.DISPLAY_NAME), INITCAP(REPLACE(ci.ITEM_TYPE, '_', ' '))) AS ITEM_TYPE_NAME,
@@ -16,6 +16,7 @@ base_sql: |
          COUNT(*) AS ITEMS
   FROM {{ database }}.CDM_LMS.COURSE_ITEM ci
   JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = ci.ITEM_TYPE AND m.TOOL_COUNT_IND = 1
+  JOIN (SELECT DISTINCT COURSE_ID FROM {{ ref('dataset.course_filters.v1') }}) cf ON cf.COURSE_ID = ci.COURSE_ID
   WHERE ci.ROW_DELETED_TIME IS NULL
   GROUP BY ci.COURSE_ID, ci.ITEM_TYPE
 entities:

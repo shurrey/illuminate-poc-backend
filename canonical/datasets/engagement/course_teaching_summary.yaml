@@ -56,6 +56,7 @@ base_sql: |
               WHEN DATEDIFF(day, p.INSTRUCTOR_LAST_ACCESS, CURRENT_DATE()) <= 7 THEN 'Recently active'
               ELSE 'Previously active' END AS INSTRUCTOR_RECENCY,
          IFF(p.CLB_SESSION_CNT > 0, 'Yes', 'No') AS HAS_COLLAB,
+         IFF(p.STUDENTS > 0 AND p.INSTRUCTORS > 0, 'Yes', 'No') AS TEACHING_COURSE,
          p.CLB_SESSION_MIN / 60 AS SESSION_HOURS,
          IFF(p.CLB_SESSION_CNT > 0, p.CLB_SESSION_MIN / 60 / p.CLB_SESSION_CNT, NULL) AS AVG_SESSION_HOURS,
          p.CLB_SESSION_CNT / GREATEST(NVL(p.COURSE_WEEKS, 1), 1) AS SESSIONS_PER_WEEK,
@@ -70,6 +71,7 @@ dimensions:
   - {name: class_size_bin_end, column: CLASS_SIZE_BIN_END, type: numeric}
   - {name: access_bin, column: ACCESS_BIN, type: categorical, description: "Instructor access in 5-point steps ('00-05' ... '95-100')"}
   - {name: instructor_recency, column: INSTRUCTOR_RECENCY, type: categorical, description: "Recently active (within 7 days), Previously active, or Inactive"}
+  - {name: teaching_course, column: TEACHING_COURSE, type: categorical, description: "'Yes' when the course has both students and instructors"}
   - {name: has_collab, column: HAS_COLLAB, type: categorical, description: "'Yes' when the course had Collaborate sessions"}
 measures:
   - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
