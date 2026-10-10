@@ -79,7 +79,7 @@ def test_current_term_is_every_term_spanning_today(report):
 def test_between_terms_current_term_is_every_term_with_the_latest_end(report):
     defaults = resolve_defaults(report, date(2026, 10, 9), TERMS)
     assert defaults["term"] == ["Q4: 2026", "FY: 2026"]
-    assert defaults["dates"] == {"start": "2026-09-09", "end": "2026-10-09"}
+    assert defaults["dates"] == {"start": "2026-09-10", "end": "2026-10-09"}
     assert "node" not in defaults
 
 
@@ -180,8 +180,14 @@ def test_a_query_without_a_date_filter_takes_only_the_first_date_range():
 
 def test_previous_30_days_is_the_30_days_before_the_last_30():
     defaults = resolve_defaults(_pair(), date(2026, 10, 9), [])
-    assert defaults["comparison"] == {"start": "2026-08-10", "end": "2026-09-08"}
-    assert defaults["dates"] == {"start": "2026-09-09", "end": "2026-10-09"}
+    assert defaults["comparison"] == {"start": "2026-08-11", "end": "2026-09-09"}
+    assert defaults["dates"] == {"start": "2026-09-10", "end": "2026-10-09"}
+
+
+def test_the_default_primary_and_comparison_windows_are_the_same_length():
+    d = resolve_defaults(_pair(), date(2026, 10, 9), [])
+    length = lambda r: (date.fromisoformat(r["end"]) - date.fromisoformat(r["start"])).days + 1
+    assert length(d["dates"]) == length(d["comparison"]) == 30
 
 
 def test_validation_flags_a_date_filter_that_is_not_a_date_range():

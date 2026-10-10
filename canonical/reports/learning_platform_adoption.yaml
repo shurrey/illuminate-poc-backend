@@ -184,11 +184,18 @@ pages:
         - slot_label
         - slot_start_hour
         limit: 200
+      days:
+        time_dimension: slot_date
+        measures:
+        - dataset.lms_sessions_by_slot.v1:days
+        dimensions:
+        - day_of_week
     transform:
       kind: per_weekday_average
       query: main
       field: sessions
       day: day_of_week
+      days_query: days
     encode:
       x: slot_label
       y: day_of_week
@@ -216,11 +223,19 @@ pages:
         - slot_start_hour
         date_filter: comparison
         limit: 200
+      days:
+        time_dimension: slot_date
+        date_filter: comparison
+        measures:
+        - dataset.lms_sessions_by_slot.v1:days
+        dimensions:
+        - day_of_week
     transform:
       kind: per_weekday_average
       query: main
       field: sessions
       day: day_of_week
+      days_query: days
     encode:
       x: slot_label
       y: day_of_week
@@ -326,11 +341,18 @@ pages:
         - slot_label
         - slot_start_hour
         limit: 200
+      days:
+        time_dimension: slot_date
+        measures:
+        - dataset.collab_sessions_by_slot.v1:days
+        dimensions:
+        - day_of_week
     transform:
       kind: per_weekday_average
       query: main
       field: session_slots
       day: day_of_week
+      days_query: days
     encode:
       x: slot_label
       y: day_of_week
@@ -351,11 +373,19 @@ pages:
         - slot_start_hour
         date_filter: comparison
         limit: 200
+      days:
+        time_dimension: slot_date
+        date_filter: comparison
+        measures:
+        - dataset.collab_sessions_by_slot.v1:days
+        dimensions:
+        - day_of_week
     transform:
       kind: per_weekday_average
       query: main
       field: session_slots
       day: day_of_week
+      days_query: days
     encode:
       x: slot_label
       y: day_of_week

@@ -285,7 +285,8 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
                         and (fid not in date_ids or fid == own_date)}
             returned |= _output_names(contract, catalog)
         if v.transform is not None:
-            inputs = [v.transform.get(k) for k in ("value", "baseline", "query") if v.transform.get(k)]
+            inputs = [v.transform.get(k) for k in ("value", "baseline", "query", "days_query") if v.transform.get(k)]
+            inputs += list((v.transform.get("queries") or {}).values())
             missing = sorted(str(q) for q in inputs if q not in v.queries)
             if missing:
                 problems.append(f"{v.id}/transform: reads queries {missing} the visual does not have")
@@ -307,7 +308,8 @@ def _as_date(value: Any) -> Optional[date]:
 
 def resolve_defaults(report: Report, today: date, terms: list[dict[str, Any]]) -> dict[str, Any]:
     """Filter id -> its default value. current_term: the terms spanning today, else every term sharing the
-    latest end date before today. terms rows carry term_name, term_start and term_end."""
+    latest end date before today (rows carry term_name, term_start, term_end). last_30_days and
+    previous_30_days are consecutive 30-day windows ending today."""
     dated = [(t["term_name"], _as_date(t["term_start"]), _as_date(t["term_end"])) for t in terms]
     dated = [t for t in dated if t[1] and t[2]]
     current = [name for name, start, end in dated if start <= today <= end]
@@ -321,9 +323,9 @@ def resolve_defaults(report: Report, today: date, terms: list[dict[str, Any]]) -
             if current:
                 defaults[f.id] = current
         elif f.default == "last_30_days":
-            defaults[f.id] = {"start": (today - timedelta(days=30)).isoformat(), "end": today.isoformat()}
+            defaults[f.id] = {"start": (today - timedelta(days=29)).isoformat(), "end": today.isoformat()}
         elif f.default == "previous_30_days":
-            defaults[f.id] = {"start": (today - timedelta(days=60)).isoformat(), "end": (today - timedelta(days=31)).isoformat()}
+            defaults[f.id] = {"start": (today - timedelta(days=59)).isoformat(), "end": (today - timedelta(days=30)).isoformat()}
         elif f.default is not None:
             defaults[f.id] = f.default
     return defaults
