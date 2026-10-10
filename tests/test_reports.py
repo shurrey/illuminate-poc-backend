@@ -376,3 +376,18 @@ def test_joined_node_and_term_queries_read_the_same_ordered_window():
     v = report.visual("by_node_term")
     orders = [v.queries[q].get("order_by") for q in ("main", "inside")]
     assert orders[0] and orders[0] == orders[1]
+
+
+@pytest.mark.parametrize("report_id", sorted(load_reports(REPORTS_DIR)))
+def test_table_ratio_columns_declare_their_unit(report_id):
+    report = load_reports(REPORTS_DIR)[report_id]
+    for v in report.visuals():
+        if v.type != "table":
+            continue
+        ratios = set((v.transform or {}).get("ratios", {}))
+        for q in v.queries.values():
+            for ref in q.get("measures", []):
+                ds, name = ref.split(":")
+                if CATALOG.datasets[ds].measure(name).unit == "ratio":
+                    ratios.add(name)
+        assert ratios <= set((v.encode or {}).get("units", {})), f"{v.id}: {ratios}"
