@@ -478,3 +478,15 @@ def test_course_administration_node_bars_show_the_children_of_the_chosen_node():
     report = load_reports()["report.course_administration.v1"]
     contract, _ = merged_contract(report, report.visual("readiness_by_node"), "main", CA_VALUES, CATALOG)
     assert contract.dimensions[0] == "dataset.courses.v1:ih_level_2"
+
+
+@pytest.mark.parametrize("today, last, before", [
+    (date(2026, 10, 10), ("2026-09-01", "2026-09-30"), ("2026-08-01", "2026-08-31")),
+    (date(2026, 1, 15), ("2025-12-01", "2025-12-31"), ("2025-11-01", "2025-11-30")),
+    (date(2026, 3, 1), ("2026-02-01", "2026-02-28"), ("2026-01-01", "2026-01-31")),
+])
+def test_month_defaults_are_the_last_completed_month_and_the_one_before(today, last, before):
+    report = _report([{"id": "m", "label": "M", "control": "date_range", "time_dimension": "event_time", "default": "last_month"},
+                      {"id": "p", "label": "P", "control": "date_range", "time_dimension": "event_time", "default": "month_before_last"}], [])
+    defaults = resolve_defaults(report, today, [])
+    assert (defaults["m"]["start"], defaults["m"]["end"]) == last and (defaults["p"]["start"], defaults["p"]["end"]) == before
