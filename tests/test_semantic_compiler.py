@@ -485,3 +485,20 @@ def test_course_teaching_summary_is_one_row_per_course_with_guarded_class_size_a
                                                           "median_access_pct", "courses_with_collab", "total_session_hours")],
                        dimensions=["class_size_bin", "access_bin", "instructor_recency", "has_collab", "dataset.courses.v1:ih_level_1"]))
     assert "MEDIAN(" in sql and "LEFT JOIN DS_COURSES_V1" in sql
+
+
+def test_course_items_count_design_types_only_by_group_at_course_and_course_type_grain():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    totals = build_ctes(cat, ["dataset.course_item_totals.v1"], "DB")["DS_COURSE_ITEM_TOTALS_V1"]
+    types = build_ctes(cat, ["dataset.course_item_types.v1"], "DB")["DS_COURSE_ITEM_TYPES_V1"]
+    for cte in (totals, types):
+        assert "TOOL_COUNT_IND = 1" in cte and "ROW_DELETED_TIME IS NULL" in cte
+    assert "ITEM_GROUP = 'A'" in totals and "'Assessment'" in types
+    sql = _outer(_real(measures=["dataset.course_item_totals.v1:" + m for m in (
+        "courses", "median_items", "max_items", "min_items", "avg_assessments", "avg_contents", "avg_tools")],
+        dimensions=["items_bin", "items_bin_start", "dataset.courses.v1:ih_level_1"]))
+    assert "MEDIAN(" in sql and "LEFT JOIN DS_COURSES_V1" in sql
+    sql = _outer(_real(measures=["dataset.course_item_types.v1:" + m for m in ("courses", "median_items", "min_items", "max_items")],
+                       dimensions=["item_group", "item_type_name"]))
+    assert "MEDIAN(ITEMS)" in sql

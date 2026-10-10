@@ -1,0 +1,45 @@
+id: dataset.course_item_totals.v1
+display_name: Course item totals
+description: >
+  One row per course with its course items used in course design (types that count towards tools per
+  course), in total and per group (Assessment, Content, Tool, Other), and a 20-item bin for
+  distributions. Courses without such items do not appear. Statistics are over courses.
+grain: one row per course
+domain: course
+source: CDM_LMS.COURSE_ITEM, CDM_META.BBD_CALCULATION_DETAIL
+depends_on: [dataset.item_tool_map.v1]
+base_sql: |
+  WITH items AS (
+      SELECT ci.COURSE_ID,
+             COUNT(*) AS ITEMS,
+             COUNT_IF(ci.ITEM_GROUP = 'A') AS ASSESSMENTS,
+             COUNT_IF(ci.ITEM_GROUP = 'C') AS CONTENTS,
+             COUNT_IF(ci.ITEM_GROUP = 'T') AS TOOLS,
+             COUNT_IF(ci.ITEM_GROUP IS NULL OR ci.ITEM_GROUP NOT IN ('A', 'C', 'T')) AS OTHER_ITEMS
+      FROM {{ database }}.CDM_LMS.COURSE_ITEM ci
+      JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = ci.ITEM_TYPE AND m.TOOL_COUNT_IND = 1
+      WHERE ci.ROW_DELETED_TIME IS NULL
+      GROUP BY ci.COURSE_ID
+  )
+  SELECT i.*,
+         IFF(ITEMS >= 400, '400+', CONCAT(TO_VARCHAR(FLOOR(ITEMS / 20) * 20), '-', TO_VARCHAR(FLOOR(ITEMS / 20) * 20 + 19))) AS ITEMS_BIN,
+         LEAST(FLOOR(ITEMS / 20) * 20, 400) AS ITEMS_BIN_START
+  FROM items i
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: items_bin, column: ITEMS_BIN, type: categorical, description: "Course item count in 20s ('0-19', '20-39', ... '400+'); sort by items_bin_start"}
+  - {name: items_bin_start, column: ITEMS_BIN_START, type: numeric}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: items, agg: max, expr: ITEMS, unit: items, description: "Per course: course items"}
+  - {name: median_items, agg: median, expr: ITEMS, unit: items}
+  - {name: min_items, agg: min, expr: ITEMS, unit: items}
+  - {name: max_items, agg: max, expr: ITEMS, unit: items}
+  - {name: assessments, agg: max, expr: ASSESSMENTS, unit: items, description: "Per course: assessment items"}
+  - {name: contents, agg: max, expr: CONTENTS, unit: items}
+  - {name: tools, agg: max, expr: TOOLS, unit: items}
+  - {name: avg_assessments, agg: avg, expr: ASSESSMENTS, unit: items, description: "Assessment items per course"}
+  - {name: avg_contents, agg: avg, expr: CONTENTS, unit: items}
+  - {name: avg_tools, agg: avg, expr: TOOLS, unit: items}
+  - {name: avg_other, agg: avg, expr: OTHER_ITEMS, unit: items}
