@@ -400,3 +400,12 @@ def test_slots_are_cut_in_the_institutions_timezone_and_count_the_days_present(d
     cat = load_catalog()
     assert "CONVERT_TIMEZONE" in build_ctes(cat, [ds], "DB")[cte_name(ds)]
     assert "COUNT(DISTINCT SLOT_DATE)" in _outer(_real(measures=[f"{ds}:days"], dimensions=["day_of_week"]))
+
+
+def test_course_tool_activity_is_in_local_time_with_weekday_and_three_hour_groups():
+    from semantic_layer.catalog import load_catalog
+    cte = build_ctes(load_catalog(), ["dataset.course_tool_activity.v1"], "DB")["DS_COURSE_TOOL_ACTIVITY_V1"]
+    assert "CONVERT_TIMEZONE" in cte
+    sql = _outer(_real(measures=["dataset.course_tool_activity.v1:minutes"],
+                       dimensions=["activity_date__day", "day_of_week", "hour_group", "hour_group_start"]))
+    assert all(c in sql for c in ("ACTIVITY_DATE", "DAY_NAME", "HOUR_GROUP", "HOUR_GROUP_START"))
