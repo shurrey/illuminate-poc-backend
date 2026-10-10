@@ -9,7 +9,7 @@ source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PL
 base_sql: |
   WITH course_ih AS (
       SELECT ihc.COURSE_ID,
-             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+             ';' || LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
       FROM {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc
       JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
       GROUP BY ihc.COURSE_ID
@@ -32,7 +32,7 @@ entities:
 dimensions:
   - {name: event_date, column: EVENT_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: format_type, column: FORMAT_TYPE, type: categorical, description: "The alternative format downloaded, e.g. audio or ePub", synonyms: [alternative format]}
-  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
 measures:
   - {name: downloads, agg: count, expr: "*", unit: events}
   - {name: content_objects, agg: count_distinct, expr: OBJECT_ID, unit: objects}

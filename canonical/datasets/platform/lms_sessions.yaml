@@ -18,7 +18,7 @@ base_sql: |
   ),
   login_ih AS (
       SELECT lc.LOGIN_SOURCE_ID,
-             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+             ';' || LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
       FROM login_courses lc
       JOIN {{ database }}.CDM_LMS.COURSE c ON c.ID = lc.COURSE_ID AND c.COURSE_PARENT_ID IS NULL
       JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc ON ihc.COURSE_ID = lc.COURSE_ID
@@ -54,7 +54,7 @@ dimensions:
   - {name: access_modality, column: ACCESS_MODALITY, type: categorical, description: "Mobile app or Web browser", synonyms: [device, access method]}
   - {name: institution_role, column: ROLE, type: categorical}
   - {name: institution_role_name, column: ROLE_NAME, type: categorical, synonyms: [role, user type]}
-  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths of the courses the login touched; filter with contains"}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
 measures:
   - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions, synonyms: [logins]}
   - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people, synonyms: [unique users]}

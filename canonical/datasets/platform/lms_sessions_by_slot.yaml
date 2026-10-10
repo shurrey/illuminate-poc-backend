@@ -37,7 +37,7 @@ dimensions:
   - {name: day_of_week, column: DAY_NAME, type: categorical, synonyms: [weekday]}
   - {name: day_of_week_number, column: DAY_NUMBER, type: numeric, description: "1 Monday to 7 Sunday; sort days by this"}
   - {name: institution_role_name, column: ROLE_NAME, type: categorical, synonyms: [role]}
-  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
 measures:
   - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions, description: "Sessions active in the slot; a session spanning slots counts in each"}
   - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}

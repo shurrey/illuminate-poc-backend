@@ -37,9 +37,10 @@ class _Definition(BaseModel):
 
 class FilterDimension(_Definition):
     """One way a filter can apply: a dimension (dataset-qualified, or bare to resolve on the query's own
-    datasets) and how values match it. `contains` takes exactly one value."""
+    datasets) and how values match it. `contains` and `path` take exactly one value; `path` matches a
+    ';||A||B||'-style hierarchy list on the whole prefix from level 1, built from the depends_on values."""
     ref: str
-    op: Literal["in", "contains"] = "in"
+    op: Literal["in", "contains", "path"] = "in"
 
 
 class ReportFilter(_Definition):
@@ -51,6 +52,8 @@ class ReportFilter(_Definition):
     dimensions: list[FilterDimension] = Field(default_factory=list)
     # Filters whose values narrow this filter's options (a hierarchy level's parents).
     depends_on: list[str] = Field(default_factory=list)
+    # Option values the filter does not offer (placeholders such as '-' for "no node at this level").
+    exclude_values: list[str] = Field(default_factory=list)
     time_dimension: Optional[str] = None
     default: Optional[Union[Literal["current_term", "last_30_days", "previous_30_days"], list[FilterValue]]] = None
 
@@ -201,12 +204,17 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
             raw = value if isinstance(value, list) else [value]
             reached = next(((alt, dim) for alt in f.alternatives()
                             if (dim := filter_dimension(contract, alt.ref, catalog)) is not None), None)
-            if reached is None or (reached[0].op == "contains" and len(raw) != 1):
+            if reached is None or (reached[0].op != "in" and len(raw) != 1):
                 ignored.append(f.id)
                 continue
             alt, dim = reached
-            match = [str(raw[0])] if alt.op == "contains" else _coerce(f.id, raw, dim.type)
-            filters.append(ContractFilter(dimension=alt.ref, op=alt.op, values=match))
+            if alt.op == "path":
+                parents = [values[p][0] for p in f.depends_on if isinstance(values.get(p), list) and len(values[p]) == 1]
+                filters.append(ContractFilter(dimension=alt.ref, op="contains",
+                                              values=[";||" + "||".join(map(str, [*parents, raw[0]])) + "||"]))
+            else:
+                match = [str(raw[0])] if alt.op == "contains" else _coerce(f.id, raw, dim.type)
+                filters.append(ContractFilter(dimension=alt.ref, op=alt.op, values=match))
     return contract.model_copy(update={"filters": filters, "time_range": time_range}), ignored
 
 
