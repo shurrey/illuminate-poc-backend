@@ -586,8 +586,11 @@ def test_learning_tools_comparison_queries_use_only_the_comparison_range_and_fil
     for v in report.visuals():
         for q in v.queries:
             contract, ignored = merged_contract(report, v, q, LTA_VALUES, CATALOG)
-            expected = ["role", "tool"] if v.id == "coverage" else []
-            assert sorted(ignored + list(report.visual(v.id).queries[q].get("filters_ignored", []))) == expected, (v.id, q)
+            page = next(p.title for p in report.pages if v in p.visuals)
+            expected = sorted((["term"] if page == "Comparison" else []) + (["role", "tool"] if v.id == "coverage" else []))
+            skipped = ignored + list(v.queries[q].get("filters_ignored", [])) + list(v.filters_ignored)
+            assert sorted(skipped) == expected, (v.id, q)
+            assert ("term" in skipped) or any(f.dimension.endswith("term_name") for f in contract.filters), (v.id, q)
             comparison = v.id.endswith("_comparison") or q == "previous"
             assert str(contract.time_range.start) == ("2026-08-01" if comparison else "2026-09-01"), (v.id, q)
 
@@ -605,3 +608,8 @@ def test_the_ai_course_donut_follows_the_filters_like_the_node_bars():
 def test_the_ai_kpi_help_says_which_courses_the_kpis_cover():
     text = load_reports()["report.ai_design_assistant_adoption.v1"].visual("kpi_help").text
     assert "term" in text and "filters" in text
+
+
+def test_tool_coverage_counts_course_items_only():
+    v = _lta().visual("coverage")
+    assert {"dimension": "item_or_tool", "op": "in", "values": ["ITEM"]} in v.queries["main"]["filters"]

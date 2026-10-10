@@ -85,8 +85,8 @@ pages:
   - id: overview_help
     type: text
     title: Tools adoption overview
-    text: 'How learning tools and course items are used, measured by the key metric you choose: the number of users, courses
-      or tools with activity, or the minutes spent in tools, within the primary date range.'
+    text: 'How learning tools and course items are used within the primary date range. The tool, node and over-time charts
+      follow the key metric you choose: the number of users, courses or tools with activity, or the minutes spent in tools.'
   - id: users_by_role
     type: pie
     title: How many users are using tools?
@@ -191,7 +191,9 @@ pages:
     type: text
     title: Tools adoption comparison
     text: Compares tool use in the primary date range with the comparison date range. Choose a term, quarter or year by setting
-      the two ranges to it.
+      the two ranges to it. The course term filter applies to the Overview page only, so each range covers all courses active
+      in it. Course item access is the share of each type's items that people opened, for enrollments whose most recent access
+      falls in the primary date range.
   - id: over_time_primary
     type: line
     title: Primary range - How are tools being used over time?
@@ -215,6 +217,8 @@ pages:
     encode:
       x: activity_date__week
       y: value
+    filters_ignored:
+    - term
   - id: over_time_comparison
     type: line
     title: Comparison range - How are tools being used over time?
@@ -239,6 +243,8 @@ pages:
     encode:
       x: activity_date__week
       y: value
+    filters_ignored:
+    - term
   - id: users_kpi
     type: kpi
     title: Users engaging with tools
@@ -259,6 +265,8 @@ pages:
       field: people
     encode:
       value: value
+    filters_ignored:
+    - term
   - id: courses_kpi
     type: kpi
     title: Courses engaging with tools
@@ -279,9 +287,11 @@ pages:
       field: courses
     encode:
       value: value
+    filters_ignored:
+    - term
   - id: coverage
     type: bar
-    title: Are tools being accessed?
+    title: Are course items being accessed?
     queries:
       main:
         measures:
@@ -289,6 +299,11 @@ pages:
         dimensions:
         - type_name
         time_dimension: last_access
+        filters:
+        - dimension: item_or_tool
+          op: in
+          values:
+          - ITEM
         filters_ignored:
         - role
         - tool
@@ -300,6 +315,8 @@ pages:
       x: type_name
       y: coverage
       horizontal: true
+    filters_ignored:
+    - term
   - id: courses_most
     type: table
     title: Which courses are using the tools the most?
@@ -324,3 +341,5 @@ pages:
       - minutes
       - tools_used
       - activity_rows
+    filters_ignored:
+    - term
