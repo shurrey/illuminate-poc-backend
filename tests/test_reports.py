@@ -151,3 +151,40 @@ def test_validation_flags_a_filter_no_visual_can_apply():
 def test_validation_flags_a_transform_reading_a_query_that_does_not_exist():
     pop = {**GRT_KPI, "transform": {"kind": "period_over_period", "value": "main", "baseline": "previous", "field": "attempts"}}
     assert any("previous" in p for p in validate_report(_report([], [pop]), CATALOG))
+
+
+COMPARISON = {"id": "comparison", "label": "Comparison", "control": "date_range",
+              "time_dimension": "dataset.activity_log.v1:event_time", "default": "previous_30_days"}
+PRIMARY = {**DATES, "time_dimension": "dataset.activity_log.v1:event_time", "default": "last_30_days"}
+BOTH = {"dates": {"start": "2026-09-01", "end": "2026-09-30"}, "comparison": {"start": "2026-08-01", "end": "2026-08-31"}}
+
+
+def _pair():
+    visual = {"id": "users", "type": "kpi", "title": "Users",
+              "queries": {"current": {"measures": ["dataset.activity_log.v1:events"]},
+                          "previous": {"measures": ["dataset.activity_log.v1:events"], "date_filter": "comparison"}}}
+    return _report([PRIMARY, COMPARISON], [visual])
+
+
+def test_a_comparison_query_takes_only_the_comparison_range():
+    report = _pair()
+    contract, ignored = merged_contract(report, report.visual("users"), "previous", BOTH, CATALOG)
+    assert (str(contract.time_range.start), str(contract.time_range.end), ignored) == ("2026-08-01", "2026-08-31", [])
+
+
+def test_a_query_without_a_date_filter_takes_only_the_first_date_range():
+    report = _pair()
+    contract, _ = merged_contract(report, report.visual("users"), "current", BOTH, CATALOG)
+    assert (str(contract.time_range.start), str(contract.time_range.end)) == ("2026-09-01", "2026-09-30")
+
+
+def test_previous_30_days_is_the_30_days_before_the_last_30():
+    defaults = resolve_defaults(_pair(), date(2026, 10, 9), [])
+    assert defaults["comparison"] == {"start": "2026-08-10", "end": "2026-09-08"}
+    assert defaults["dates"] == {"start": "2026-09-09", "end": "2026-10-09"}
+
+
+def test_validation_flags_a_date_filter_that_is_not_a_date_range():
+    report = _pair()
+    report.pages[0].visuals[0].queries["previous"]["date_filter"] = "nope"
+    assert any("nope" in p for p in validate_report(report, CATALOG))

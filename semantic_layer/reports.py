@@ -41,7 +41,7 @@ class ReportFilter(_Definition):
     control: Literal["multi_select", "select", "date_range"]
     dimension: Optional[str] = None
     time_dimension: Optional[str] = None
-    default: Optional[Union[Literal["current_term", "last_30_days"], list[FilterValue]]] = None
+    default: Optional[Union[Literal["current_term", "last_30_days", "previous_30_days"], list[FilterValue]]] = None
 
     @model_validator(mode="after")
     def _targets(self) -> "ReportFilter":
@@ -116,11 +116,18 @@ def load_reports(root: Path = REPORTS_DIR) -> dict[str, Report]:
     return reports
 
 
-def query_contract(spec: dict[str, Any]) -> tuple[QueryContract, Optional[str]]:
-    """A visual query's contract and its optional time dimension override."""
+class QuerySpec(BaseModel):
+    """A visual query: its contract, the time dimension its date range applies to, and which date-range
+    filter it takes (default: the report's first)."""
+    contract: QueryContract
+    time_dimension: Optional[str] = None
+    date_filter: Optional[str] = None
+
+
+def query_contract(spec: dict[str, Any]) -> QuerySpec:
     spec = dict(spec)
-    time_dimension = spec.pop("time_dimension", None)
-    return QueryContract(**spec), time_dimension
+    time_dimension, date_filter = spec.pop("time_dimension", None), spec.pop("date_filter", None)
+    return QuerySpec(contract=QueryContract(**spec), time_dimension=time_dimension, date_filter=date_filter)
 
 
 def _coerce(filter_id: str, values: list, dim_type: str) -> list:
@@ -149,7 +156,10 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
                     database: str = _VALIDATION_DB) -> tuple[QueryContract, list[str]]:
     """The query with each filter-bar value applied, and the ids of filters ignored because the query's
     datasets cannot reach their dimension. Raises ReportValueError for a value of the wrong shape or type."""
-    contract, time_dimension = query_contract(visual.queries[query_name])
+    spec = query_contract(visual.queries[query_name])
+    contract, time_dimension = spec.contract, spec.time_dimension
+    date_filters = [f.id for f in report.filters if f.control == "date_range"]
+    date_filter = spec.date_filter or (date_filters[0] if date_filters else None)
     ignored: list[str] = []
     filters = list(contract.filters)
     time_range = contract.time_range
@@ -158,6 +168,8 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
         if f.id in visual.filters_ignored or not value:
             continue
         if f.control == "date_range":
+            if f.id != date_filter:
+                continue
             if not isinstance(value, dict):
                 raise ReportValueError(f"filter {f.id}: a date range is {{start, end}}")
             if not (value.get("start") or value.get("end")):
@@ -213,19 +225,25 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
             continue
         sample[f.id] = ({"start": "2026-01-01", "end": "2026-01-31"} if f.control == "date_range"
                         else _SAMPLE.get(dim.type, ["sample"]))
+    date_ids = [f.id for f in report.filters if f.control == "date_range"]
     applied: set[str] = set()
     for v in report.visuals():
         returned: set[str] = set()
         for name in v.queries:
             try:
-                contract, _ = query_contract(v.queries[name])
+                spec = query_contract(v.queries[name])
+                contract = spec.contract
+                if spec.date_filter is not None and spec.date_filter not in date_ids:
+                    raise ValueError(f"date_filter {spec.date_filter!r} is not one of the report's date ranges {date_ids}")
                 compile_query(contract, catalog, database, allow_identity=True)
                 merged, ignored = merged_contract(report, v, name, sample, catalog, database)
                 compile_query(merged, catalog, database, allow_identity=True)
             except (CompileError, ValidationError, ValueError) as e:
                 problems.append(f"{v.id}/{name}: {e}")
                 continue
-            applied |= set(sample) - set(ignored) - set(v.filters_ignored)
+            own_date = spec.date_filter or (date_ids[0] if date_ids else None)
+            applied |= {fid for fid in sample if fid not in ignored and fid not in v.filters_ignored
+                        and (fid not in date_ids or fid == own_date)}
             returned |= _output_names(contract, catalog)
         if v.transform is not None:
             inputs = [v.transform.get(k) for k in ("value", "baseline", "query") if v.transform.get(k)]
@@ -265,6 +283,8 @@ def resolve_defaults(report: Report, today: date, terms: list[dict[str, Any]]) -
                 defaults[f.id] = current
         elif f.default == "last_30_days":
             defaults[f.id] = {"start": (today - timedelta(days=30)).isoformat(), "end": today.isoformat()}
+        elif f.default == "previous_30_days":
+            defaults[f.id] = {"start": (today - timedelta(days=60)).isoformat(), "end": (today - timedelta(days=31)).isoformat()}
         elif f.default is not None:
             defaults[f.id] = f.default
     return defaults
