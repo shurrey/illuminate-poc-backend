@@ -406,7 +406,23 @@ def test_collaboration_filters_apply_to_every_query_without_being_ignored():
     for key, (contract, ignored) in _collab_contracts().items():
         dims = {f.dimension for f in contract.filters}
         assert ignored == [], key
-        assert {"dataset.collab_sessions.v1:in_course", "dataset.collab_session_courses.v1:term_name"} <= dims, key
+        assert {"in_course", "dataset.collab_session_courses.v1:term_name"} <= dims, key
+
+
+def test_collaboration_in_course_reads_each_datasets_own_column():
+    from semantic_layer.compiler import compile_query
+    report = load_reports()["report.collaboration_session_activity.v1"]
+    contract, _ = merged_contract(report, report.visual("chat_kpi"), "current", {"in_course": ["Yes"]}, CATALOG)
+    sql = compile_query(contract, CATALOG, "DB").sql
+    assert "DS_COLLAB_SESSIONS_V1" not in sql and "IN_COURSE IN ('Yes')" in sql
+
+
+@pytest.mark.parametrize("ds", ["dataset.collab_events.v1", "dataset.collab_attendance.v1"])
+def test_collab_events_and_attendance_keep_only_sessions_that_started_and_are_not_deleted(ds):
+    from semantic_layer.compiler import build_ctes
+    from semantic_layer.render import cte_name
+    cte = build_ctes(CATALOG, [ds], "DB")[cte_name(ds)]
+    assert "ROW_DELETED_TIME IS NULL" in cte and "START_TIME IS NOT NULL" in cte
 
 
 def test_minimum_attendees_narrows_only_the_attendance_statistics():
