@@ -4,7 +4,7 @@ description: >
   Activity in each top-level course's tools over the last three years, per person and hour: minutes
   and activity rows, with the tool, the person's course role and availability flags. Each access
   counts once, for its own tool when it has one and otherwise for its content item's tool. Rows are
-  per hour rather than per access time, and tool names are in English.
+  per hour of local time rather than per access time, and tool names are in English.
 notes: >
   Deviation: bbd-analytics counts an access once for its tool and again for its content item's tool
   (99.8% of rows carry both), doubling or splitting minutes; here each access counts once, for its
@@ -18,19 +18,27 @@ base_sql: |
       SELECT a.PERSON_ID,
              IFF(a.TOOL_ID IS NOT NULL AND a.COURSE_ID IS NOT NULL, a.COURSE_ID, ict.COURSE_ID) AS COURSE_ID,
              IFF(a.TOOL_ID IS NOT NULL AND a.COURSE_ID IS NOT NULL, a.TOOL_ID, ict.TOOL_ID) AS TOOL_ID,
-             DATE_TRUNC('hour', a.ACCESSED_TIME) AS ACTIVITY_HOUR,
+             a.ACCESSED_TIME,
              NVL(a.DURATION_SUM, 0) AS DURATION_SUM
       FROM {{ database }}.CDM_LMS.ACTIVITY a
       LEFT JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = a.COURSE_ITEM_ID
       LEFT JOIN {{ database }}.CDM_LMS.COURSE_TOOL ict ON ict.ID = ci.COURSE_TOOL_ID
       WHERE a.ACCESSED_TIME >= DATEADD(year, -3, CURRENT_TIMESTAMP())
   ),
+  course_tz AS (
+      SELECT c.ID AS COURSE_ID, NVL(i.STAGE:timezone::STRING, 'UTC') AS TZ
+      FROM {{ database }}.CDM_LMS.COURSE c
+      JOIN {{ database }}.CDM_LMS.INSTANCE i ON i.ID = c.INSTANCE_ID
+  ),
   per_hour AS (
-      SELECT PERSON_ID, COURSE_ID, TOOL_ID, ACTIVITY_HOUR,
-             SUM(DURATION_SUM) AS DURATION_SUM, COUNT(*) AS ACTIVITY_COUNT
-      FROM activity
-      WHERE COURSE_ID IS NOT NULL AND TOOL_ID IS NOT NULL
-      GROUP BY PERSON_ID, COURSE_ID, TOOL_ID, ACTIVITY_HOUR
+      -- Hours are the course instance's local time, so weekdays and hours match the institution's day.
+      SELECT a.PERSON_ID, a.COURSE_ID, a.TOOL_ID,
+             DATE_TRUNC('hour', CONVERT_TIMEZONE(NVL(tz.TZ, 'UTC'), a.ACCESSED_TIME)::TIMESTAMP_NTZ) AS ACTIVITY_HOUR,
+             SUM(a.DURATION_SUM) AS DURATION_SUM, COUNT(*) AS ACTIVITY_COUNT
+      FROM activity a
+      LEFT JOIN course_tz tz ON tz.COURSE_ID = a.COURSE_ID
+      WHERE a.COURSE_ID IS NOT NULL AND a.TOOL_ID IS NOT NULL
+      GROUP BY 1, 2, 3, 4
   )
   SELECT ct.ID AS COURSE_TOOL_ID,
          ct.COURSE_ID,
@@ -40,6 +48,11 @@ base_sql: |
          ph.PERSON_ID,
          pc.ID AS PERSON_COURSE_ID,
          ph.ACTIVITY_HOUR,
+         ph.ACTIVITY_HOUR::DATE AS ACTIVITY_DATE,
+         DAYNAME(ph.ACTIVITY_HOUR) AS DAY_NAME,
+         FLOOR(HOUR(ph.ACTIVITY_HOUR) / 3) * 3 AS HOUR_GROUP_START,
+         DECODE(FLOOR(HOUR(ph.ACTIVITY_HOUR) / 3), 0, '12 AM–3 AM', 1, '3 AM–6 AM', 2, '6 AM–9 AM', 3, '9 AM–12 PM',
+                4, '12 PM–3 PM', 5, '3 PM–6 PM', 6, '6 PM–9 PM', '9 PM–12 AM') AS HOUR_GROUP,
          pc.COURSE_ROLE,
          NVL(pc.COURSE_ROLE_SOURCE_DESC, 'Unknown') AS COURSE_ROLE_SOURCE_DESC,
          NVL(pc.COURSE_ROLE_DESC, 'Unknown') AS COURSE_ROLE_DESC,
@@ -64,7 +77,11 @@ dimensions:
   - {name: course_role_description, column: COURSE_ROLE_DESC, type: categorical}
   - {name: course_available, column: COURSE_AVAILABLE_IND, type: boolean}
   - {name: tool_available, column: TOOL_AVAILABLE_IND, type: boolean}
-  - {name: activity_time, column: ACTIVITY_HOUR, type: time, grains: [hour, day, week, month, quarter, year]}
+  - {name: activity_time, column: ACTIVITY_HOUR, type: time, grains: [hour, day, week, month, quarter, year], description: "The hour of activity, in the institution's local time"}
+  - {name: activity_date, column: ACTIVITY_DATE, type: time, grains: [day, week, month, quarter, year], description: "The local date of activity"}
+  - {name: day_of_week, column: DAY_NAME, type: categorical, description: "Sun to Sat, local time"}
+  - {name: hour_group, column: HOUR_GROUP, type: categorical, description: "Three-hour period of the day, e.g. 9 AM–12 PM"}
+  - {name: hour_group_start, column: HOUR_GROUP_START, type: numeric, description: "0, 3 … 21; sort hour groups by this"}
 measures:
   - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
   - {name: tools_used, agg: count_distinct, expr: COURSE_TOOL_ID, unit: tools}
