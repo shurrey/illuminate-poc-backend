@@ -952,7 +952,7 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     from roles import role_allows_identity
-    from semantic_layer.reports import ReportValueError, merged_contract
+    from semantic_layer.reports import ReportValueError, merged_contract, output_renames
 
     report = _report_or_404(report_id)
     visual = report.visual(request.visual)
@@ -977,8 +977,11 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
     result = await _execute(compiled)
     from fastapi.responses import JSONResponse
 
+    renames = output_renames(report, visual, request.query, request.values)
+    columns = [renames.get(c, c) for c in result["columns"]]
+    rows = [{renames.get(k, k): v for k, v in r.items()} for r in result["rows"]] if renames else result["rows"]
     return JSONResponse(_json_safe({
-        "columns": result["columns"], "rows": result["rows"], "truncated": result.get("truncated", False),
+        "columns": columns, "rows": rows, "truncated": result.get("truncated", False),
         "sql": compiled.sql, "provenance": compiled.provenance,
         "contract": contract.model_dump(mode="json", exclude_defaults=True), "ignored_filters": ignored,
     }))
