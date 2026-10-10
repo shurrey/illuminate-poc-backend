@@ -511,6 +511,7 @@ def test_instructor_tool_engagement_labels_each_course_and_keeps_courses_with_no
     for label in ("'Tool activity and contributions'", "'Tool activity only'", "'Contributions only'", "'No instructor activity'"):
         assert label in cte
     assert "SOCIAL_INTERACTIONS_IND = 1" in cte and "LEFT JOIN" in cte
+    assert "c.COURSE_ID = i.COURSE_ID AND c.TYPE = i.TYPE" in cte
     sql = _outer(_real(measures=["dataset.course_tool_instructor_engagement.v1:" + m for m in (
         "courses", "median_interactions", "max_interactions", "min_interactions", "median_contributions", "interactions_per_week")],
         dimensions=["type_name", "engagement", "dataset.courses.v1:ih_level_1"]))
