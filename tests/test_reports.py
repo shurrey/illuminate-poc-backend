@@ -391,3 +391,25 @@ def test_table_ratio_columns_declare_their_unit(report_id):
                 if CATALOG.datasets[ds].measure(name).unit == "ratio":
                     ratios.add(name)
         assert ratios <= set((v.encode or {}).get("units", {})), f"{v.id}: {ratios}"
+
+
+CSA_VALUES = {"dates": {"start": "2022-09-01", "end": "2022-09-30"}, "comparison": {"start": "2022-08-01", "end": "2022-08-31"},
+              "in_course": ["Yes"], "term": ["Fall 2022"], "ih1": ["Inst"], "min_attendees": ["2"]}
+
+
+def _collab_contracts():
+    report = load_reports()["report.collaboration_session_activity.v1"]
+    return {(v.id, q): merged_contract(report, v, q, CSA_VALUES, CATALOG) for v in report.visuals() for q in v.queries}
+
+
+def test_collaboration_filters_apply_to_every_query_without_being_ignored():
+    for key, (contract, ignored) in _collab_contracts().items():
+        dims = {f.dimension for f in contract.filters}
+        assert ignored == [], key
+        assert {"dataset.collab_sessions.v1:in_course", "dataset.collab_session_courses.v1:term_name"} <= dims, key
+
+
+def test_minimum_attendees_narrows_only_the_attendance_statistics():
+    narrowed = {key for key, (c, _) in _collab_contracts().items()
+                if any(f.dimension.endswith("attendee_count") and f.op == "gte" and f.values == [2] for f in c.filters)}
+    assert narrowed and all(v.startswith("attendance_") and v.endswith("_kpi") for v, _ in narrowed)

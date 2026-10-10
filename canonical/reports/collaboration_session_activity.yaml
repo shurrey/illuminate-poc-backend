@@ -1,0 +1,970 @@
+id: report.collaboration_session_activity.v1
+title: Collaboration Session Activity
+area: leading
+description: 'Who uses Collaborate sessions and when: sessions launched, rooms active, session length, attendance and feature
+  use (chat, raised hands, polls, whiteboard), for a primary and a comparison date range.'
+filters:
+- id: dates
+  label: Primary date range
+  control: date_range
+  time_dimension: dataset.collab_sessions.v1:start_date
+  default: last_30_days
+- id: comparison
+  label: Comparison date range
+  control: date_range
+  time_dimension: dataset.collab_sessions.v1:start_date
+  default: previous_30_days
+- id: in_course
+  label: Linked to a course
+  control: select
+  dimension: dataset.collab_sessions.v1:in_course
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.collab_session_courses.v1:term_name
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  exclude_values:
+  - '-'
+  - All Nodes
+  dimensions:
+  - ref: dataset.course_filters_ih.v1:ih_level_1
+  - ref: ih_nodes
+    op: path
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  exclude_values:
+  - '-'
+  - All Nodes
+  dimensions:
+  - ref: dataset.course_filters_ih.v1:ih_level_2
+  - ref: ih_nodes
+    op: path
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  exclude_values:
+  - '-'
+  - All Nodes
+  dimensions:
+  - ref: dataset.course_filters_ih.v1:ih_level_3
+  - ref: ih_nodes
+    op: path
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  exclude_values:
+  - '-'
+  - All Nodes
+  dimensions:
+  - ref: dataset.course_filters_ih.v1:ih_level_4
+  - ref: ih_nodes
+    op: path
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+- id: min_attendees
+  label: Minimum attendees per session
+  control: number
+  default: 1
+pages:
+- title: Session Activity and Duration
+  visuals:
+  - id: duration_help
+    type: text
+    title: Session duration
+    text: Session length is the attended length of each Collaborate session that started in the date range, in minutes. Each
+      statistic is over sessions.
+  - id: avg_length
+    type: kpi
+    title: What's the average session length?
+    queries:
+      current:
+        measures:
+        - dataset.collab_sessions.v1:avg_minutes
+        time_dimension: start_date
+      previous:
+        measures:
+        - dataset.collab_sessions.v1:avg_minutes
+        time_dimension: start_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: avg_minutes
+    encode:
+      value: value
+  - id: median_length
+    type: kpi
+    title: What's the median session length?
+    queries:
+      current:
+        measures:
+        - dataset.collab_sessions.v1:median_minutes
+        time_dimension: start_date
+      previous:
+        measures:
+        - dataset.collab_sessions.v1:median_minutes
+        time_dimension: start_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: median_minutes
+    encode:
+      value: value
+  - id: total_length
+    type: kpi
+    title: What's the session length sum?
+    queries:
+      current:
+        measures:
+        - dataset.collab_sessions.v1:total_minutes
+        time_dimension: start_date
+      previous:
+        measures:
+        - dataset.collab_sessions.v1:total_minutes
+        time_dimension: start_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: total_minutes
+    encode:
+      value: value
+  - id: max_length
+    type: kpi
+    title: What's the maximum session length?
+    queries:
+      current:
+        measures:
+        - dataset.collab_sessions.v1:max_minutes
+        time_dimension: start_date
+      previous:
+        measures:
+        - dataset.collab_sessions.v1:max_minutes
+        time_dimension: start_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: max_minutes
+    encode:
+      value: value
+  - id: min_length
+    type: kpi
+    title: What's the minimum session length?
+    queries:
+      current:
+        measures:
+        - dataset.collab_sessions.v1:min_minutes
+        time_dimension: start_date
+      previous:
+        measures:
+        - dataset.collab_sessions.v1:min_minutes
+        time_dimension: start_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: min_minutes
+    encode:
+      value: value
+  - id: launched_help
+    type: text
+    title: Launched sessions and room activity
+    text: A session is launched on the day it starts. A room is active on a day when one of its sessions starts that day.
+  - id: sessions_primary
+    type: line
+    title: Primary range - How many sessions were launched?
+    queries:
+      main:
+        measures:
+        - dataset.collab_sessions.v1:sessions
+        time_dimension: start_date
+        dimensions:
+        - start_date__day
+        order_by:
+        - field: start_date__day
+          direction: asc
+        limit: 400
+    encode:
+      x: start_date__day
+      y: sessions
+  - id: sessions_comparison
+    type: line
+    title: Comparison range - How many sessions were launched?
+    queries:
+      main:
+        measures:
+        - dataset.collab_sessions.v1:sessions
+        time_dimension: start_date
+        dimensions:
+        - start_date__day
+        order_by:
+        - field: start_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+    encode:
+      x: start_date__day
+      y: sessions
+  - id: rooms_primary
+    type: line
+    title: Primary range - How many rooms were active?
+    queries:
+      main:
+        measures:
+        - dataset.collab_sessions.v1:rooms
+        time_dimension: start_date
+        dimensions:
+        - start_date__day
+        order_by:
+        - field: start_date__day
+          direction: asc
+        limit: 400
+    encode:
+      x: start_date__day
+      y: rooms
+  - id: rooms_comparison
+    type: line
+    title: Comparison range - How many rooms were active?
+    queries:
+      main:
+        measures:
+        - dataset.collab_sessions.v1:rooms
+        time_dimension: start_date
+        dimensions:
+        - start_date__day
+        order_by:
+        - field: start_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+    encode:
+      x: start_date__day
+      y: rooms
+  - id: minutes_primary
+    type: line
+    title: Primary range - How long were sessions?
+    queries:
+      main:
+        measures:
+        - dataset.collab_sessions.v1:total_minutes
+        time_dimension: start_date
+        dimensions:
+        - start_date__day
+        order_by:
+        - field: start_date__day
+          direction: asc
+        limit: 400
+    encode:
+      x: start_date__day
+      y: total_minutes
+  - id: minutes_comparison
+    type: line
+    title: Comparison range - How long were sessions?
+    queries:
+      main:
+        measures:
+        - dataset.collab_sessions.v1:total_minutes
+        time_dimension: start_date
+        dimensions:
+        - start_date__day
+        order_by:
+        - field: start_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+    encode:
+      x: start_date__day
+      y: total_minutes
+- title: Session Attendance
+  visuals:
+  - id: attendance_help
+    type: text
+    title: Session attendance
+    text: An attendance is one person joining one session. The attendance statistics are over sessions that started in the
+      date range and had at least the minimum number of attendees.
+  - id: attendance_avg_kpi
+    type: kpi
+    title: What's the average session attendance?
+    queries:
+      current:
+        measures:
+        - dataset.collab_sessions.v1:avg_attendees
+        time_dimension: start_date
+        param_filters:
+        - dimension: attendee_count
+          op: gte
+          param: min_attendees
+      previous:
+        measures:
+        - dataset.collab_sessions.v1:avg_attendees
+        time_dimension: start_date
+        date_filter: comparison
+        param_filters:
+        - dimension: attendee_count
+          op: gte
+          param: min_attendees
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: avg_attendees
+    encode:
+      value: value
+  - id: attendance_median_kpi
+    type: kpi
+    title: What's the median session attendance?
+    queries:
+      current:
+        measures:
+        - dataset.collab_sessions.v1:median_attendees
+        time_dimension: start_date
+        param_filters:
+        - dimension: attendee_count
+          op: gte
+          param: min_attendees
+      previous:
+        measures:
+        - dataset.collab_sessions.v1:median_attendees
+        time_dimension: start_date
+        date_filter: comparison
+        param_filters:
+        - dimension: attendee_count
+          op: gte
+          param: min_attendees
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: median_attendees
+    encode:
+      value: value
+  - id: attendance_max_kpi
+    type: kpi
+    title: What's the maximum session attendance?
+    queries:
+      current:
+        measures:
+        - dataset.collab_sessions.v1:max_attendees
+        time_dimension: start_date
+        param_filters:
+        - dimension: attendee_count
+          op: gte
+          param: min_attendees
+      previous:
+        measures:
+        - dataset.collab_sessions.v1:max_attendees
+        time_dimension: start_date
+        date_filter: comparison
+        param_filters:
+        - dimension: attendee_count
+          op: gte
+          param: min_attendees
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: max_attendees
+    encode:
+      value: value
+  - id: attendance_min_kpi
+    type: kpi
+    title: What's the minimum session attendance?
+    queries:
+      current:
+        measures:
+        - dataset.collab_sessions.v1:min_attendees
+        time_dimension: start_date
+        param_filters:
+        - dimension: attendee_count
+          op: gte
+          param: min_attendees
+      previous:
+        measures:
+        - dataset.collab_sessions.v1:min_attendees
+        time_dimension: start_date
+        date_filter: comparison
+        param_filters:
+        - dimension: attendee_count
+          op: gte
+          param: min_attendees
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: min_attendees
+    encode:
+      value: value
+  - id: attendees_help
+    type: text
+    title: Total unique attendees
+    text: Unique attendees counts each person once per day they first joined a session. The distribution counts attendances
+      by day.
+  - id: unique_attendees_primary
+    type: bar
+    title: Primary range - How many unique attendees were there?
+    queries:
+      main:
+        measures:
+        - dataset.collab_attendance.v1:attendees
+        time_dimension: join_date
+        dimensions:
+        - join_date__day
+        order_by:
+        - field: join_date__day
+          direction: asc
+        limit: 400
+    encode:
+      x: join_date__day
+      y: attendees
+  - id: unique_attendees_comparison
+    type: bar
+    title: Comparison range - How many unique attendees were there?
+    queries:
+      main:
+        measures:
+        - dataset.collab_attendance.v1:attendees
+        time_dimension: join_date
+        dimensions:
+        - join_date__day
+        order_by:
+        - field: join_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+    encode:
+      x: join_date__day
+      y: attendees
+  - id: attendances_primary
+    type: bar
+    title: Primary range - What's the session attendance distribution?
+    queries:
+      main:
+        measures:
+        - dataset.collab_attendance.v1:attendances
+        time_dimension: join_date
+        dimensions:
+        - join_date__day
+        order_by:
+        - field: join_date__day
+          direction: asc
+        limit: 400
+    encode:
+      x: join_date__day
+      y: attendances
+  - id: attendances_comparison
+    type: bar
+    title: Comparison range - What's the session attendance distribution?
+    queries:
+      main:
+        measures:
+        - dataset.collab_attendance.v1:attendances
+        time_dimension: join_date
+        dimensions:
+        - join_date__day
+        order_by:
+        - field: join_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+    encode:
+      x: join_date__day
+      y: attendances
+- title: Session Engagement
+  visuals:
+  - id: status_help
+    type: text
+    title: Attendee status
+    text: How often attendees set their status to away or back to available.
+  - id: status_primary
+    type: pie
+    title: Primary range - What was the attendees' status?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:events
+        time_dimension: event_date
+        dimensions:
+        - event_label
+        limit: 400
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Status
+        order_by:
+        - field: events
+          direction: desc
+    encode:
+      label: event_label
+      value: events
+      donut: true
+  - id: status_comparison
+    type: pie
+    title: Comparison range - What was the attendees' status?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:events
+        time_dimension: event_date
+        dimensions:
+        - event_label
+        limit: 400
+        date_filter: comparison
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Status
+        order_by:
+        - field: events
+          direction: desc
+    encode:
+      label: event_label
+      value: events
+      donut: true
+  - id: chat_help
+    type: text
+    title: Chat messages
+    text: Each message sent to everyone, to moderators, privately or to another group.
+  - id: chat_type_primary
+    type: pie
+    title: Primary range - What type of chat messages were sent?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:events
+        time_dimension: event_date
+        dimensions:
+        - event_label
+        limit: 400
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Chat
+        order_by:
+        - field: events
+          direction: desc
+    encode:
+      label: event_label
+      value: events
+      donut: true
+  - id: chat_kpi
+    type: kpi
+    title: How many chat messages were sent?
+    queries:
+      current:
+        measures:
+        - dataset.collab_events.v1:events
+        time_dimension: event_date
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Chat
+      previous:
+        measures:
+        - dataset.collab_events.v1:events
+        time_dimension: event_date
+        date_filter: comparison
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Chat
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: events
+    encode:
+      value: value
+  - id: chat_primary
+    type: bar
+    title: Primary range - How many chat messages were sent?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:events
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Chat
+    encode:
+      x: event_date__day
+      y: events
+  - id: chat_comparison
+    type: bar
+    title: Comparison range - How many chat messages were sent?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:events
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Chat
+    encode:
+      x: event_date__day
+      y: events
+  - id: hands_help
+    type: text
+    title: Raised hands
+    text: Sessions in which at least one attendee raised a hand, and how many hands were raised.
+  - id: hand_sessions_kpi
+    type: kpi
+    title: In how many sessions were hands raised?
+    queries:
+      current:
+        measures:
+        - dataset.collab_events.v1:sessions
+        time_dimension: event_date
+        filters:
+        - dimension: event_type
+          op: in
+          values:
+          - HAND_RAISED
+      previous:
+        measures:
+        - dataset.collab_events.v1:sessions
+        time_dimension: event_date
+        date_filter: comparison
+        filters:
+        - dimension: event_type
+          op: in
+          values:
+          - HAND_RAISED
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: sessions
+    encode:
+      value: value
+  - id: hand_sessions_primary
+    type: bar
+    title: Primary range - In how many sessions were hands raised?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:sessions
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: event_type
+          op: in
+          values:
+          - HAND_RAISED
+    encode:
+      x: event_date__day
+      y: sessions
+  - id: hand_sessions_comparison
+    type: bar
+    title: Comparison range - In how many sessions were hands raised?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:sessions
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+        filters:
+        - dimension: event_type
+          op: in
+          values:
+          - HAND_RAISED
+    encode:
+      x: event_date__day
+      y: sessions
+  - id: hands_primary
+    type: bar
+    title: Primary range - How many hands were raised?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:hands_raised
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: event_type
+          op: in
+          values:
+          - HAND_RAISED
+    encode:
+      x: event_date__day
+      y: hands_raised
+  - id: hands_comparison
+    type: bar
+    title: Comparison range - How many hands were raised?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:hands_raised
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+        filters:
+        - dimension: event_type
+          op: in
+          values:
+          - HAND_RAISED
+    encode:
+      x: event_date__day
+      y: hands_raised
+  - id: polls_help
+    type: text
+    title: Polls
+    text: A poll counts each time a moderator shows it. A session used polls when a poll was shown in it.
+  - id: poll_sessions_kpi
+    type: kpi
+    title: How many sessions used polls?
+    queries:
+      current:
+        measures:
+        - dataset.collab_events.v1:sessions_with_polls
+        time_dimension: event_date
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Poll
+      previous:
+        measures:
+        - dataset.collab_events.v1:sessions_with_polls
+        time_dimension: event_date
+        date_filter: comparison
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Poll
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: sessions_with_polls
+    encode:
+      value: value
+  - id: polls_primary
+    type: bar
+    title: Primary range - How many polls were shown?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:polls_shown
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Poll
+    encode:
+      x: event_date__day
+      y: polls_shown
+  - id: polls_comparison
+    type: bar
+    title: Comparison range - How many polls were shown?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:polls_shown
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Poll
+    encode:
+      x: event_date__day
+      y: polls_shown
+  - id: poll_sessions_primary
+    type: bar
+    title: Primary range - How many sessions used polls?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:sessions_with_polls
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Poll
+    encode:
+      x: event_date__day
+      y: sessions_with_polls
+  - id: poll_sessions_comparison
+    type: bar
+    title: Comparison range - How many sessions used polls?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:sessions_with_polls
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Poll
+    encode:
+      x: event_date__day
+      y: sessions_with_polls
+  - id: whiteboard_help
+    type: text
+    title: Whiteboard
+    text: Sessions in which someone drew on, shared a file to, cleared or reset the whiteboard.
+  - id: whiteboard_kpi
+    type: kpi
+    title: How many sessions used the whiteboard?
+    queries:
+      current:
+        measures:
+        - dataset.collab_events.v1:sessions
+        time_dimension: event_date
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Whiteboard
+      previous:
+        measures:
+        - dataset.collab_events.v1:sessions
+        time_dimension: event_date
+        date_filter: comparison
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Whiteboard
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: sessions
+    encode:
+      value: value
+  - id: whiteboard_primary
+    type: bar
+    title: Primary range - How many sessions used the whiteboard?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:sessions
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Whiteboard
+    encode:
+      x: event_date__day
+      y: sessions
+  - id: whiteboard_comparison
+    type: bar
+    title: Comparison range - How many sessions used the whiteboard?
+    queries:
+      main:
+        measures:
+        - dataset.collab_events.v1:sessions
+        time_dimension: event_date
+        dimensions:
+        - event_date__day
+        order_by:
+        - field: event_date__day
+          direction: asc
+        limit: 400
+        date_filter: comparison
+        filters:
+        - dimension: event_group
+          op: in
+          values:
+          - Whiteboard
+    encode:
+      x: event_date__day
+      y: sessions
