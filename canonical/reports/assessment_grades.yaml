@@ -219,6 +219,8 @@ pages:
       - max_response_days
       - ungraded_attempts
       - share_graded
+      units:
+        share_graded: ratio
   - id: by_node_term
     type: table
     title: How do institutional hierarchy nodes compare in regards to grading?
@@ -271,6 +273,9 @@ pages:
       left: true
       fill_zero:
       - graded_inside
+    encode:
+      units:
+        share_graded_inside: ratio
   - id: by_course
     type: table
     title: Which courses are graded inside the grading time?
@@ -335,3 +340,6 @@ pages:
       left: true
       fill_zero:
       - graded_inside
+    encode:
+      units:
+        share_graded_inside: ratio
