@@ -1,0 +1,496 @@
+id: report.learning_platform_adoption.v1
+title: Learning Platform Adoption
+area: leading
+description: 'How the learning platform is used: LMS sessions and active courses, Collaborate, and the accessibility and originality
+  tools, for a primary and a comparison date range.'
+filters:
+- id: dates
+  label: Primary date range
+  control: date_range
+  time_dimension: dataset.lms_sessions.v1:session_date
+  default: last_30_days
+- id: comparison
+  label: Comparison date range
+  control: date_range
+  time_dimension: dataset.lms_sessions.v1:session_date
+  default: previous_30_days
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  dimensions:
+  - ref: dataset.course_filters_ih.v1:ih_level_1
+  - ref: ih_nodes
+    op: contains
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  dimensions:
+  - ref: dataset.course_filters_ih.v1:ih_level_2
+  - ref: ih_nodes
+    op: contains
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  dimensions:
+  - ref: dataset.course_filters_ih.v1:ih_level_3
+  - ref: ih_nodes
+    op: contains
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  dimensions:
+  - ref: dataset.course_filters_ih.v1:ih_level_4
+  - ref: ih_nodes
+    op: contains
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+pages:
+- title: LMS Activity
+  visuals:
+  - id: active_courses
+    type: kpi
+    title: How many active LMS courses are there?
+    queries:
+      current:
+        measures:
+        - dataset.lms_course_logins.v1:courses_accessed
+        time_dimension: login_date
+      previous:
+        measures:
+        - dataset.lms_course_logins.v1:courses_accessed
+        time_dimension: login_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: courses_accessed
+    encode:
+      value: value
+  - id: active_users
+    type: kpi
+    title: How many active LMS users are there?
+    queries:
+      current:
+        measures:
+        - dataset.lms_sessions.v1:people
+        time_dimension: session_date
+      previous:
+        measures:
+        - dataset.lms_sessions.v1:people
+        time_dimension: session_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: people
+    encode:
+      value: value
+  - id: roles
+    type: bar
+    title: What institution roles access LMS sessions?
+    queries:
+      current:
+        measures:
+        - dataset.lms_sessions.v1:sessions
+        time_dimension: session_date
+        dimensions:
+        - institution_role_name
+        order_by:
+        - field: sessions
+      previous:
+        measures:
+        - dataset.lms_sessions.v1:sessions
+        time_dimension: session_date
+        dimensions:
+        - institution_role_name
+        date_filter: comparison
+    transform:
+      kind: side_by_side
+      queries:
+        Primary range: current
+        Comparison range: previous
+      'on': institution_role_name
+      field: sessions
+    encode:
+      x: institution_role_name
+      y:
+      - Primary range
+      - Comparison range
+      horizontal: true
+  - id: modality_primary
+    type: pie
+    title: Primary range - LMS sessions by access modality
+    queries:
+      main:
+        measures:
+        - dataset.lms_sessions.v1:sessions
+        time_dimension: session_date
+        dimensions:
+        - access_modality
+    encode:
+      label: access_modality
+      value: sessions
+      donut: true
+  - id: modality_comparison
+    type: pie
+    title: Comparison range - LMS sessions by access modality
+    queries:
+      main:
+        measures:
+        - dataset.lms_sessions.v1:sessions
+        time_dimension: session_date
+        dimensions:
+        - access_modality
+        date_filter: comparison
+    encode:
+      label: access_modality
+      value: sessions
+      donut: true
+  - id: modality_help
+    type: text
+    title: Which modalities are used to access LMS sessions?
+    text: Sessions represent how many times each user accessed your LMS. A user can open many sessions.
+  - id: lms_heat_primary
+    type: heatmap
+    title: What's the average LMS sessions by day of the week and time interval? (Primary range)
+    queries:
+      main:
+        measures:
+        - dataset.lms_sessions_by_slot.v1:sessions
+        time_dimension: slot_date
+        dimensions:
+        - day_of_week
+        - slot_label
+        - slot_start_hour
+        limit: 200
+    transform:
+      kind: per_weekday_average
+      query: main
+      field: sessions
+      day: day_of_week
+    encode:
+      x: slot_label
+      y: day_of_week
+      value: sessions
+      x_sort: slot_start_hour
+      y_order: &id001
+      - Sun
+      - Mon
+      - Tue
+      - Wed
+      - Thu
+      - Fri
+      - Sat
+  - id: lms_heat_comparison
+    type: heatmap
+    title: What's the average LMS sessions by day of the week and time interval? (Comparison range)
+    queries:
+      main:
+        measures:
+        - dataset.lms_sessions_by_slot.v1:sessions
+        time_dimension: slot_date
+        dimensions:
+        - day_of_week
+        - slot_label
+        - slot_start_hour
+        date_filter: comparison
+        limit: 200
+    transform:
+      kind: per_weekday_average
+      query: main
+      field: sessions
+      day: day_of_week
+    encode:
+      x: slot_label
+      y: day_of_week
+      value: sessions
+      x_sort: slot_start_hour
+      y_order: *id001
+- title: Collaboration Tool Activity
+  visuals:
+  - id: collab_help
+    type: text
+    title: How is Collaborate adopted in my institution?
+    text: Collaboration tool refers to Collaborate. If you don't use Collaborate, no data is shown for these measures.
+  - id: rooms_created
+    type: kpi
+    title: How many Collaborate rooms are created?
+    queries:
+      current:
+        measures:
+        - dataset.collab_rooms.v1:rooms
+        time_dimension: created_date
+      previous:
+        measures:
+        - dataset.collab_rooms.v1:rooms
+        time_dimension: created_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: rooms
+    encode:
+      value: value
+  - id: collab_users
+    type: kpi
+    title: What's the total number of Collaborate users?
+    queries:
+      current:
+        measures:
+        - dataset.collab_attendance.v1:attendees
+        time_dimension: join_date
+      previous:
+        measures:
+        - dataset.collab_attendance.v1:attendees
+        time_dimension: join_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: attendees
+    encode:
+      value: value
+  - id: users_primary
+    type: line
+    title: Primary range - Distinct number of collaboration tool users over time
+    queries:
+      main:
+        measures:
+        - dataset.collab_attendance_hourly.v1:attendees
+        time_dimension: day
+        dimensions:
+        - day__day
+        order_by:
+        - field: day__day
+          direction: asc
+        limit: 400
+    encode:
+      x: day__day
+      y: attendees
+  - id: users_comparison
+    type: line
+    title: Comparison range - Distinct number of collaboration tool users over time
+    queries:
+      main:
+        measures:
+        - dataset.collab_attendance_hourly.v1:attendees
+        time_dimension: day
+        dimensions:
+        - day__day
+        date_filter: comparison
+        order_by:
+        - field: day__day
+          direction: asc
+        limit: 400
+    encode:
+      x: day__day
+      y: attendees
+  - id: distinct_help
+    type: text
+    title: What's the distinct number of Collaborate users over time?
+    text: Every user has a distinct ID, so the same user isn't counted twice if, for instance, they join the same session
+      twice.
+  - id: collab_heat_primary
+    type: heatmap
+    title: Primary range - Average collaboration sessions by day of the week and time interval
+    queries:
+      main:
+        measures:
+        - dataset.collab_sessions_by_slot.v1:session_slots
+        time_dimension: slot_date
+        dimensions:
+        - day_of_week
+        - slot_label
+        - slot_start_hour
+        limit: 200
+    transform:
+      kind: per_weekday_average
+      query: main
+      field: session_slots
+      day: day_of_week
+    encode:
+      x: slot_label
+      y: day_of_week
+      value: session_slots
+      x_sort: slot_start_hour
+      y_order: *id001
+  - id: collab_heat_comparison
+    type: heatmap
+    title: Comparison range - Average collaboration sessions by day of the week and time interval
+    queries:
+      main:
+        measures:
+        - dataset.collab_sessions_by_slot.v1:session_slots
+        time_dimension: slot_date
+        dimensions:
+        - day_of_week
+        - slot_label
+        - slot_start_hour
+        date_filter: comparison
+        limit: 200
+    transform:
+      kind: per_weekday_average
+      query: main
+      field: session_slots
+      day: day_of_week
+    encode:
+      x: slot_label
+      y: day_of_week
+      value: session_slots
+      x_sort: slot_start_hour
+      y_order: *id001
+  - id: collab_note
+    type: text
+    title: About this data
+    text: The Collaborate data in this report is the usage and interactions coming from the Blackboard integration. Collaborate
+      data created outside of this integration is not included.
+- title: Accessibility Tool Activity
+  visuals:
+  - id: ally_help
+    type: text
+    title: How is Ally used within my institution?
+    text: Accessibility tool refers to Ally. If you don't use Ally, no data is shown for these measures.
+  - id: formats_downloaded
+    type: kpi
+    title: How many times are alternative formats downloaded?
+    queries:
+      current:
+        measures:
+        - dataset.ally_alternative_formats.v1:downloads
+        time_dimension: event_date
+      previous:
+        measures:
+        - dataset.ally_alternative_formats.v1:downloads
+        time_dimension: event_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: downloads
+    encode:
+      value: value
+  - id: score_clicks
+    type: kpi
+    title: How many times is the accessibility score indicator clicked on?
+    queries:
+      current:
+        measures:
+        - dataset.ally_instructor_feedback.v1:feedback_events
+        time_dimension: event_date
+      previous:
+        measures:
+        - dataset.ally_instructor_feedback.v1:feedback_events
+        time_dimension: event_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: feedback_events
+    encode:
+      value: value
+  - id: formats
+    type: bar
+    title: Which types of alternative formats are downloaded?
+    queries:
+      current:
+        measures:
+        - dataset.ally_alternative_formats.v1:downloads
+        time_dimension: event_date
+        dimensions:
+        - format_type
+        order_by:
+        - field: downloads
+      previous:
+        measures:
+        - dataset.ally_alternative_formats.v1:downloads
+        time_dimension: event_date
+        dimensions:
+        - format_type
+        date_filter: comparison
+    transform:
+      kind: side_by_side
+      queries:
+        Primary range: current
+        Comparison range: previous
+      'on': format_type
+      field: downloads
+    encode:
+      x: format_type
+      y:
+      - Primary range
+      - Comparison range
+  - id: ally_note
+    type: text
+    title: About this data
+    text: The Ally data in this report is the usage and interactions coming from the Blackboard integration. Ally data created
+      outside of this integration is not included.
+- title: Originality Tool Activity
+  visuals:
+  - id: safeassign_help
+    type: text
+    title: How is SafeAssign used within my institution?
+    text: Originality tool refers to SafeAssign. If you don't use SafeAssign, no data is shown for these measures.
+  - id: reports
+    type: kpi
+    title: How many originality reports are generated?
+    queries:
+      current:
+        measures:
+        - dataset.safeassign_originality_reports.v1:reports
+        time_dimension: event_date
+      previous:
+        measures:
+        - dataset.safeassign_originality_reports.v1:reports
+        time_dimension: event_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: reports
+    encode:
+      value: value
+    filters_ignored: &id002
+    - ih1
+    - ih2
+    - ih3
+    - ih4
+  - id: scores
+    type: kpi
+    title: How many originality scores are generated?
+    queries:
+      current:
+        measures:
+        - dataset.safeassign_originality_reports_basic.v1:reports
+        time_dimension: event_date
+      previous:
+        measures:
+        - dataset.safeassign_originality_reports_basic.v1:reports
+        time_dimension: event_date
+        date_filter: comparison
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: reports
+    encode:
+      value: value
+    filters_ignored: *id002
+  - id: safeassign_note
+    type: text
+    title: About this data
+    text: The SafeAssign data in this report is the usage and interactions coming from the Blackboard integration. SafeAssign
+      data created outside of this integration is not included.
