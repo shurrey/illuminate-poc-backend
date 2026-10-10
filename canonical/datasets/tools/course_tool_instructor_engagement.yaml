@@ -65,3 +65,7 @@ measures:
   - {name: max_contributions, agg: max, expr: CONTRIBUTIONS, unit: contributions}
   - {name: interactions_per_week, agg: sum, expr: INTERACTIONS_PER_WEEK, unit: interactions}
   - {name: contributions_per_week, agg: sum, expr: CONTRIBUTIONS_PER_WEEK, unit: contributions}
+  - {name: both_courses, agg: count_distinct, expr: "IFF(ENGAGEMENT = 'Tool activity and contributions', COURSE_ID, NULL)", unit: courses}
+  - {name: tool_only_courses, agg: count_distinct, expr: "IFF(ENGAGEMENT = 'Tool activity only', COURSE_ID, NULL)", unit: courses}
+  - {name: contributions_only_courses, agg: count_distinct, expr: "IFF(ENGAGEMENT = 'Contributions only', COURSE_ID, NULL)", unit: courses}
+  - {name: no_activity_courses, agg: count_distinct, expr: "IFF(ENGAGEMENT = 'No instructor activity', COURSE_ID, NULL)", unit: courses}

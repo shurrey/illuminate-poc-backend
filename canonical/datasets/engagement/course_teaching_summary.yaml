@@ -102,3 +102,7 @@ measures:
   - {name: recording_hours, agg: sum, expr: RECORDING_HOURS, unit: hours}
   - {name: avg_recording_hours, agg: avg, expr: RECORDING_HOURS, unit: hours}
   - {name: collab_student_pct, agg: avg, expr: COLLAB_STUDENT_PCT, unit: percent, description: "Share of a course's students who attended a Collaborate session"}
+  - {name: recently_active_courses, agg: count_distinct, expr: "IFF(INSTRUCTOR_RECENCY = 'Recently active', COURSE_ID, NULL)", unit: courses}
+  - {name: previously_active_courses, agg: count_distinct, expr: "IFF(INSTRUCTOR_RECENCY = 'Previously active', COURSE_ID, NULL)", unit: courses}
+  - {name: inactive_courses, agg: count_distinct, expr: "IFF(INSTRUCTOR_RECENCY = 'Inactive', COURSE_ID, NULL)", unit: courses}
+  - {name: avg_course_session_hours, agg: avg, expr: SESSION_HOURS, unit: hours, description: "Collaborate session hours per course, averaged over courses"}
