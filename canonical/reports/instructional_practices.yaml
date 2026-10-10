@@ -65,8 +65,8 @@ pages:
   - id: class_help
     type: text
     title: What's the course class size?
-    text: Class size is the number of students enrolled per instructor, rounded up. A course without instructors counts its
-      students as the class size.
+    text: Class size is the number of students enrolled per instructor, rounded up. The maximum, minimum and median cover
+      courses with both students and instructors.
   - id: class_max
     type: kpi
     title: What's the maximum class size?
@@ -74,6 +74,11 @@ pages:
       main:
         measures:
         - dataset.course_teaching_summary.v1:max_class_size
+        filters:
+        - dimension: teaching_course
+          op: in
+          values:
+          - 'Yes'
     encode:
       value: max_class_size
   - id: class_min
@@ -83,6 +88,11 @@ pages:
       main:
         measures:
         - dataset.course_teaching_summary.v1:min_class_size
+        filters:
+        - dimension: teaching_course
+          op: in
+          values:
+          - 'Yes'
     encode:
       value: min_class_size
   - id: class_median
@@ -92,6 +102,11 @@ pages:
       main:
         measures:
         - dataset.course_teaching_summary.v1:median_class_size
+        filters:
+        - dimension: teaching_course
+          op: in
+          values:
+          - 'Yes'
     encode:
       value: median_class_size
   - id: class_distribution
@@ -180,7 +195,8 @@ pages:
     type: text
     title: How often do instructors access courses?
     text: Access frequency is the share of a course's days so far (from its start week to its end week, or today) on which
-      an instructor accessed it. Recently active means an instructor accessed the course in the last 7 days.
+      an instructor accessed it. The minimum, median and maximum cover courses with both students and instructors. Recently
+      active means an instructor accessed the course within its window in the last 7 days.
   - id: access_min
     type: kpi
     title: What's the minimum frequency instructors access a course?
@@ -188,6 +204,11 @@ pages:
       main:
         measures:
         - dataset.course_teaching_summary.v1:min_access_pct
+        filters:
+        - dimension: teaching_course
+          op: in
+          values:
+          - 'Yes'
     encode:
       value: min_access_pct
       unit: percent
@@ -198,6 +219,11 @@ pages:
       main:
         measures:
         - dataset.course_teaching_summary.v1:median_access_pct
+        filters:
+        - dimension: teaching_course
+          op: in
+          values:
+          - 'Yes'
     encode:
       value: median_access_pct
       unit: percent
@@ -208,6 +234,11 @@ pages:
       main:
         measures:
         - dataset.course_teaching_summary.v1:max_access_pct
+        filters:
+        - dimension: teaching_course
+          op: in
+          values:
+          - 'Yes'
     encode:
       value: max_access_pct
       unit: percent
@@ -649,7 +680,8 @@ pages:
   - id: collab_help
     type: text
     title: What's instructor engagement with the virtual classroom?
-    text: Collaborate sessions and recordings in the rooms linked to each course. Session hours are attended hours per course.
+    text: Collaborate sessions attended by both students and instructors of the course, and recordings in its rooms. Session
+      hours are attended hours per course; the minimum, median and maximum cover courses with sessions.
   - id: collab_min
     type: kpi
     title: What's the minimum session hours in the virtual classroom?
@@ -657,6 +689,11 @@ pages:
       main:
         measures:
         - dataset.course_teaching_summary.v1:min_session_hours
+        filters:
+        - dimension: has_collab
+          op: in
+          values:
+          - 'Yes'
     encode:
       value: min_session_hours
   - id: collab_median
@@ -666,6 +703,11 @@ pages:
       main:
         measures:
         - dataset.course_teaching_summary.v1:median_session_hours
+        filters:
+        - dimension: has_collab
+          op: in
+          values:
+          - 'Yes'
     encode:
       value: median_session_hours
   - id: collab_max
@@ -675,6 +717,11 @@ pages:
       main:
         measures:
         - dataset.course_teaching_summary.v1:max_session_hours
+        filters:
+        - dimension: has_collab
+          op: in
+          values:
+          - 'Yes'
     encode:
       value: max_session_hours
   - id: collab_share

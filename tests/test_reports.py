@@ -638,3 +638,25 @@ def test_course_counts_by_recency_and_engagement_split_courses_exactly():
                                               "avg_course_session_hours"}
     assert {m.name for m in ctie.measures} >= {"both_courses", "tool_only_courses", "contributions_only_courses",
                                                "no_activity_courses"}
+
+
+def test_course_design_counts_the_same_courses_as_the_other_pages():
+    from semantic_layer.compiler import build_ctes
+    for ds in ("dataset.course_item_totals.v1", "dataset.course_item_types.v1"):
+        assert "COURSE_FILTERS" in build_ctes(CATALOG, [ds], "DB")[ds.replace("dataset.", "DS_").replace(".v1", "_V1").upper()]
+
+
+def test_instructor_engagement_course_list_does_not_rebuild_course_role_activity():
+    from semantic_layer.compiler import build_ctes
+    cte = build_ctes(CATALOG, ["dataset.course_tool_instructor_engagement.v1"], "DB")["DS_COURSE_TOOL_INSTRUCTOR_ENGAGEMENT_V1"]
+    assert "CDM_CLB" not in cte and "COURSE_FILTERS" in cte
+
+
+def test_teaching_kpis_cover_only_courses_that_have_what_they_measure():
+    report = load_reports()["report.instructional_practices.v1"]
+    def dims(vid):
+        return [(f.dimension, f.values) for f in merged_contract(report, report.visual(vid), "main", {}, CATALOG)[0].filters]
+    for vid in ("class_max", "class_min", "class_median", "access_min", "access_median", "access_max"):
+        assert ("teaching_course", ["Yes"]) in dims(vid), vid
+    for vid in ("collab_min", "collab_median", "collab_max"):
+        assert ("has_collab", ["Yes"]) in dims(vid), vid

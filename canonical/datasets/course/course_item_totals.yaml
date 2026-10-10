@@ -1,13 +1,13 @@
 id: dataset.course_item_totals.v1
 display_name: Course item totals
 description: >
-  One row per course with its course items used in course design (types that count towards tools per
+  One row per top-level course that has started and has a student (as on the other teaching pages) with its course items used in course design (types that count towards tools per
   course), in total and per group (Assessment, Content, Tool, Other), and a 20-item bin for
   distributions. Courses without such items do not appear. Statistics are over courses.
 grain: one row per course
 domain: course
 source: CDM_LMS.COURSE_ITEM, CDM_META.BBD_CALCULATION_DETAIL
-depends_on: [dataset.item_tool_map.v1]
+depends_on: [dataset.item_tool_map.v1, dataset.course_filters.v1]
 base_sql: |
   WITH items AS (
       SELECT ci.COURSE_ID,
@@ -18,6 +18,7 @@ base_sql: |
              COUNT_IF(ci.ITEM_GROUP IS NULL OR ci.ITEM_GROUP NOT IN ('A', 'C', 'T')) AS OTHER_ITEMS
       FROM {{ database }}.CDM_LMS.COURSE_ITEM ci
       JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = ci.ITEM_TYPE AND m.TOOL_COUNT_IND = 1
+  JOIN (SELECT DISTINCT COURSE_ID FROM {{ ref('dataset.course_filters.v1') }}) cf ON cf.COURSE_ID = ci.COURSE_ID
       WHERE ci.ROW_DELETED_TIME IS NULL
       GROUP BY ci.COURSE_ID
   )

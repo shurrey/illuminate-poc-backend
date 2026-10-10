@@ -9,12 +9,13 @@ description: >
 grain: one row per course x learning tool or course item type (one row with no type for a course without instructor activity)
 domain: tools
 source: CDM_LMS.COURSE_ITEM, CDM_LMS.SUBMISSION, CDM_LMS.PERSON_COURSE
-depends_on: [dataset.course_role_activity.v1, dataset.course_item_tool_activity.v1, dataset.item_tool_map.v1]
+depends_on: [dataset.course_filters.v1, dataset.course_item_tool_activity.v1, dataset.item_tool_map.v1]
 base_sql: |
   WITH courses AS (
-      SELECT COURSE_ID, GREATEST(NVL(COURSE_WEEKS, 1), 1) AS COURSE_WEEKS
-      FROM {{ ref('dataset.course_role_activity.v1') }}
-      WHERE COURSE_ROLE = 'I' AND ENROLLMENT_ROLE_COUNT > 0
+      SELECT COURSE_ID, GREATEST(NVL(MAX(COURSE_WEEKS), 1), 1) AS COURSE_WEEKS
+      FROM {{ ref('dataset.course_filters.v1') }}
+      WHERE COURSE_ROLE = 'I'
+      GROUP BY COURSE_ID
   ),
   interactions AS (
       SELECT COURSE_ID, TYPE, ANY_VALUE(TYPE_NAME) AS TYPE_NAME, SUM(INTERACTION_CNT) AS INTERACTIONS
