@@ -613,3 +613,28 @@ def test_the_ai_kpi_help_says_which_courses_the_kpis_cover():
 def test_tool_coverage_counts_course_items_only():
     v = _lta().visual("coverage")
     assert {"dimension": "item_or_tool", "op": "in", "values": ["ITEM"]} in v.queries["main"]["filters"]
+
+
+IP_VALUES = {"dates": {"start": "2025-01-01", "end": "2026-06-30"}, "term": ["Q4: 2026"], "duration": ["Fixed"],
+             "ih1": ["Arts"], "course": ["BIO-101"]}
+
+
+def test_instructional_practices_applies_every_filter_and_groups_nodes_by_child():
+    report = load_reports()["report.instructional_practices.v1"]
+    assert [p.title for p in report.pages] == ["Class Size", "Course Access", "Course Design and Organization",
+                                               "Learning Tools Engagement", "Virtual Classroom Engagement"]
+    for v in report.visuals():
+        for q in v.queries:
+            contract, ignored = merged_contract(report, v, q, IP_VALUES, CATALOG)
+            assert ignored == [], (v.id, q)
+            if v.queries[q].get("child_of"):
+                assert contract.dimensions[0] == "dataset.courses.v1:ih_level_2", (v.id, q)
+
+
+def test_course_counts_by_recency_and_engagement_split_courses_exactly():
+    cts = CATALOG.datasets["dataset.course_teaching_summary.v1"]
+    ctie = CATALOG.datasets["dataset.course_tool_instructor_engagement.v1"]
+    assert {m.name for m in cts.measures} >= {"recently_active_courses", "previously_active_courses", "inactive_courses",
+                                              "avg_course_session_hours"}
+    assert {m.name for m in ctie.measures} >= {"both_courses", "tool_only_courses", "contributions_only_courses",
+                                               "no_activity_courses"}

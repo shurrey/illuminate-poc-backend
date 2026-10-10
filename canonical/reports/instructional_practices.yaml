@@ -1,0 +1,804 @@
+id: report.instructional_practices.v1
+title: Instructional Practices
+area: teaching
+description: 'How instructors support student learning: class size, course access, course design, learning tool engagement
+  and the virtual classroom.'
+filters:
+- id: dates
+  label: Course creation date
+  control: date_range
+  time_dimension: dataset.courses.v1:course_creation_date
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+  default: current_term
+- id: duration
+  label: Course duration type
+  control: select
+  dimension: dataset.courses.v1:course_duration
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  dimension: dataset.courses.v1:ih_level_1
+  exclude_values:
+  - '-'
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  dimension: dataset.courses.v1:ih_level_2
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  dimension: dataset.courses.v1:ih_level_3
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  dimension: dataset.courses.v1:ih_level_4
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+- id: course
+  label: Course ID
+  control: multi_select
+  dimension: dataset.courses.v1:course_number
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+  - ih4
+pages:
+- title: Class Size
+  visuals:
+  - id: class_help
+    type: text
+    title: What's the course class size?
+    text: Class size is the number of students enrolled per instructor, rounded up. A course without instructors counts its
+      students as the class size.
+  - id: class_max
+    type: kpi
+    title: What's the maximum class size?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:max_class_size
+    encode:
+      value: max_class_size
+  - id: class_min
+    type: kpi
+    title: What's the minimum class size?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:min_class_size
+    encode:
+      value: min_class_size
+  - id: class_median
+    type: kpi
+    title: What's the median class size?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:median_class_size
+    encode:
+      value: median_class_size
+  - id: class_distribution
+    type: bar
+    title: What's the course distribution by class size?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:courses
+        dimensions:
+        - class_size_bin
+        - class_size_bin_end
+        order_by:
+        - field: class_size_bin_end
+          direction: asc
+        limit: 100
+    encode:
+      x: class_size_bin
+      y: courses
+  - id: class_by_node
+    type: table
+    title: How do institutional hierarchy nodes compare in regards to class size?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:courses
+        - dataset.course_teaching_summary.v1:instructors
+        - dataset.course_teaching_summary.v1:students
+        - dataset.course_teaching_summary.v1:avg_class_size
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        dimensions:
+        - dataset.courses.v1:term_name
+        order_by:
+        - field: node
+          direction: asc
+        - field: term_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - node
+      - term_name
+      - courses
+      - instructors
+      - students
+      - avg_class_size
+  - id: class_by_course
+    type: table
+    title: What's the class size per course?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:instructors
+        - dataset.course_teaching_summary.v1:students
+        - dataset.course_teaching_summary.v1:available_students
+        - dataset.course_teaching_summary.v1:class_size
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - instructors
+      - students
+      - available_students
+      - class_size
+- title: Course Access
+  visuals:
+  - id: access_help
+    type: text
+    title: How often do instructors access courses?
+    text: Access frequency is the share of a course's days so far (from its start week to its end week, or today) on which
+      an instructor accessed it. Recently active means an instructor accessed the course in the last 7 days.
+  - id: access_min
+    type: kpi
+    title: What's the minimum frequency instructors access a course?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:min_access_pct
+    encode:
+      value: min_access_pct
+      unit: percent
+  - id: access_median
+    type: kpi
+    title: What's the median frequency instructors access a course?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:median_access_pct
+    encode:
+      value: median_access_pct
+      unit: percent
+  - id: access_max
+    type: kpi
+    title: What's the maximum frequency instructors access a course?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:max_access_pct
+    encode:
+      value: max_access_pct
+      unit: percent
+  - id: access_distribution
+    type: bar
+    title: How often do instructors access their courses?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:courses
+        dimensions:
+        - access_bin
+        order_by:
+        - field: access_bin
+          direction: asc
+        limit: 100
+    encode:
+      x: access_bin
+      y: courses
+  - id: recency_share
+    type: pie
+    title: What proportion of courses has instructor activity?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:courses
+        dimensions:
+        - instructor_recency
+        order_by:
+        - field: courses
+          direction: desc
+    encode:
+      label: instructor_recency
+      value: courses
+      donut: true
+  - id: recency_by_node
+    type: bar
+    title: How do institutional hierarchy nodes compare in regards to instructor course activity recency?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:recently_active_courses
+        - dataset.course_teaching_summary.v1:previously_active_courses
+        - dataset.course_teaching_summary.v1:inactive_courses
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - recently_active_courses
+      - previously_active_courses
+      - inactive_courses
+      horizontal: true
+      stacked: true
+  - id: access_by_node
+    type: table
+    title: How do institutional hierarchy nodes compare in regards to student and instructor course access?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:courses
+        - dataset.course_teaching_summary.v1:instructors
+        - dataset.course_teaching_summary.v1:active_students
+        - dataset.course_teaching_summary.v1:avg_access_pct
+        - dataset.course_teaching_summary.v1:minutes_per_instructor
+        - dataset.course_teaching_summary.v1:minutes_per_student
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        dimensions:
+        - dataset.courses.v1:term_name
+        order_by:
+        - field: node
+          direction: asc
+        - field: term_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - node
+      - term_name
+      - courses
+      - instructors
+      - active_students
+      - avg_access_pct
+      - minutes_per_instructor
+      - minutes_per_student
+      units:
+        access_pct: percent
+        avg_access_pct: percent
+        collab_student_pct: percent
+  - id: access_by_course
+    type: table
+    title: What's the instructor engagement per course?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:instructors
+        - dataset.course_teaching_summary.v1:active_students
+        - dataset.course_teaching_summary.v1:access_pct
+        - dataset.course_teaching_summary.v1:minutes_per_instructor
+        - dataset.course_teaching_summary.v1:minutes_per_student
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - instructor_recency
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - instructor_recency
+      - instructors
+      - active_students
+      - access_pct
+      - minutes_per_instructor
+      - minutes_per_student
+      units:
+        access_pct: percent
+        avg_access_pct: percent
+        collab_student_pct: percent
+- title: Course Design and Organization
+  visuals:
+  - id: design_help
+    type: text
+    title: Which types of course items are used by instructors?
+    text: 'Course items are the items and tools used to build a course: content, assessments and tools. Test questions, rubric
+      criteria and calendar events are not counted.'
+  - id: items_median
+    type: kpi
+    title: What's the median course item count?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_totals.v1:median_items
+    encode:
+      value: median_items
+  - id: items_max
+    type: kpi
+    title: What's the maximum course item count?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_totals.v1:max_items
+    encode:
+      value: max_items
+  - id: items_min
+    type: kpi
+    title: What's the minimum course item count?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_totals.v1:min_items
+    encode:
+      value: min_items
+  - id: items_distribution
+    type: bar
+    title: What's the course distribution by course item count?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_totals.v1:courses
+        dimensions:
+        - items_bin
+        - items_bin_start
+        order_by:
+        - field: items_bin_start
+          direction: asc
+        limit: 100
+    encode:
+      x: items_bin
+      y: courses
+  - id: items_by_type
+    type: table
+    title: What's the course item count by type?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_types.v1:courses
+        - dataset.course_item_types.v1:min_items
+        - dataset.course_item_types.v1:median_items
+        - dataset.course_item_types.v1:max_items
+        dimensions:
+        - item_group
+        - item_type_name
+        order_by:
+        - field: item_group
+          direction: asc
+        - field: courses
+          direction: desc
+        limit: 200
+    encode:
+      columns:
+      - item_group
+      - item_type_name
+      - courses
+      - min_items
+      - median_items
+      - max_items
+  - id: items_by_node
+    type: bar
+    title: How do institutional hierarchy nodes compare in regards to course item type usage?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_totals.v1:avg_assessments
+        - dataset.course_item_totals.v1:avg_contents
+        - dataset.course_item_totals.v1:avg_tools
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - avg_assessments
+      - avg_contents
+      - avg_tools
+      horizontal: true
+  - id: items_by_course
+    type: table
+    title: What's the content item type usage per course?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_totals.v1:items
+        - dataset.course_item_totals.v1:assessments
+        - dataset.course_item_totals.v1:contents
+        - dataset.course_item_totals.v1:tools
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - items
+      - assessments
+      - contents
+      - tools
+- title: Learning Tools Engagement
+  visuals:
+  - id: tools_help
+    type: text
+    title: What's instructor engagement with learning tools?
+    text: Interactions are instructors' actions in learning tools and course items. Contributions are instructors' posts in
+      discussions, blogs, journals, wikis and other social tools. Weekly figures divide by the course's weeks.
+  - id: engagement_share
+    type: pie
+    title: What proportion of courses has instructor engagement with learning tools?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_instructor_engagement.v1:courses
+        dimensions:
+        - engagement
+        order_by:
+        - field: courses
+          direction: desc
+    encode:
+      label: engagement
+      value: courses
+      donut: true
+  - id: engagement_by_node
+    type: bar
+    title: How do institutional hierarchy nodes compare in regards to instructor engagement with learning tools?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_instructor_engagement.v1:both_courses
+        - dataset.course_tool_instructor_engagement.v1:tool_only_courses
+        - dataset.course_tool_instructor_engagement.v1:contributions_only_courses
+        - dataset.course_tool_instructor_engagement.v1:no_activity_courses
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - both_courses
+      - tool_only_courses
+      - contributions_only_courses
+      - no_activity_courses
+      horizontal: true
+      stacked: true
+  - id: engagement_by_tool
+    type: table
+    title: What's the instructor interaction count by learning tool?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_instructor_engagement.v1:courses
+        - dataset.course_tool_instructor_engagement.v1:min_interactions
+        - dataset.course_tool_instructor_engagement.v1:median_interactions
+        - dataset.course_tool_instructor_engagement.v1:max_interactions
+        - dataset.course_tool_instructor_engagement.v1:median_contributions
+        dimensions:
+        - type_name
+        filters:
+        - dimension: type_name
+          op: not_null
+          values: []
+        order_by:
+        - field: courses
+          direction: desc
+        limit: 200
+    encode:
+      columns:
+      - type_name
+      - courses
+      - min_interactions
+      - median_interactions
+      - max_interactions
+      - median_contributions
+  - id: engagement_node_table
+    type: table
+    title: What's the instructor engagement with learning tools by institutional hierarchy node?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_instructor_engagement.v1:courses
+        - dataset.course_tool_instructor_engagement.v1:interactions
+        - dataset.course_tool_instructor_engagement.v1:interactions_per_week
+        - dataset.course_tool_instructor_engagement.v1:contributions
+        - dataset.course_tool_instructor_engagement.v1:contributions_per_week
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        dimensions:
+        - dataset.courses.v1:term_name
+        order_by:
+        - field: node
+          direction: asc
+        - field: term_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - node
+      - term_name
+      - courses
+      - interactions
+      - interactions_per_week
+      - contributions
+      - contributions_per_week
+  - id: engagement_by_course
+    type: table
+    title: What's the instructor engagement with learning tools per course?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_instructor_engagement.v1:interactions
+        - dataset.course_tool_instructor_engagement.v1:interactions_per_week
+        - dataset.course_tool_instructor_engagement.v1:contributions
+        - dataset.course_tool_instructor_engagement.v1:contributions_per_week
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - engagement
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - engagement
+      - interactions
+      - interactions_per_week
+      - contributions
+      - contributions_per_week
+- title: Virtual Classroom Engagement
+  visuals:
+  - id: collab_help
+    type: text
+    title: What's instructor engagement with the virtual classroom?
+    text: Collaborate sessions and recordings in the rooms linked to each course. Session hours are attended hours per course.
+  - id: collab_min
+    type: kpi
+    title: What's the minimum session hours in the virtual classroom?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:min_session_hours
+    encode:
+      value: min_session_hours
+  - id: collab_median
+    type: kpi
+    title: What's the median session hours in the virtual classroom?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:median_session_hours
+    encode:
+      value: median_session_hours
+  - id: collab_max
+    type: kpi
+    title: What's the maximum session hours in the virtual classroom?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:max_session_hours
+    encode:
+      value: max_session_hours
+  - id: collab_share
+    type: pie
+    title: What proportion of courses offer Collaborate sessions?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:courses
+        dimensions:
+        - has_collab
+        order_by:
+        - field: courses
+          direction: desc
+    encode:
+      label: has_collab
+      value: courses
+      donut: true
+  - id: collab_by_node
+    type: bar
+    title: How do institutional hierarchy nodes compare in regards to Collaborate session time per course?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:avg_course_session_hours
+        - dataset.course_teaching_summary.v1:avg_recording_hours
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - avg_course_session_hours
+      - avg_recording_hours
+      horizontal: true
+  - id: collab_node_table
+    type: table
+    title: How do institutional hierarchy nodes compare in regards to Collaborate session usage?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:courses
+        - dataset.course_teaching_summary.v1:courses_with_collab
+        - dataset.course_teaching_summary.v1:sessions
+        - dataset.course_teaching_summary.v1:total_session_hours
+        - dataset.course_teaching_summary.v1:recordings
+        - dataset.course_teaching_summary.v1:recording_hours
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        dimensions:
+        - dataset.courses.v1:term_name
+        order_by:
+        - field: node
+          direction: asc
+        - field: term_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - node
+      - term_name
+      - courses
+      - courses_with_collab
+      - sessions
+      - total_session_hours
+      - recordings
+      - recording_hours
+  - id: collab_by_course
+    type: table
+    title: What's Collaborate usage per course?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:instructors
+        - dataset.course_teaching_summary.v1:students
+        - dataset.course_teaching_summary.v1:collab_student_pct
+        - dataset.course_teaching_summary.v1:sessions
+        - dataset.course_teaching_summary.v1:sessions_per_week
+        - dataset.course_teaching_summary.v1:session_hours
+        - dataset.course_teaching_summary.v1:recordings
+        - dataset.course_teaching_summary.v1:recording_hours
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - instructors
+      - students
+      - collab_student_pct
+      - sessions
+      - sessions_per_week
+      - session_hours
+      - recordings
+      - recording_hours
+      units:
+        access_pct: percent
+        avg_access_pct: percent
+        collab_student_pct: percent
