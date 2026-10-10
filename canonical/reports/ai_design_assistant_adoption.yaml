@@ -140,7 +140,8 @@ pages:
   - id: kpi_help
     type: text
     title: About these numbers
-    text: The numbers above compare the last completed month with the month before it, whatever the date range selected below.
+    text: The numbers above compare the KPI month (by default the last completed month) with the KPI comparison month, for
+      the courses the other filters select, including the course term.
   - id: items_over_time
     type: bar
     title: How's the AI Design Assistant used over time?
@@ -178,17 +179,28 @@ pages:
     type: pie
     title: What's the proportion of courses using the AI Design Assistant?
     queries:
-      main:
+      all:
         measures:
         - dataset.course_item_ai_usage.v1:courses
-        dimensions:
-        - course_uses_ai
-        order_by:
-        - field: courses
-          direction: desc
+      using:
+        measures:
+        - dataset.course_item_ai_usage.v1:courses
+        filters:
+        - dimension: ai_used
+          op: in
+          values:
+          - 'Yes'
+    transform:
+      kind: part_of_whole
+      whole: all
+      part: using
+      field: courses
+      labels:
+      - Courses using AI
+      - Courses not using AI
     encode:
-      label: course_uses_ai
-      value: courses
+      label: category
+      value: value
       donut: true
   - id: by_item_type
     type: bar
