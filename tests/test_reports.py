@@ -281,3 +281,16 @@ def test_a_date_range_can_apply_as_an_overlap_of_two_dimensions():
 def test_average_by_and_part_of_whole_are_known_transforms():
     for kind in ("average_by", "part_of_whole"):
         _report([], [{**SESSIONS, "transform": {"kind": kind, "query": "main"}}])
+
+
+def test_a_query_can_ignore_a_filter_its_visual_otherwise_takes():
+    tool = {"id": "tool", "label": "Tool", "control": "select", "dimension": "dataset.course_tool_activity.v1:tool_name"}
+    pie = {"id": "pie", "type": "pie", "title": "Using tools",
+           "queries": {"all": {"measures": ["dataset.courses.v1:courses"], "filters_ignored": ["tool"]},
+                       "using": {"measures": ["dataset.course_tool_activity.v1:courses"]}},
+           "transform": {"kind": "part_of_whole", "whole": "all", "part": "using", "field": "courses", "labels": ["a", "b"]}}
+    report = _report([tool], [pie])
+    whole, _ = merged_contract(report, report.visual("pie"), "all", {"tool": ["Content Folder"]}, CATALOG)
+    part, _ = merged_contract(report, report.visual("pie"), "using", {"tool": ["Content Folder"]}, CATALOG)
+    assert (whole.filters, [f.dimension for f in part.filters]) == ([], ["dataset.course_tool_activity.v1:tool_name"])
+    assert validate_report(report, CATALOG) == []
