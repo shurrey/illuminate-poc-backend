@@ -186,6 +186,9 @@ pages:
         Outside grading time:
         - outside
         - attempts
+      left: true
+      fill_zero:
+      - inside
     encode:
       x: ih_level_1
       y:
@@ -254,6 +257,9 @@ pages:
         share_graded_inside:
         - graded_inside
         - graded_attempts
+      left: true
+      fill_zero:
+      - graded_inside
   - id: by_course
     type: table
     title: Which courses are graded inside the grading time?
@@ -268,6 +274,9 @@ pages:
         - dataset.courses.v1:course_number
         - dataset.courses.v1:course_name
         limit: 1000
+        order_by:
+        - field: course_number
+          direction: asc
       people:
         metrics:
         - metric.student_enrollments.v1
@@ -277,6 +286,15 @@ pages:
         limit: 1000
         filters_ignored:
         - item_type
+        order_by:
+        - field: course_number
+          direction: asc
+        filters:
+        - dimension: dataset.grade_response_time.v1:graded
+          op: in
+          values:
+          - 0
+          - 1
       inside:
         measures:
         - dataset.grade_response_time.v1:graded_attempts
@@ -284,6 +302,9 @@ pages:
         dimensions: *id003
         param_filters: *id002
         limit: 1000
+        order_by:
+        - field: course_number
+          direction: asc
     transform:
       kind: join
       queries:
@@ -300,3 +321,6 @@ pages:
         share_graded_inside:
         - graded_inside
         - graded_attempts
+      left: true
+      fill_zero:
+      - graded_inside
