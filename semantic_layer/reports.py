@@ -19,7 +19,7 @@ from .contract import ContractFilter, FilterValue, QueryContract, TimeRange
 from .schema import Catalog
 
 REPORTS_DIR = CANONICAL_DIR / "reports"
-TRANSFORM_KINDS = {"period_over_period", "percent_of_total", "unpivot", "top_n_other"}
+TRANSFORM_KINDS = {"period_over_period", "percent_of_total", "unpivot", "top_n_other", "side_by_side", "per_weekday_average"}
 _VALIDATION_DB = "VALIDATION_DB"
 
 
@@ -35,11 +35,22 @@ class _Definition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class FilterDimension(_Definition):
+    """One way a filter can apply: a dimension (dataset-qualified, or bare to resolve on the query's own
+    datasets) and how values match it. `contains` takes exactly one value."""
+    ref: str
+    op: Literal["in", "contains"] = "in"
+
+
 class ReportFilter(_Definition):
     id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     label: str
     control: Literal["multi_select", "select", "date_range"]
     dimension: Optional[str] = None
+    # Ordered alternatives to `dimension`: a query applies the first one its datasets can reach.
+    dimensions: list[FilterDimension] = Field(default_factory=list)
+    # Filters whose values narrow this filter's options (a hierarchy level's parents).
+    depends_on: list[str] = Field(default_factory=list)
     time_dimension: Optional[str] = None
     default: Optional[Union[Literal["current_term", "last_30_days", "previous_30_days"], list[FilterValue]]] = None
 
@@ -47,9 +58,12 @@ class ReportFilter(_Definition):
     def _targets(self) -> "ReportFilter":
         if self.control == "date_range" and not self.time_dimension:
             raise ValueError(f"filter {self.id}: a date_range needs a time_dimension")
-        if self.control != "date_range" and not self.dimension:
-            raise ValueError(f"filter {self.id}: needs a dimension")
+        if self.control != "date_range" and bool(self.dimension) == bool(self.dimensions):
+            raise ValueError(f"filter {self.id}: needs a dimension or a list of dimensions, not both")
         return self
+
+    def alternatives(self) -> list[FilterDimension]:
+        return [FilterDimension(ref=self.dimension)] if self.dimension else list(self.dimensions)
 
 
 class Visual(_Definition):
@@ -184,21 +198,35 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
             except ValidationError as e:
                 raise ReportValueError(f"filter {f.id}: {e.errors()[0]['msg']}") from None
         else:
-            dim = filter_dimension(contract, f.dimension, catalog)
-            if dim is None:
+            raw = value if isinstance(value, list) else [value]
+            reached = next(((alt, dim) for alt in f.alternatives()
+                            if (dim := filter_dimension(contract, alt.ref, catalog)) is not None), None)
+            if reached is None or (reached[0].op == "contains" and len(raw) != 1):
                 ignored.append(f.id)
                 continue
-            raw = value if isinstance(value, list) else [value]
-            filters.append(ContractFilter(dimension=f.dimension, op="in", values=_coerce(f.id, raw, dim.type)))
+            alt, dim = reached
+            match = [str(raw[0])] if alt.op == "contains" else _coerce(f.id, raw, dim.type)
+            filters.append(ContractFilter(dimension=alt.ref, op=alt.op, values=match))
     return contract.model_copy(update={"filters": filters, "time_range": time_range}), ignored
 
 
-def _filter_target(f: ReportFilter, catalog: Catalog):
-    """The dimension a filter definition names, when it is fully qualified and exists; else None."""
-    ref = f.time_dimension if f.control == "date_range" else f.dimension
+def _dimension_named(ref: str, catalog: Catalog):
+    """The dimension a ref names: on its dataset when qualified, else the first dataset that has it."""
     ds_id, _, name = ref.rpartition(":")
-    ds = catalog.datasets.get(ds_id) if ds_id else None
-    return ds.dimension(name) if ds else None
+    if ds_id:
+        ds = catalog.datasets.get(ds_id)
+        return ds.dimension(name) if ds else None
+    return next((d for ds in catalog.datasets.values() if (d := ds.dimension(name)) is not None), None)
+
+
+def _filter_target(f: ReportFilter, catalog: Catalog):
+    """The dimension a filter definition names (its first alternative); None when any alternative does
+    not exist or a single dimension or date range is not dataset-qualified."""
+    if f.control == "date_range" or f.dimension:
+        ref = f.time_dimension if f.control == "date_range" else f.dimension
+        return _dimension_named(ref, catalog) if ":" in ref else None
+    found = [_dimension_named(alt.ref, catalog) for alt in f.alternatives()]
+    return found[0] if all(found) else None
 
 
 def _output_names(contract: QueryContract, catalog: Catalog) -> set[str]:
@@ -219,9 +247,12 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
     sample: dict[str, Any] = {}
     for f in report.filters:
         dim = _filter_target(f, catalog)
+        unknown_parents = sorted(set(f.depends_on) - {g.id for g in report.filters})
+        if unknown_parents:
+            problems.append(f"filter {f.id}: depends on unknown filters {unknown_parents}")
         if dim is None:
-            ref = f.time_dimension if f.control == "date_range" else f.dimension
-            problems.append(f"filter {f.id}: {ref} is not a dataset-qualified dimension that exists")
+            refs = [f.time_dimension] if f.control == "date_range" else [a.ref for a in f.alternatives()]
+            problems.append(f"filter {f.id}: {', '.join(refs)} is not a dimension that exists (single dimensions must be dataset-qualified)")
             continue
         sample[f.id] = ({"start": "2026-01-01", "end": "2026-01-31"} if f.control == "date_range"
                         else _SAMPLE.get(dim.type, ["sample"]))

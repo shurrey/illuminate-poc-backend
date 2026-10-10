@@ -188,3 +188,45 @@ def test_validation_flags_a_date_filter_that_is_not_a_date_range():
     report = _pair()
     report.pages[0].visuals[0].queries["previous"]["date_filter"] = "nope"
     assert any("nope" in p for p in validate_report(report, CATALOG))
+
+
+IH1 = {"id": "ih1", "label": "Institutional hierarchy level 1", "control": "select",
+       "dimensions": [{"ref": "dataset.course_filters_ih.v1:ih_level_1"}, {"ref": "ih_nodes", "op": "contains"}]}
+SESSIONS = {"id": "sessions", "type": "kpi", "title": "Sessions",
+            "queries": {"main": {"measures": ["dataset.lms_sessions.v1:sessions"]}}}
+STUDENTS = {"id": "students", "type": "kpi", "title": "Students",
+            "queries": {"main": {"measures": ["dataset.course_student_activity.v1:students"]}}}
+
+
+def test_a_filter_applies_the_first_alternative_each_query_can_reach():
+    report = _report([IH1], [STUDENTS, SESSIONS])
+    course, ignored_c = merged_contract(report, report.visual("students"), "main", {"ih1": ["Nursing"]}, CATALOG)
+    platform, ignored_p = merged_contract(report, report.visual("sessions"), "main", {"ih1": ["Nursing"]}, CATALOG)
+    assert (ignored_c, ignored_p) == ([], [])
+    assert [(f.dimension, f.op, f.values) for f in course.filters] == [("dataset.course_filters_ih.v1:ih_level_1", "in", ["Nursing"])]
+    assert [(f.dimension, f.op, f.values) for f in platform.filters] == [("ih_nodes", "contains", ["Nursing"])]
+
+
+def test_a_contains_alternative_with_several_values_is_ignored_and_reported():
+    report = _report([IH1], [SESSIONS])
+    _, ignored = merged_contract(report, report.visual("sessions"), "main", {"ih1": ["A", "B"]}, CATALOG)
+    assert ignored == ["ih1"]
+
+
+def test_validation_accepts_alternatives_and_flags_unknown_parents():
+    assert validate_report(_report([IH1], [STUDENTS, SESSIONS]), CATALOG) == []
+    child = {"id": "ih2", "label": "Level 2", "control": "select", "depends_on": ["nope"],
+             "dimensions": [{"ref": "dataset.course_filters_ih.v1:ih_level_2"}]}
+    assert any("nope" in p for p in validate_report(_report([IH1, child], [STUDENTS]), CATALOG))
+
+
+def test_side_by_side_and_per_weekday_average_are_known_transforms():
+    for kind in ("side_by_side", "per_weekday_average"):
+        _report([], [{**SESSIONS, "transform": {"kind": kind, "query": "main"}}])
+
+
+def test_lms_sessions_have_an_access_modality():
+    from semantic_layer.compiler import compile_query
+    from semantic_layer.contract import QueryContract
+    sql = compile_query(QueryContract(measures=["dataset.lms_sessions.v1:sessions"], dimensions=["access_modality"]), CATALOG, "DB").sql
+    assert "ACCESS_MODALITY" in sql
