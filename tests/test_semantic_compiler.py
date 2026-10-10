@@ -409,3 +409,35 @@ def test_course_tool_activity_is_in_local_time_with_weekday_and_three_hour_group
     sql = _outer(_real(measures=["dataset.course_tool_activity.v1:minutes"],
                        dimensions=["activity_date__day", "day_of_week", "hour_group", "hour_group_start"]))
     assert all(c in sql for c in ("ACTIVITY_DATE", "DAY_NAME", "HOUR_GROUP", "HOUR_GROUP_START"))
+
+
+CS = "dataset.collab_sessions.v1"
+TERM_FILTER = {"dimension": "dataset.collab_session_courses.v1:term_name", "op": "in", "values": ["Fall 2022"]}
+
+
+def test_collab_session_statistics_aggregate_session_rows_without_a_join():
+    sql = _outer(_real(measures=[f"{CS}:{m}" for m in (
+        "sessions", "rooms", "total_minutes", "avg_minutes", "median_minutes", "max_minutes", "min_minutes",
+        "avg_attendees", "median_attendees", "max_attendees", "min_attendees")],
+        dimensions=["start_date__day"], filters=[{"dimension": "in_course", "op": "in", "values": ["Yes"]}]))
+    assert "MEDIAN(MINUTES)" in sql and "MIN(ATTENDEE_COUNT)" in sql and "IN_COURSE IN ('Yes')" in sql
+    assert "JOIN" not in sql
+
+
+@pytest.mark.parametrize("measure", [f"{CS}:sessions", "dataset.collab_events.v1:events",
+                                     "dataset.collab_attendance.v1:attendees"])
+def test_a_term_filter_narrows_collab_data_by_session_through_the_session_course_bridge(measure):
+    sql = _flat(_outer(_real(measures=[measure], filters=[TERM_FILTER])))
+    assert "SESSION_ID IN (SELECT SESSION_ID FROM DS_COLLAB_SESSION_COURSES_V1" in sql
+    assert "JOIN" not in sql
+
+
+def test_collab_events_count_hands_and_shown_polls_by_local_day():
+    from semantic_layer.catalog import load_catalog
+    cte = build_ctes(load_catalog(), ["dataset.collab_events.v1"], "DB")["DS_COLLAB_EVENTS_V1"]
+    assert "CONVERT_TIMEZONE" in cte and "session_instance_uid" in cte and "NETSTATS" not in cte
+    sql = _outer(_real(measures=["dataset.collab_events.v1:" + m for m in ("events", "sessions", "hands_raised", "polls_shown", "sessions_with_polls")],
+                       dimensions=["event_date__day", "event_group", "event_label"],
+                       filters=[{"dimension": "in_course", "op": "in", "values": ["Yes"]}]))
+    assert "COUNT(DISTINCT SESSION_ID)" in sql and "EVENT_GROUP" in sql
+    assert "COUNT(DISTINCT IFF(POLL_SHOWN = 1, SESSION_ID, NULL))" in sql

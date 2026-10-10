@@ -21,6 +21,9 @@ base_sql: |
       JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
       GROUP BY cr.CLB_ROOM_ID
   ),
+  linked_rooms AS (
+      SELECT DISTINCT CLB_ROOM_ID AS ROOM_ID FROM {{ database }}.CDM_MAP.COURSE_ROOM WHERE LMS_COURSE_ID IS NOT NULL
+  ),
   instance_tz AS (
       SELECT mi.CLB_INSTANCE_ID, ANY_VALUE(NVL(li.STAGE:timezone::STRING, 'UTC')) AS TZ
       FROM {{ database }}.CDM_MAP.INSTANCE mi
@@ -32,9 +35,11 @@ base_sql: |
          CONVERT_TIMEZONE(NVL(tz.TZ, 'UTC'), att.FIRST_JOIN_TIME)::DATE AS FIRST_JOIN_DATE,
          CONVERT_TIMEZONE(NVL(tz.TZ, 'UTC'), att.LAST_LEAVE_TIME)::DATE AS LAST_LEAVE_DATE,
          att.DURATION / 60 AS MINUTES,
+         IFF(lr.ROOM_ID IS NULL, 'No', 'Yes') AS IN_COURSE,
          ri.IH_NODES
   FROM {{ database }}.CDM_CLB.ATTENDANCE att
   LEFT JOIN {{ database }}.CDM_CLB.SESSION se ON se.ID = att.SESSION_ID
+  LEFT JOIN linked_rooms lr ON lr.ROOM_ID = se.ROOM_ID
   LEFT JOIN room_ih ri ON ri.ROOM_ID = se.ROOM_ID
   LEFT JOIN instance_tz tz ON tz.CLB_INSTANCE_ID = att.INSTANCE_ID
 entities:
@@ -46,6 +51,7 @@ dimensions:
   - {name: session_role_name, column: ROLE_NAME, type: categorical, synonyms: [role]}
   - {name: join_date, column: FIRST_JOIN_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: leave_date, column: LAST_LEAVE_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: in_course, column: IN_COURSE, type: categorical, description: "'Yes' when the session's room is linked to a course"}
   - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
 measures:
   - {name: attendances, agg: count_distinct, expr: ATTENDANCE_ID, unit: attendances}

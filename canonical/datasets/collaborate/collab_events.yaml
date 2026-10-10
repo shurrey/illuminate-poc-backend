@@ -1,0 +1,75 @@
+id: dataset.collab_events.v1
+display_name: Collaborate session events
+description: >
+  One row per chat message, raised or lowered hand, poll, whiteboard or attendee status event in a
+  Collaborate session: its date in the institution's timezone, type, group (Chat, Hand raised, Poll,
+  Whiteboard, Status) and label (Everyone, Moderators, Private, Other group, Away, Available), whether
+  the session's room is linked to a course, and the hierarchy nodes of the linked courses.
+notes: >
+  An event's session is DATA:contextId when DATA:contextType is SESSION_INSTANCE, else DATA:objectId;
+  both match SESSION.STAGE:session_instance_uid. A poll is shown when POLL_VISIBLE carries result true. POLL_VALUE appears in nearly every session
+  whether or not a poll ran, so poll use is measured by polls shown.
+grain: one row per Collaborate session event of the listed types
+domain: collaborate
+source: CDM_TLM.COLLAB_EVENTS, CDM_CLB.SESSION
+base_sql: |
+  WITH room_ih AS (
+      SELECT cr.CLB_ROOM_ID AS ROOM_ID,
+             ';' || LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+      FROM {{ database }}.CDM_MAP.COURSE_ROOM cr
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc ON ihc.COURSE_ID = cr.LMS_COURSE_ID
+      JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+      GROUP BY cr.CLB_ROOM_ID
+  ),
+  linked_rooms AS (
+      SELECT DISTINCT CLB_ROOM_ID AS ROOM_ID FROM {{ database }}.CDM_MAP.COURSE_ROOM WHERE LMS_COURSE_ID IS NOT NULL
+  ),
+  instance_tz AS (
+      SELECT mi.CLB_INSTANCE_ID, ANY_VALUE(NVL(li.STAGE:timezone::STRING, 'UTC')) AS TZ
+      FROM {{ database }}.CDM_MAP.INSTANCE mi
+      JOIN {{ database }}.CDM_LMS.INSTANCE li ON li.ID = mi.LMS_INSTANCE_ID
+      GROUP BY mi.CLB_INSTANCE_ID
+  ),
+  events AS (
+      SELECT ev.EVENT_TYPE, ev.EVENT_TIME,
+             IFF(ev.EVENT_TYPE = 'POLL_VISIBLE' AND ev.DATA:result::STRING = 'true', 1, 0) AS POLL_SHOWN,
+             IFF(ev.DATA:contextType::STRING = 'SESSION_INSTANCE', ev.DATA:contextId::STRING, ev.DATA:objectId::STRING) AS SESSION_UID
+      FROM {{ database }}.CDM_TLM.COLLAB_EVENTS ev
+      WHERE ev.EVENT_TYPE IN ('CHAT_EVERYONE', 'CHAT_MODERATORS', 'CHAT_PRIVATE', 'CHAT_OTHER_GROUP',
+                              'HAND_RAISED', 'HAND_LOWERED',
+                              'POLL_VISIBLE', 'POLL_MODE', 'POLL_LOCKED', 'POLL_VALUE', 'POLL_TITLE', 'POLL_ANSWER_LABELS',
+                              'WB_DRAW', 'WB_SHARE_FILE', 'WB_CLEAR', 'WB_RESET',
+                              'ATTENDEE_STATUS_AWAY', 'ATTENDEE_STATUS_AVAILABLE')
+  )
+  SELECT s.ID AS SESSION_ID, s.ROOM_ID, e.EVENT_TYPE, e.POLL_SHOWN,
+         CONVERT_TIMEZONE(NVL(tz.TZ, 'UTC'), e.EVENT_TIME)::DATE AS EVENT_DATE,
+         CASE WHEN e.EVENT_TYPE LIKE 'CHAT%' THEN 'Chat' WHEN e.EVENT_TYPE LIKE 'HAND%' THEN 'Hand raised'
+              WHEN e.EVENT_TYPE LIKE 'POLL%' THEN 'Poll' WHEN e.EVENT_TYPE LIKE 'WB%' THEN 'Whiteboard'
+              ELSE 'Status' END AS EVENT_GROUP,
+         DECODE(e.EVENT_TYPE, 'CHAT_EVERYONE', 'Everyone', 'CHAT_MODERATORS', 'Moderators', 'CHAT_PRIVATE', 'Private',
+                'CHAT_OTHER_GROUP', 'Other group', 'ATTENDEE_STATUS_AWAY', 'Away', 'ATTENDEE_STATUS_AVAILABLE', 'Available',
+                INITCAP(REPLACE(e.EVENT_TYPE, '_', ' '))) AS EVENT_LABEL,
+         IFF(lr.ROOM_ID IS NULL, 'No', 'Yes') AS IN_COURSE,
+         ri.IH_NODES
+  FROM events e
+  JOIN {{ database }}.CDM_CLB.SESSION s ON s.STAGE:session_instance_uid::STRING = e.SESSION_UID
+  LEFT JOIN instance_tz tz ON tz.CLB_INSTANCE_ID = s.INSTANCE_ID
+  LEFT JOIN linked_rooms lr ON lr.ROOM_ID = s.ROOM_ID
+  LEFT JOIN room_ih ri ON ri.ROOM_ID = s.ROOM_ID
+entities:
+  - {name: collab_session, column: SESSION_ID, type: foreign}
+  - {name: collab_room, column: ROOM_ID, type: foreign}
+dimensions:
+  - {name: event_date, column: EVENT_DATE, type: time, grains: [day, week, month, quarter, year]}
+  - {name: event_type, column: EVENT_TYPE, type: categorical}
+  - {name: event_group, column: EVENT_GROUP, type: categorical, synonyms: [collaborate feature]}
+  - {name: event_label, column: EVENT_LABEL, type: categorical, description: "Chat audience or attendee status; the event type otherwise"}
+  - {name: in_course, column: IN_COURSE, type: categorical, description: "'Yes' when the session's room is linked to a course"}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
+measures:
+  - {name: events, agg: count, expr: "*", unit: events}
+  - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions, description: "Sessions with at least one of the events counted"}
+  - {name: hands_raised, agg: count, expr: "IFF(EVENT_TYPE = 'HAND_RAISED', 1, NULL)", unit: hands}
+  - {name: polls_shown, agg: count, expr: "IFF(POLL_SHOWN = 1, 1, NULL)", unit: polls, description: "Each time a moderator shows a poll"}
+  - {name: sessions_with_polls, agg: count_distinct, expr: "IFF(POLL_SHOWN = 1, SESSION_ID, NULL)", unit: sessions, description: "Sessions in which a poll was shown"}
+pii_columns: [POLL_SHOWN]

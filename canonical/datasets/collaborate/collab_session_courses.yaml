@@ -1,0 +1,22 @@
+id: dataset.collab_session_courses.v1
+display_name: Collaborate sessions by linked course
+description: >
+  One row per Collaborate session and course its room is linked to, with that course's term. Use it
+  to narrow Collaborate data to sessions in a term; a session linked to several courses appears once
+  per course here but is never multiplied when filtering.
+grain: one row per Collaborate session x linked course
+domain: collaborate
+source: CDM_CLB.SESSION, CDM_MAP.COURSE_ROOM, CDM_LMS.TERM
+base_sql: |
+  SELECT DISTINCT s.ID AS SESSION_ID, cr.LMS_COURSE_ID AS COURSE_ID, NVL(te.NAME, '-') AS TERM_NAME
+  FROM {{ database }}.CDM_CLB.SESSION s
+  JOIN {{ database }}.CDM_MAP.COURSE_ROOM cr ON cr.CLB_ROOM_ID = s.ROOM_ID
+  JOIN {{ database }}.CDM_LMS.COURSE co ON co.ID = cr.LMS_COURSE_ID
+  LEFT JOIN {{ database }}.CDM_LMS.TERM te ON te.ID = co.TERM_ID
+entities:
+  - {name: collab_session, column: SESSION_ID, type: foreign}
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: term_name, column: TERM_NAME, type: categorical, synonyms: [course term]}
+measures:
+  - {name: sessions, agg: count_distinct, expr: SESSION_ID, unit: sessions}
