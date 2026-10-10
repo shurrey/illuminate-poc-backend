@@ -45,6 +45,7 @@ entities:
   - {name: collab_session, column: SESSION_ID, type: primary}
   - {name: collab_room, column: ROOM_ID, type: foreign}
 dimensions:
+  - {name: attendee_count, column: ATTENDEE_COUNT, type: numeric, description: "Attendances in the session"}
   - {name: start_date, column: START_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: in_course, column: IN_COURSE, type: categorical, description: "'Yes' when the session's room is linked to a course"}
   - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
