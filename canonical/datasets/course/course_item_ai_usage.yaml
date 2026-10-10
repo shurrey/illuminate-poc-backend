@@ -22,7 +22,7 @@ base_sql: |
   SELECT i.COURSE_ITEM_ID, i.COURSE_ID, i.CREATOR_ID, i.CREATED_DATE, i.AI_USED, i.AVAILABLE,
          NVL(m.DISPLAY_NAME, INITCAP(REPLACE(i.ITEM_TYPE, '_', ' '))) AS ITEM_TYPE_NAME,
          IFF(MAX(IFF(i.AI_USED = 'Yes', 1, 0)) OVER (PARTITION BY i.COURSE_ID) = 1, 'Yes', 'No') AS COURSE_USES_AI,
-         TRIM(CONCAT(NVL(p.FIRST_NAME, ''), ' ', NVL(p.LAST_NAME, ''))) AS CREATOR_NAME,
+         NVL(NULLIF(TRIM(CONCAT(NVL(p.FIRST_NAME, ''), ' ', NVL(p.LAST_NAME, ''))), ''), 'Unknown creator') AS CREATOR_NAME,
          p.EMAIL AS CREATOR_EMAIL
   FROM items i
   LEFT JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = i.ITEM_TYPE
