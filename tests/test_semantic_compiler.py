@@ -469,3 +469,19 @@ def test_ai_usage_counts_courses_once_and_keeps_creators_identifiable():
     ds = cat.datasets[AI]
     assert all(ds.is_pii(ds.dimension(n).column) for n in ("creator_name", "creator_email"))
     assert "CONVERT_TIMEZONE" in build_ctes(cat, [AI], "DB")[f"DS_COURSE_ITEM_AI_USAGE_V1"]
+
+
+CTS = "dataset.course_teaching_summary.v1"
+
+
+def test_course_teaching_summary_is_one_row_per_course_with_guarded_class_size_and_bins():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    cte = build_ctes(cat, [CTS], "DB")["DS_COURSE_TEACHING_SUMMARY_V1"]
+    assert "GREATEST(NVL(i.ENROLLMENT_ROLE_COUNT, 0), 1)" in cte
+    assert "LEAST(100" in cte and "'95-100'" in cte
+    assert "GROUP BY" in cte.upper()
+    sql = _outer(_real(measures=[f"{CTS}:{m}" for m in ("courses", "median_class_size", "max_class_size", "min_class_size",
+                                                          "median_access_pct", "courses_with_collab", "total_session_hours")],
+                       dimensions=["class_size_bin", "access_bin", "instructor_recency", "has_collab", "dataset.courses.v1:ih_level_1"]))
+    assert "MEDIAN(" in sql and "LEFT JOIN DS_COURSES_V1" in sql

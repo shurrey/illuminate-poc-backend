@@ -1,0 +1,104 @@
+id: dataset.course_teaching_summary.v1
+display_name: Course teaching summary
+description: >
+  One row per course with instructors, students and teaching activity. Class size is students per
+  instructor (rounded up; a course without instructors divides by 1). Instructor access is the share
+  of the course's elapsed days with instructor activity (0-100, capped at 100); recency is Recently
+  active (instructor activity within 7 days), Previously active, or Inactive. Collaborate sessions,
+  session hours and recordings are for the rooms linked to the course. Course attributes come from
+  the courses dataset.
+grain: one row per course
+domain: engagement
+source: CDM_LMS.PERSON_COURSE, CDM_LMS.COURSE_ACTIVITY, CDM_CLB.SESSION, CDM_CLB.MEDIA
+depends_on: [dataset.course_role_activity.v1]
+base_sql: |
+  WITH roles AS (
+      SELECT * FROM {{ ref('dataset.course_role_activity.v1') }}
+  ),
+  recordings AS (
+      SELECT cr.LMS_COURSE_ID AS COURSE_ID, COUNT(DISTINCT m.ID) AS RECORDINGS, SUM(m.DURATION) / 3600000 AS RECORDING_HOURS
+      FROM {{ database }}.CDM_CLB.MEDIA m
+      JOIN {{ database }}.CDM_MAP.COURSE_ROOM cr ON cr.CLB_ROOM_ID = m.ROOM_ID
+      WHERE m.MEDIA_CATEGORY = 'R' AND m.ROW_DELETED_TIME IS NULL AND cr.LMS_COURSE_ID IS NOT NULL
+      GROUP BY cr.LMS_COURSE_ID
+  ),
+  courses AS (
+      SELECT COURSE_ID, ANY_VALUE(COURSE_WEEKS) AS COURSE_WEEKS, ANY_VALUE(START_WEEK) AS START_WEEK,
+             ANY_VALUE(END_WEEK) AS END_WEEK, MAX(CLB_SESSION_MIN) AS CLB_SESSION_MIN, MAX(CLB_SESSION_CNT) AS CLB_SESSION_CNT
+      FROM roles
+      GROUP BY COURSE_ID
+  ),
+  pivot AS (
+      SELECT c.COURSE_ID, c.COURSE_WEEKS, c.CLB_SESSION_MIN, c.CLB_SESSION_CNT,
+             NVL(i.ENROLLMENT_ROLE_COUNT, 0) AS INSTRUCTORS, NVL(s.ENROLLMENT_ROLE_COUNT, 0) AS STUDENTS,
+             NVL(i.AVAILABLE_ENROLLMENT_ROLE_COUNT, 0) AS AVAILABLE_INSTRUCTORS,
+             NVL(s.AVAILABLE_ENROLLMENT_ROLE_COUNT, 0) AS AVAILABLE_STUDENTS,
+             NVL(s.ACTIVE_ROLE_CNT, 0) AS ACTIVE_STUDENTS,
+             NVL(i.TOTAL_MIN_IN_COURSE, 0) AS INSTRUCTOR_MINUTES, NVL(s.TOTAL_MIN_IN_COURSE, 0) AS STUDENT_MINUTES,
+             NVL(i.CNT_DAYS, 0) AS INSTRUCTOR_DAYS, NVL(s.CLB_COUNT_PERSON, 0) AS COLLAB_STUDENTS,
+             i.MAX_LOGIN_ACCESSED_TIME AS INSTRUCTOR_LAST_ACCESS,
+             GREATEST(DATEDIFF(day, c.START_WEEK, LEAST(DATEADD(day, 7, c.END_WEEK), CURRENT_DATE())) + 1, 1) AS ELAPSED_DAYS,
+             CEIL(NVL(s.ENROLLMENT_ROLE_COUNT, 0) / GREATEST(NVL(i.ENROLLMENT_ROLE_COUNT, 0), 1)) AS CLASS_SIZE
+      FROM courses c
+      LEFT JOIN roles i ON i.COURSE_ID = c.COURSE_ID AND i.COURSE_ROLE = 'I'
+      LEFT JOIN roles s ON s.COURSE_ID = c.COURSE_ID AND s.COURSE_ROLE = 'S'
+  )
+  SELECT p.*,
+         IFF(p.CLASS_SIZE = 0, '0', CONCAT(TO_VARCHAR(CEIL(p.CLASS_SIZE / 10) * 10 - 9), '-', TO_VARCHAR(CEIL(p.CLASS_SIZE / 10) * 10))) AS CLASS_SIZE_BIN,
+         CEIL(p.CLASS_SIZE / 10) * 10 AS CLASS_SIZE_BIN_END,
+         LEAST(100, 100 * p.INSTRUCTOR_DAYS / p.ELAPSED_DAYS) AS ACCESS_PCT,
+         IFF(LEAST(100, 100 * p.INSTRUCTOR_DAYS / p.ELAPSED_DAYS) >= 95, '95-100',
+             CONCAT(LPAD(TO_VARCHAR(FLOOR(LEAST(100, 100 * p.INSTRUCTOR_DAYS / p.ELAPSED_DAYS) / 5) * 5), 2, '0'), '-',
+                    LPAD(TO_VARCHAR(FLOOR(LEAST(100, 100 * p.INSTRUCTOR_DAYS / p.ELAPSED_DAYS) / 5) * 5 + 5), 2, '0'))) AS ACCESS_BIN,
+         IFF(p.INSTRUCTORS > 0, p.INSTRUCTOR_MINUTES / p.INSTRUCTORS, NULL) AS MINUTES_PER_INSTRUCTOR,
+         IFF(p.ACTIVE_STUDENTS > 0, p.STUDENT_MINUTES / p.ACTIVE_STUDENTS, NULL) AS MINUTES_PER_STUDENT,
+         CASE WHEN p.INSTRUCTOR_LAST_ACCESS IS NULL THEN 'Inactive'
+              WHEN DATEDIFF(day, p.INSTRUCTOR_LAST_ACCESS, CURRENT_DATE()) <= 7 THEN 'Recently active'
+              ELSE 'Previously active' END AS INSTRUCTOR_RECENCY,
+         IFF(p.CLB_SESSION_CNT > 0, 'Yes', 'No') AS HAS_COLLAB,
+         p.CLB_SESSION_MIN / 60 AS SESSION_HOURS,
+         IFF(p.CLB_SESSION_CNT > 0, p.CLB_SESSION_MIN / 60 / p.CLB_SESSION_CNT, NULL) AS AVG_SESSION_HOURS,
+         p.CLB_SESSION_CNT / GREATEST(NVL(p.COURSE_WEEKS, 1), 1) AS SESSIONS_PER_WEEK,
+         NVL(r.RECORDINGS, 0) AS RECORDINGS, NVL(r.RECORDING_HOURS, 0) AS RECORDING_HOURS,
+         IFF(p.STUDENTS > 0, LEAST(100, 100 * p.COLLAB_STUDENTS / p.STUDENTS), NULL) AS COLLAB_STUDENT_PCT
+  FROM pivot p
+  LEFT JOIN recordings r ON r.COURSE_ID = p.COURSE_ID
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: class_size_bin, column: CLASS_SIZE_BIN, type: categorical, description: "Class size in tens ('1-10', '11-20', ...); sort by class_size_bin_end"}
+  - {name: class_size_bin_end, column: CLASS_SIZE_BIN_END, type: numeric}
+  - {name: access_bin, column: ACCESS_BIN, type: categorical, description: "Instructor access in 5-point steps ('00-05' ... '95-100')"}
+  - {name: instructor_recency, column: INSTRUCTOR_RECENCY, type: categorical, description: "Recently active (within 7 days), Previously active, or Inactive"}
+  - {name: has_collab, column: HAS_COLLAB, type: categorical, description: "'Yes' when the course had Collaborate sessions"}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: instructors, agg: sum, expr: INSTRUCTORS, unit: people}
+  - {name: students, agg: sum, expr: STUDENTS, unit: people}
+  - {name: available_students, agg: sum, expr: AVAILABLE_STUDENTS, unit: people}
+  - {name: active_students, agg: sum, expr: ACTIVE_STUDENTS, unit: people}
+  - {name: class_size, agg: max, expr: CLASS_SIZE, unit: students, description: "Per course: students per instructor"}
+  - {name: median_class_size, agg: median, expr: CLASS_SIZE, unit: students}
+  - {name: max_class_size, agg: max, expr: CLASS_SIZE, unit: students}
+  - {name: min_class_size, agg: min, expr: CLASS_SIZE, unit: students}
+  - {name: avg_class_size, agg: avg, expr: CLASS_SIZE, unit: students}
+  - {name: access_pct, agg: max, expr: ACCESS_PCT, unit: percent, description: "Per course: share of elapsed days with instructor activity"}
+  - {name: median_access_pct, agg: median, expr: ACCESS_PCT, unit: percent}
+  - {name: max_access_pct, agg: max, expr: ACCESS_PCT, unit: percent}
+  - {name: min_access_pct, agg: min, expr: ACCESS_PCT, unit: percent}
+  - {name: avg_access_pct, agg: avg, expr: ACCESS_PCT, unit: percent}
+  - {name: minutes_per_instructor, agg: avg, expr: MINUTES_PER_INSTRUCTOR, unit: minutes}
+  - {name: minutes_per_student, agg: avg, expr: MINUTES_PER_STUDENT, unit: minutes}
+  - {name: courses_with_collab, agg: count_distinct, expr: "IFF(HAS_COLLAB = 'Yes', COURSE_ID, NULL)", unit: courses}
+  - {name: sessions, agg: sum, expr: CLB_SESSION_CNT, unit: sessions}
+  - {name: total_session_hours, agg: sum, expr: SESSION_HOURS, unit: hours}
+  - {name: session_hours, agg: max, expr: SESSION_HOURS, unit: hours, description: "Per course: Collaborate session hours"}
+  - {name: median_session_hours, agg: median, expr: SESSION_HOURS, unit: hours}
+  - {name: max_session_hours, agg: max, expr: SESSION_HOURS, unit: hours}
+  - {name: min_session_hours, agg: min, expr: SESSION_HOURS, unit: hours}
+  - {name: avg_session_hours, agg: avg, expr: AVG_SESSION_HOURS, unit: hours, description: "Average length of a session"}
+  - {name: sessions_per_week, agg: avg, expr: SESSIONS_PER_WEEK, unit: sessions}
+  - {name: recordings, agg: sum, expr: RECORDINGS, unit: recordings}
+  - {name: recording_hours, agg: sum, expr: RECORDING_HOURS, unit: hours}
+  - {name: avg_recording_hours, agg: avg, expr: RECORDING_HOURS, unit: hours}
+  - {name: collab_student_pct, agg: avg, expr: COLLAB_STUDENT_PCT, unit: percent, description: "Share of a course's students who attended a Collaborate session"}
