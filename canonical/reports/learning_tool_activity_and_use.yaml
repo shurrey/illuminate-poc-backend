@@ -92,19 +92,21 @@ pages:
         measures:
         - dataset.course_tool_activity.v1:minutes
         dimensions:
-        - activity_date__day
         - day_of_week
         - hour_group
         - hour_group_start
-        limit: 1000
+        limit: 100
+      days:
+        measures:
+        - dataset.course_tool_activity.v1:days
+        dimensions:
+        - day_of_week
     transform:
-      kind: average_by
+      kind: per_weekday_average
       query: main
       field: minutes
-      by:
-      - day_of_week
-      - hour_group
-      - hour_group_start
+      day: day_of_week
+      days_query: days
     encode:
       x: hour_group
       y: day_of_week
@@ -124,32 +126,34 @@ pages:
     queries:
       main:
         measures:
-        - dataset.course_tool_activity.v1:people
+        - dataset.course_tool_activity.v1:person_days
         dimensions:
-        - activity_date__day
         - day_of_week
         - hour_group
         - hour_group_start
-        limit: 1000
+        limit: 100
+      days:
+        measures:
+        - dataset.course_tool_activity.v1:days
+        dimensions:
+        - day_of_week
     transform:
-      kind: average_by
+      kind: per_weekday_average
       query: main
-      field: people
-      by:
-      - day_of_week
-      - hour_group
-      - hour_group_start
+      field: person_days
+      day: day_of_week
+      days_query: days
     encode:
       x: hour_group
       y: day_of_week
-      value: people
+      value: person_days
       x_sort: hour_group_start
       y_order: *id001
   - id: heat_help
     type: text
     title: Reading the weekly distributions
-    text: Each cell is the average for that day of the week and time of day across the selected date range. For example, Sunday
-      shows the average of every Sunday in the period. Times are in your institution's time zone.
+    text: 'Each cell is the average for that day of the week and time of day: the total for the cell divided by the number
+      of those weekdays with any activity in the selected date range. Times are in your institution''s time zone.'
   - id: minutes_by_date
     type: line
     title: What's the total course tool activity in minutes by date?
@@ -162,7 +166,7 @@ pages:
         order_by:
         - field: activity_date__day
           direction: asc
-        limit: 400
+        limit: 1000
     encode:
       x: activity_date__day
       y: minutes
@@ -178,7 +182,7 @@ pages:
         order_by:
         - field: activity_date__day
           direction: asc
-        limit: 400
+        limit: 1000
     encode:
       x: activity_date__day
       y: people
@@ -209,6 +213,9 @@ pages:
           op: eq
           values:
           - activity
+        time_overlap:
+          start: course_start_date
+          end: course_end_date
     transform:
       kind: part_of_whole
       whole: all
