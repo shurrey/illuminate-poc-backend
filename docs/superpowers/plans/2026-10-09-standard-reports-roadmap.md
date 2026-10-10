@@ -42,6 +42,25 @@ Deferred minors from that review:
 The first unit is **comparison periods**. A visual query declares `period: comparison` (the previous period of
 equal length), and the date-range filter shifts it accordingly. Without it, period-over-period KPIs show 0%.
 
+**Done:**
+- **Learning Platform Adoption.** Plan `2026-10-10-standard-reports-phase-2-platform-adoption.md`; B #120–#126, F #34–#37.
+- **Learning Tool Activity & Use.** Plan `2026-10-10-standard-reports-phase-2b-tool-activity.md`; B #128–#132, F #38–#39.
+
+Both were reviewed, fixed and checked live.
+
+Deferred minors:
+- a cleared comparison range runs all-time;
+- active users and courses filter on first-activity date, not overlap;
+- any hierarchy level narrows course data to reportable courses;
+- recents aren't recorded from Quick Access or deep links;
+- hierarchy options are stale while reloading;
+- heat maps hide weekdays with no data, and a missing cell looks like zero;
+- `course_tool_use` mixes local activity hours with UTC submission times;
+- validation misses bad `time_overlap` refs and per-query `filters_ignored` typos;
+- the course help-text title says "available";
+- the role filter shrinks the role pie instead of highlighting;
+- `average_by`'s Info text uses raw names.
+
 Each report is one PR in B (its definition) and is verified live in F. Datasets and definitions it needs land first,
 in their own PRs.
 
