@@ -1,0 +1,303 @@
+id: report.ai_design_assistant_adoption.v1
+title: AI Design Assistant Adoption
+area: teaching
+description: 'How the AI Design Assistant is used: courses, course items and instructors, over time and by hierarchy node.'
+filters:
+- id: dates
+  label: Course item creation date
+  control: date_range
+  time_dimension: dataset.course_item_ai_usage.v1:created_date
+- id: month
+  label: KPI month
+  control: date_range
+  time_dimension: dataset.course_item_ai_usage.v1:created_date
+  default: last_month
+- id: prior_month
+  label: KPI comparison month
+  control: date_range
+  time_dimension: dataset.course_item_ai_usage.v1:created_date
+  default: month_before_last
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+  default: current_term
+- id: duration
+  label: Course duration type
+  control: select
+  dimension: dataset.courses.v1:course_duration
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  dimension: dataset.courses.v1:ih_level_1
+  exclude_values:
+  - '-'
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  dimension: dataset.courses.v1:ih_level_2
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  dimension: dataset.courses.v1:ih_level_3
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  dimension: dataset.courses.v1:ih_level_4
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+- id: course
+  label: Course ID
+  control: multi_select
+  dimension: dataset.courses.v1:course_number
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+  - ih4
+- id: item_type
+  label: Course item type
+  control: multi_select
+  dimension: dataset.course_item_ai_usage.v1:item_type_name
+pages:
+- title: Usage and Adoption
+  visuals:
+  - id: overview_help
+    type: text
+    title: How is the AI Design Assistant used?
+    text: How courses and course items use AI-assisted creation over time, and how instructors use it. A course uses the AI
+      Design Assistant when at least one of its items was created with it.
+  - id: kpi_courses
+    type: kpi
+    title: Courses using AI Design Assistant
+    queries:
+      current:
+        measures:
+        - dataset.course_item_ai_usage.v1:ai_courses
+        date_filter: month
+      previous:
+        measures:
+        - dataset.course_item_ai_usage.v1:ai_courses
+        date_filter: prior_month
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: ai_courses
+    encode:
+      value: value
+  - id: kpi_users
+    type: kpi
+    title: Users using AI Design Assistant
+    queries:
+      current:
+        measures:
+        - dataset.course_item_ai_usage.v1:ai_creators
+        date_filter: month
+      previous:
+        measures:
+        - dataset.course_item_ai_usage.v1:ai_creators
+        date_filter: prior_month
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: ai_creators
+    encode:
+      value: value
+  - id: kpi_items
+    type: kpi
+    title: Course items created with AI Design Assistant
+    queries:
+      current:
+        measures:
+        - dataset.course_item_ai_usage.v1:ai_items
+        date_filter: month
+      previous:
+        measures:
+        - dataset.course_item_ai_usage.v1:ai_items
+        date_filter: prior_month
+    transform:
+      kind: period_over_period
+      value: current
+      baseline: previous
+      field: ai_items
+    encode:
+      value: value
+  - id: kpi_help
+    type: text
+    title: About these numbers
+    text: The numbers above compare the last completed month with the month before it, whatever the date range selected below.
+  - id: items_over_time
+    type: bar
+    title: How's the AI Design Assistant used over time?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_ai_usage.v1:ai_items
+        dimensions:
+        - created_date__week
+        order_by:
+        - field: created_date__week
+          direction: asc
+        limit: 400
+    encode:
+      x: created_date__week
+      y: ai_items
+  - id: share_over_time
+    type: line
+    title: What share of course items were created with AI each week?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_ai_usage.v1:pct_ai_items
+        dimensions:
+        - created_date__week
+        order_by:
+        - field: created_date__week
+          direction: asc
+        limit: 400
+    encode:
+      x: created_date__week
+      y: pct_ai_items
+      unit: percent
+  - id: courses_share
+    type: pie
+    title: What's the proportion of courses using the AI Design Assistant?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_ai_usage.v1:courses
+        dimensions:
+        - course_uses_ai
+        order_by:
+        - field: courses
+          direction: desc
+    encode:
+      label: course_uses_ai
+      value: courses
+      donut: true
+  - id: by_item_type
+    type: bar
+    title: How's the AI Design Assistant used to create course items?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_ai_usage.v1:pct_ai_items
+        - dataset.course_item_ai_usage.v1:pct_not_ai_items
+        dimensions:
+        - item_type_name
+        order_by:
+        - field: item_type_name
+          direction: asc
+        limit: 200
+    encode:
+      x: item_type_name
+      y:
+      - pct_ai_items
+      - pct_not_ai_items
+      stacked: true
+  - id: by_node
+    type: bar
+    title: How's the AI Design Assistant used by institutional hierarchy node?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_ai_usage.v1:courses
+        - dataset.course_item_ai_usage.v1:ai_courses
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - ai_courses
+      - courses
+      horizontal: true
+  - id: courses
+    type: table
+    title: How's the AI Design Assistant used in courses?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_ai_usage.v1:items
+        - dataset.course_item_ai_usage.v1:ai_items
+        - dataset.course_item_ai_usage.v1:available_ai_items
+        - dataset.course_item_ai_usage.v1:unavailable_ai_items
+        - dataset.course_item_ai_usage.v1:pct_ai_items
+        dimensions:
+        - dataset.courses.v1:term_name
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: ai_items
+          direction: desc
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - term_name
+      - course_number
+      - course_name
+      - items
+      - ai_items
+      - available_ai_items
+      - unavailable_ai_items
+      - pct_ai_items
+      units:
+        pct_ai_items: percent
+  - id: instructors
+    type: table
+    title: How's the AI Design Assistant used by instructors?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_ai_usage.v1:ai_courses
+        - dataset.course_item_ai_usage.v1:ai_items
+        - dataset.course_item_ai_usage.v1:available_ai_items
+        dimensions:
+        - creator_name
+        - creator_email
+        filters:
+        - dimension: ai_used
+          op: in
+          values:
+          - 'Yes'
+        order_by:
+        - field: ai_items
+          direction: desc
+        limit: 1000
+    encode:
+      columns:
+      - creator_name
+      - creator_email
+      - ai_courses
+      - ai_items
+      - available_ai_items
