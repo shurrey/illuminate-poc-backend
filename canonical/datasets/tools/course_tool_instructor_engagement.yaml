@@ -1,0 +1,67 @@
+id: dataset.course_tool_instructor_engagement.v1
+display_name: Instructor engagement with learning tools
+description: >
+  One row per course with instructors and learning tool or course item type: instructor
+  interactions with that type, and instructor contributions (submissions to discussions, blogs,
+  journals, wikis and other social tools), in total and per course week. Each course is labelled by
+  its instructors' engagement across all types: tool activity and contributions, tool activity only,
+  contributions only, or no instructor activity. A course with none has one row with no type.
+grain: one row per course x learning tool or course item type (one row with no type for a course without instructor activity)
+domain: tools
+source: CDM_LMS.COURSE_ITEM, CDM_LMS.SUBMISSION, CDM_LMS.PERSON_COURSE
+depends_on: [dataset.course_role_activity.v1, dataset.course_item_tool_activity.v1, dataset.item_tool_map.v1]
+base_sql: |
+  WITH courses AS (
+      SELECT COURSE_ID, GREATEST(NVL(COURSE_WEEKS, 1), 1) AS COURSE_WEEKS
+      FROM {{ ref('dataset.course_role_activity.v1') }}
+      WHERE COURSE_ROLE = 'I' AND ENROLLMENT_ROLE_COUNT > 0
+  ),
+  interactions AS (
+      SELECT COURSE_ID, TYPE_NAME, SUM(INTERACTION_CNT) AS INTERACTIONS
+      FROM {{ ref('dataset.course_item_tool_activity.v1') }}
+      WHERE COURSE_ROLE = 'I'
+      GROUP BY COURSE_ID, TYPE_NAME
+  ),
+  contributions AS (
+      SELECT s.COURSE_ID, NVL(ANY_VALUE(m.DISPLAY_NAME), INITCAP(REPLACE(ci.ITEM_TYPE, '_', ' '))) AS TYPE_NAME,
+             COUNT(DISTINCT s.ID) AS CONTRIBUTIONS
+      FROM {{ database }}.CDM_LMS.SUBMISSION s
+      JOIN {{ database }}.CDM_LMS.PERSON_COURSE pc ON pc.ID = s.PERSON_COURSE_ID AND pc.COURSE_ROLE = 'I'
+      JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = s.COURSE_ITEM_ID
+      JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = ci.ITEM_TYPE AND m.SOCIAL_INTERACTIONS_IND = 1
+      WHERE s.ROW_DELETED_TIME IS NULL
+      GROUP BY s.COURSE_ID, ci.ITEM_TYPE
+  ),
+  by_type AS (
+      SELECT COALESCE(i.COURSE_ID, c.COURSE_ID) AS COURSE_ID, COALESCE(i.TYPE_NAME, c.TYPE_NAME) AS TYPE_NAME,
+             NVL(i.INTERACTIONS, 0) AS INTERACTIONS, NVL(c.CONTRIBUTIONS, 0) AS CONTRIBUTIONS
+      FROM interactions i
+      FULL OUTER JOIN contributions c ON c.COURSE_ID = i.COURSE_ID AND c.TYPE_NAME = i.TYPE_NAME
+  )
+  SELECT co.COURSE_ID, b.TYPE_NAME, NVL(b.INTERACTIONS, 0) AS INTERACTIONS, NVL(b.CONTRIBUTIONS, 0) AS CONTRIBUTIONS,
+         NVL(b.INTERACTIONS, 0) / co.COURSE_WEEKS AS INTERACTIONS_PER_WEEK,
+         NVL(b.CONTRIBUTIONS, 0) / co.COURSE_WEEKS AS CONTRIBUTIONS_PER_WEEK,
+         CASE WHEN SUM(NVL(b.INTERACTIONS, 0)) OVER (PARTITION BY co.COURSE_ID) > 0
+                   AND SUM(NVL(b.CONTRIBUTIONS, 0)) OVER (PARTITION BY co.COURSE_ID) > 0 THEN 'Tool activity and contributions'
+              WHEN SUM(NVL(b.INTERACTIONS, 0)) OVER (PARTITION BY co.COURSE_ID) > 0 THEN 'Tool activity only'
+              WHEN SUM(NVL(b.CONTRIBUTIONS, 0)) OVER (PARTITION BY co.COURSE_ID) > 0 THEN 'Contributions only'
+              ELSE 'No instructor activity' END AS ENGAGEMENT
+  FROM courses co
+  LEFT JOIN by_type b ON b.COURSE_ID = co.COURSE_ID
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: type_name, column: TYPE_NAME, type: categorical, synonyms: [learning tool, tool]}
+  - {name: engagement, column: ENGAGEMENT, type: categorical, description: "The course's instructor engagement across all types"}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: interactions, agg: sum, expr: INTERACTIONS, unit: interactions}
+  - {name: contributions, agg: sum, expr: CONTRIBUTIONS, unit: contributions}
+  - {name: median_interactions, agg: median, expr: INTERACTIONS, unit: interactions, description: "Per course and type"}
+  - {name: min_interactions, agg: min, expr: INTERACTIONS, unit: interactions}
+  - {name: max_interactions, agg: max, expr: INTERACTIONS, unit: interactions}
+  - {name: median_contributions, agg: median, expr: CONTRIBUTIONS, unit: contributions}
+  - {name: min_contributions, agg: min, expr: CONTRIBUTIONS, unit: contributions}
+  - {name: max_contributions, agg: max, expr: CONTRIBUTIONS, unit: contributions}
+  - {name: interactions_per_week, agg: sum, expr: INTERACTIONS_PER_WEEK, unit: interactions}
+  - {name: contributions_per_week, agg: sum, expr: CONTRIBUTIONS_PER_WEEK, unit: contributions}

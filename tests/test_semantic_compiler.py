@@ -502,3 +502,16 @@ def test_course_items_count_design_types_only_by_group_at_course_and_course_type
     sql = _outer(_real(measures=["dataset.course_item_types.v1:" + m for m in ("courses", "median_items", "min_items", "max_items")],
                        dimensions=["item_group", "item_type_name"]))
     assert "MEDIAN(ITEMS)" in sql
+
+
+def test_instructor_tool_engagement_labels_each_course_and_keeps_courses_with_none():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    cte = build_ctes(cat, ["dataset.course_tool_instructor_engagement.v1"], "DB")["DS_COURSE_TOOL_INSTRUCTOR_ENGAGEMENT_V1"]
+    for label in ("'Tool activity and contributions'", "'Tool activity only'", "'Contributions only'", "'No instructor activity'"):
+        assert label in cte
+    assert "SOCIAL_INTERACTIONS_IND = 1" in cte and "LEFT JOIN" in cte
+    sql = _outer(_real(measures=["dataset.course_tool_instructor_engagement.v1:" + m for m in (
+        "courses", "median_interactions", "max_interactions", "min_interactions", "median_contributions", "interactions_per_week")],
+        dimensions=["type_name", "engagement", "dataset.courses.v1:ih_level_1"]))
+    assert "MEDIAN(" in sql and "LEFT JOIN DS_COURSES_V1" in sql
