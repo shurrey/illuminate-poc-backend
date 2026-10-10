@@ -1,0 +1,221 @@
+id: report.course_administration.v1
+title: Course Administration
+area: leading
+description: How many courses are ready for teaching, what each needs to get ready, and how hierarchy nodes compare.
+filters:
+- id: dates
+  label: Course creation date
+  control: date_range
+  time_dimension: dataset.courses.v1:course_creation_date
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+  default: current_term
+- id: duration
+  label: Course duration type
+  control: select
+  dimension: dataset.courses.v1:course_duration
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  dimension: dataset.courses.v1:ih_level_1
+  exclude_values:
+  - '-'
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  dimension: dataset.courses.v1:ih_level_2
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  dimension: dataset.courses.v1:ih_level_3
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  dimension: dataset.courses.v1:ih_level_4
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+- id: course
+  label: Course ID
+  control: multi_select
+  dimension: dataset.courses.v1:course_number
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+  - ih4
+pages:
+- title: Course Readiness
+  visuals:
+  - id: readiness_help
+    type: text
+    title: Course readiness
+    text: A course is ready to start when at least one instructor is enrolled, at least one student is enrolled, and at least
+      one course item has been created or modified since the course was created. Availability to students is shown alongside
+      but does not affect readiness.
+  - id: ready_share
+    type: pie
+    title: What proportion of courses are ready to start?
+    queries:
+      main:
+        measures:
+        - dataset.course_readiness.v1:courses
+        dimensions:
+        - readiness
+        order_by:
+        - field: readiness
+          direction: desc
+    encode:
+      label: readiness
+      value: courses
+      donut: true
+  - id: actions
+    type: table
+    title: What actions need to be taken to get courses ready?
+    queries:
+      main:
+        measures:
+        - dataset.course_readiness.v1:courses
+        dimensions:
+        - instructor_enrolled
+        - students_enrolled
+        - items_updated
+        - available
+        - readiness
+        order_by:
+        - field: courses
+          direction: desc
+    encode:
+      columns:
+      - instructor_enrolled
+      - students_enrolled
+      - items_updated
+      - available
+      - readiness
+      - courses
+  - id: readiness_by_node
+    type: bar
+    title: How do institutional hierarchy nodes compare in regards to course readiness?
+    queries:
+      main:
+        measures:
+        - dataset.course_readiness.v1:pct_ready
+        - dataset.course_readiness.v1:pct_not_ready
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - pct_ready
+      - pct_not_ready
+      stacked: true
+      horizontal: true
+  - id: readiness_by_node_term
+    type: table
+    title: How do institutional hierarchy nodes compare in regards to course readiness measures?
+    queries:
+      main:
+        measures:
+        - dataset.course_readiness.v1:courses
+        - dataset.course_readiness.v1:ready_courses
+        - dataset.course_readiness.v1:pct_ready
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        dimensions:
+        - dataset.courses.v1:term_name
+        order_by:
+        - field: node
+          direction: asc
+        - field: term_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - node
+      - term_name
+      - courses
+      - ready_courses
+      - pct_ready
+      units:
+        pct_ready: percent
+  - id: courses
+    type: table
+    title: Which courses are ready or not ready to start?
+    queries:
+      main:
+        measures:
+        - dataset.course_readiness.v1:students
+        - dataset.course_readiness.v1:available_students
+        - dataset.course_readiness.v1:instructors
+        - dataset.course_readiness.v1:items
+        - dataset.course_readiness.v1:new_updated_share
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - readiness
+        - instructor_enrolled
+        - students_enrolled
+        - items_updated
+        - available
+        - dataset.courses.v1:course_start__day
+        - dataset.courses.v1:course_end__day
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - readiness
+      - instructor_enrolled
+      - students_enrolled
+      - items_updated
+      - available
+      - instructors
+      - students
+      - available_students
+      - items
+      - new_updated_share
+      - course_start__day
+      - course_end__day
+      units:
+        new_updated_share: ratio
