@@ -490,3 +490,26 @@ def test_month_defaults_are_the_last_completed_month_and_the_one_before(today, l
                       {"id": "p", "label": "P", "control": "date_range", "time_dimension": "event_time", "default": "month_before_last"}], [])
     defaults = resolve_defaults(report, today, [])
     assert (defaults["m"]["start"], defaults["m"]["end"]) == last and (defaults["p"]["start"], defaults["p"]["end"]) == before
+
+
+def test_ai_month_kpis_compare_whole_months_whatever_the_date_range():
+    report = load_reports()["report.ai_design_assistant_adoption.v1"]
+    values = {**resolve_defaults(report, date(2026, 10, 10), []), "dates": {"start": "2025-01-01", "end": "2025-03-31"}}
+    for v in ("kpi_courses", "kpi_users", "kpi_items"):
+        cur, _ = merged_contract(report, report.visual(v), "current", values, CATALOG)
+        prev, _ = merged_contract(report, report.visual(v), "previous", values, CATALOG)
+        assert (str(cur.time_range.start), str(cur.time_range.end)) == ("2026-09-01", "2026-09-30")
+        assert (str(prev.time_range.start), str(prev.time_range.end)) == ("2026-08-01", "2026-08-31")
+
+
+def test_ai_report_applies_its_filters_and_hides_instructors_from_viewers():
+    report = load_reports()["report.ai_design_assistant_adoption.v1"]
+    values = {"dates": {"start": "2026-01-01", "end": "2026-09-30"}, "term": ["Q4: 2026"], "ih1": ["Arts"],
+              "course": ["BIO-101"], "item_type": ["Assignment"], "duration": ["Fixed"]}
+    for v in report.visuals():
+        for q in v.queries:
+            assert merged_contract(report, v, q, values, CATALOG)[1] == [], (v.id, q)
+    instructors = report.visual("instructors")
+    contract, _ = merged_contract(report, instructors, "main", values, CATALOG)
+    ds = CATALOG.datasets["dataset.course_item_ai_usage.v1"]
+    assert all(ds.is_pii(ds.dimension(d.rpartition(":")[2]).column) for d in contract.dimensions)
