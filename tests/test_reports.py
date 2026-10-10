@@ -342,3 +342,15 @@ def test_courses_have_primary_node_levels_and_grading_has_a_day_bucket():
                                       dimensions=["dataset.courses.v1:ih_level_1", "dataset.courses.v1:ih_level_2", "response_days_bucket"]),
                         CATALOG, "DB").sql
     assert "PRIMARY_IND" in sql and "RESPONSE_DAYS_BUCKET" in sql
+
+
+def test_validation_reads_a_join_list_of_queries():
+    joined = {**SESSIONS, "transform": {"kind": "join", "queries": ["main", "ghost"], "on": ["x"]}}
+    assert any("ghost" in p for p in validate_report(_report([], [joined]), CATALOG))
+
+
+def test_encode_options_are_not_mistaken_for_columns():
+    kpi = {**SESSIONS, "encode": {"value": "sessions", "unit": "ratio"}}
+    bar = {**SESSIONS, "id": "bar", "type": "bar", "encode": {"x": "sessions", "y": ["sessions", "missing"], "stacked": True}}
+    problems = validate_report(_report([], [kpi, bar]), CATALOG)
+    assert problems == ["bar/encode: columns ['missing'] are not returned by its queries"]

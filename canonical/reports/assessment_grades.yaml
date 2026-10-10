@@ -1,0 +1,302 @@
+id: report.assessment_grades.v1
+title: Assessment & Grades
+area: teaching
+description: Is student coursework graded within the expected grading time? Response times, ungraded submissions, and comparisons
+  by course, submission type and institutional hierarchy node.
+filters:
+- id: dates
+  label: Course start date range
+  control: date_range
+  time_dimension: dataset.courses.v1:course_start
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+  default: current_term
+- id: duration
+  label: Course duration type
+  control: select
+  dimension: dataset.courses.v1:course_duration
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  dimension: dataset.course_filters_ih.v1:ih_level_1
+  exclude_values:
+  - '-'
+  - All Nodes
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  dimension: dataset.course_filters_ih.v1:ih_level_2
+  exclude_values:
+  - '-'
+  - All Nodes
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  dimension: dataset.course_filters_ih.v1:ih_level_3
+  exclude_values:
+  - '-'
+  - All Nodes
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  dimension: dataset.course_filters_ih.v1:ih_level_4
+  exclude_values:
+  - '-'
+  - All Nodes
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+- id: item_type
+  label: Course item type
+  control: multi_select
+  dimension: dataset.grade_response_time.v1:type_name
+- id: course
+  label: Course ID
+  control: multi_select
+  dimension: dataset.courses.v1:course_number
+- id: kpi
+  label: Expected grading time (days)
+  control: number
+  default: 21
+pages:
+- title: Grading and Assessment
+  visuals:
+  - id: ungraded
+    type: kpi
+    title: How many submissions haven't been graded?
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:ungraded_attempts
+        time_overlap: &id001
+          start: dataset.courses.v1:course_start
+          end: dataset.courses.v1:course_end
+    encode:
+      value: ungraded_attempts
+  - id: share_ungraded
+    type: kpi
+    title: What percentage of submissions haven't been graded?
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:share_ungraded
+        time_overlap: *id001
+    encode:
+      value: share_ungraded
+      unit: ratio
+  - id: needs_grading_help
+    type: text
+    title: How many submissions need to be graded?
+    text: Submissions are student attempts on gradebook items that count towards grading time. The clock starts at the later
+      of the attempt and the item's due date.
+  - id: inside_share
+    type: pie
+    title: How many submissions were graded inside the grading time?
+    queries:
+      all:
+        measures:
+        - dataset.grade_response_time.v1:attempts
+        time_overlap: *id001
+      inside:
+        measures:
+        - dataset.grade_response_time.v1:attempts
+        time_overlap: *id001
+        param_filters: &id002
+        - dimension: response_days_value
+          op: lt
+          param: kpi
+    transform:
+      kind: part_of_whole
+      whole: all
+      part: inside
+      field: attempts
+      labels:
+      - Inside grading time
+      - Outside grading time
+    encode:
+      label: category
+      value: value
+      donut: true
+  - id: histogram
+    type: bar
+    title: How quickly are submissions graded?
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:graded_attempts
+        time_overlap: *id001
+        dimensions:
+        - response_days_bucket
+        - response_days_capped
+        filters:
+        - dimension: graded
+          op: eq
+          values:
+          - 1
+        order_by:
+        - field: response_days_capped
+          direction: asc
+        limit: 100
+    encode:
+      x: response_days_bucket
+      y: graded_attempts
+  - id: inside_by_node
+    type: bar
+    title: What proportion of submissions are graded inside the grading time per institutional hierarchy node?
+    queries:
+      all:
+        measures:
+        - dataset.grade_response_time.v1:attempts
+        time_overlap: *id001
+        dimensions:
+        - dataset.courses.v1:ih_level_1
+      inside:
+        measures:
+        - dataset.grade_response_time.v1:attempts
+        time_overlap: *id001
+        dimensions:
+        - dataset.courses.v1:ih_level_1
+        param_filters: *id002
+    transform:
+      kind: join
+      queries:
+      - all
+      - inside
+      'on':
+      - ih_level_1
+      as:
+        inside:
+          attempts: inside
+      differences:
+        outside:
+        - attempts
+        - inside
+      ratios:
+        Inside grading time:
+        - inside
+        - attempts
+        Outside grading time:
+        - outside
+        - attempts
+    encode:
+      x: ih_level_1
+      y:
+      - Inside grading time
+      - Outside grading time
+      stacked: true
+      horizontal: true
+  - id: by_type
+    type: table
+    title: How long does it take to grade by submission type?
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:min_response_days
+        - dataset.grade_response_time.v1:median_response_days
+        - dataset.grade_response_time.v1:max_response_days
+        - dataset.grade_response_time.v1:ungraded_attempts
+        - dataset.grade_response_time.v1:share_graded
+        time_overlap: *id001
+        dimensions:
+        - type_name
+    encode:
+      columns:
+      - type_name
+      - min_response_days
+      - median_response_days
+      - max_response_days
+      - ungraded_attempts
+      - share_graded
+  - id: by_node_term
+    type: table
+    title: How do institutional hierarchy nodes compare in regards to grading?
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:courses
+        - dataset.grade_response_time.v1:graded_attempts
+        - dataset.grade_response_time.v1:ungraded_attempts
+        - dataset.grade_response_time.v1:avg_response_days
+        time_overlap: *id001
+        dimensions:
+        - dataset.courses.v1:ih_level_1
+        - dataset.courses.v1:term_name
+        limit: 1000
+      inside:
+        measures:
+        - dataset.grade_response_time.v1:graded_attempts
+        time_overlap: *id001
+        dimensions:
+        - dataset.courses.v1:ih_level_1
+        - dataset.courses.v1:term_name
+        param_filters: *id002
+        limit: 1000
+    transform:
+      kind: join
+      queries:
+      - main
+      - inside
+      'on':
+      - ih_level_1
+      - term_name
+      as:
+        inside:
+          graded_attempts: graded_inside
+      ratios:
+        share_graded_inside:
+        - graded_inside
+        - graded_attempts
+  - id: by_course
+    type: table
+    title: Which courses are graded inside the grading time?
+    queries:
+      grading:
+        measures:
+        - dataset.grade_response_time.v1:graded_attempts
+        - dataset.grade_response_time.v1:ungraded_attempts
+        - dataset.grade_response_time.v1:avg_response_days
+        time_overlap: *id001
+        dimensions: &id003
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        limit: 1000
+      people:
+        metrics:
+        - metric.student_enrollments.v1
+        - metric.instructor_enrollments.v1
+        dimensions: *id003
+        time_overlap: *id001
+        limit: 1000
+        filters_ignored:
+        - item_type
+      inside:
+        measures:
+        - dataset.grade_response_time.v1:graded_attempts
+        time_overlap: *id001
+        dimensions: *id003
+        param_filters: *id002
+        limit: 1000
+    transform:
+      kind: join
+      queries:
+      - grading
+      - people
+      - inside
+      'on':
+      - course_number
+      - course_name
+      as:
+        inside:
+          graded_attempts: graded_inside
+      ratios:
+        share_graded_inside:
+        - graded_inside
+        - graded_attempts
