@@ -149,29 +149,29 @@ pages:
         measures:
         - dataset.course_item_ai_usage.v1:ai_items
         dimensions:
-        - created_date__week
+        - created_date__month
         order_by:
-        - field: created_date__week
+        - field: created_date__month
           direction: asc
         limit: 400
     encode:
-      x: created_date__week
+      x: created_date__month
       y: ai_items
   - id: share_over_time
     type: line
-    title: What share of course items were created with AI each week?
+    title: What share of course items were created with AI each month?
     queries:
       main:
         measures:
         - dataset.course_item_ai_usage.v1:pct_ai_items
         dimensions:
-        - created_date__week
+        - created_date__month
         order_by:
-        - field: created_date__week
+        - field: created_date__month
           direction: asc
         limit: 400
     encode:
-      x: created_date__week
+      x: created_date__month
       y: pct_ai_items
       unit: percent
   - id: courses_share

@@ -513,3 +513,15 @@ def test_ai_report_applies_its_filters_and_hides_instructors_from_viewers():
     contract, _ = merged_contract(report, instructors, "main", values, CATALOG)
     ds = CATALOG.datasets["dataset.course_item_ai_usage.v1"]
     assert all(ds.is_pii(ds.dimension(d.rpartition(":")[2]).column) for d in contract.dimensions)
+
+
+def test_ai_usage_over_time_covers_the_whole_history_within_its_row_limit():
+    report = load_reports()["report.ai_design_assistant_adoption.v1"]
+    for vid in ("items_over_time", "share_over_time"):
+        q = report.visual(vid).queries["main"]
+        assert q["dimensions"] == ["created_date__month"] and q["limit"] >= 400
+
+
+def test_ai_items_with_no_creator_are_labelled():
+    from semantic_layer.compiler import build_ctes
+    assert "'Unknown creator'" in build_ctes(CATALOG, ["dataset.course_item_ai_usage.v1"], "DB")["DS_COURSE_ITEM_AI_USAGE_V1"]
