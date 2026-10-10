@@ -28,7 +28,11 @@ base_sql: |
          IFF(YEAR(co.CREATED_TIME) < 1970, TO_DATE('1970-01-01'), co.CREATED_TIME::DATE) AS COURSE_CREATION_DATE,
          NVL(sis.DELIVERY_METHOD, '-') AS DELIVERY_METHOD,
          CEIL(DATEDIFF(day, COALESCE(co.START_TIME, te.START_TIME),
-                       LEAST(COALESCE(co.END_TIME, te.END_TIME, CURRENT_TIMESTAMP()), CURRENT_TIMESTAMP())) / 7) AS COURSE_WEEKS
+                       LEAST(COALESCE(co.END_TIME, te.END_TIME, CURRENT_TIMESTAMP()), CURRENT_TIMESTAMP())) / 7) AS COURSE_WEEKS,
+         NVL(NULLIF(SPLIT_PART(pn.SEQ, '||', 2), ''), 'No hierarchy node') AS IH_LVL1,
+         NVL(NULLIF(SPLIT_PART(pn.SEQ, '||', 3), ''), '-') AS IH_LVL2,
+         NVL(NULLIF(SPLIT_PART(pn.SEQ, '||', 4), ''), '-') AS IH_LVL3,
+         NVL(NULLIF(SPLIT_PART(pn.SEQ, '||', 5), ''), '-') AS IH_LVL4
   FROM {{ database }}.CDM_LMS.COURSE co
   LEFT JOIN {{ database }}.CDM_LMS.TERM te ON te.ID = co.TERM_ID
   -- A course mapped to several SIS sections takes the first delivery method alphabetically.
@@ -38,6 +42,14 @@ base_sql: |
     JOIN {{ database }}.CDM_SIS.CLASS_SECTION sis_s ON sis_s.ID = c_map.SIS_CLASS_SECTION_ID
     GROUP BY c_map.LMS_COURSE_ID
   ) sis ON sis.COURSE_ID = co.ID
+  -- The course's primary hierarchy node only, so grouping by level keeps one row per course.
+  LEFT JOIN (
+    SELECT ihc.COURSE_ID, ANY_VALUE(ih.HIERARCHY_NAME_SEQ) AS SEQ
+    FROM {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc
+    JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
+    WHERE ihc.PRIMARY_IND AND ihc.ROW_DELETED_TIME IS NULL
+    GROUP BY ihc.COURSE_ID
+  ) pn ON pn.COURSE_ID = co.ID
   LEFT JOIN {{ database }}.CDM_META.CANON_DEFINITION cd
     ON cd.CANON_CODE = co.DESIGN_MODE AND cd.SOURCE_DOMAIN = 'LMS' AND cd.NAME = 'DESIGN_MODE'
 entities:
@@ -57,6 +69,10 @@ dimensions:
   - {name: course_duration, column: COURSE_DURATION, type: categorical, description: "Fixed when the course or its term has an end date, otherwise Continuous"}
   - {name: course_creation_date, column: COURSE_CREATION_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: delivery_method, column: DELIVERY_METHOD, type: categorical, description: "The SIS delivery method of the course's section; '-' when unmapped", synonyms: [modality, delivery mode]}
+  - {name: ih_level_1, column: IH_LVL1, type: categorical, description: "Level 1 of the course's primary institutional hierarchy node", synonyms: [college, faculty]}
+  - {name: ih_level_2, column: IH_LVL2, type: categorical, description: "Level 2 of the course's primary hierarchy node; '-' when it has none", synonyms: [department]}
+  - {name: ih_level_3, column: IH_LVL3, type: categorical, description: "Level 3 of the course's primary hierarchy node; '-' when it has none"}
+  - {name: ih_level_4, column: IH_LVL4, type: categorical, description: "Level 4 and below of the course's primary hierarchy node; '-' when it has none"}
   - {name: course_weeks, column: COURSE_WEEKS, type: numeric, description: "Weeks from the course start to its end, or to today while it runs"}
 measures:
   - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}

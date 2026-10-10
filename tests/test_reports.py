@@ -312,3 +312,33 @@ def test_tool_activity_counts_days_and_person_days():
     sql = compile_query(QueryContract(measures=["dataset.course_tool_activity.v1:days", "dataset.course_tool_activity.v1:person_days"],
                                       dimensions=["day_of_week"]), CATALOG, "DB").sql
     assert "COUNT(DISTINCT ACTIVITY_DATE)" in sql and "PERSON_ID" in sql
+
+
+KPI = {"id": "kpi", "label": "Expected grading time (days)", "control": "number", "default": 21}
+INSIDE = {"id": "inside", "type": "kpi", "title": "Inside",
+          "queries": {"main": {"measures": ["dataset.grade_response_time.v1:graded_attempts"],
+                               "param_filters": [{"dimension": "response_days_value", "op": "lte", "param": "kpi"}]}}}
+
+
+def test_a_parameter_filter_takes_the_chosen_value_or_the_default():
+    report = _report([KPI], [INSIDE])
+    chosen, _ = merged_contract(report, report.visual("inside"), "main", {"kpi": ["7"]}, CATALOG)
+    default, _ = merged_contract(report, report.visual("inside"), "main", {}, CATALOG)
+    assert [(f.dimension, f.op, f.values) for f in chosen.filters] == [("response_days_value", "lte", [7])]
+    assert default.filters[0].values == [21]
+    assert resolve_defaults(report, date(2026, 10, 9), [])["kpi"] == [21]
+
+
+def test_validation_flags_an_unknown_parameter():
+    bad = {**INSIDE, "queries": {"main": {**INSIDE["queries"]["main"],
+                                          "param_filters": [{"dimension": "response_days_value", "op": "lte", "param": "nope"}]}}}
+    assert any("nope" in p for p in validate_report(_report([KPI], [bad]), CATALOG))
+
+
+def test_courses_have_primary_node_levels_and_grading_has_a_day_bucket():
+    from semantic_layer.compiler import compile_query
+    from semantic_layer.contract import QueryContract
+    sql = compile_query(QueryContract(measures=["dataset.grade_response_time.v1:graded_attempts"],
+                                      dimensions=["dataset.courses.v1:ih_level_1", "dataset.courses.v1:ih_level_2", "response_days_bucket"]),
+                        CATALOG, "DB").sql
+    assert "PRIMARY_IND" in sql and "RESPONSE_DAYS_BUCKET" in sql
