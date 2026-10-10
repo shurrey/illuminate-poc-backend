@@ -1,0 +1,67 @@
+id: dataset.course_readiness.v1
+display_name: Course readiness
+description: >
+  One row per course with what it needs to be ready to start: enrolled instructors (primary or
+  sandbox), students and available students, its course items and how many were created or modified
+  since the course was created, Yes/No flags for each, whether it is available to students, and its
+  readiness. A course is Ready when it has an instructor, a student and a new or updated item.
+  Course attributes (term, duration, dates, hierarchy levels, number, name) come from the courses
+  dataset.
+grain: one row per course
+domain: course
+source: CDM_LMS.COURSE, CDM_LMS.PERSON_COURSE, CDM_LMS.COURSE_ITEM
+base_sql: |
+  WITH enrollees AS (
+      SELECT COURSE_ID,
+             COUNT_IF(COURSE_ROLE IN ('I', 'O')) AS INSTRUCTORS,
+             COUNT_IF(COURSE_ROLE = 'S') AS STUDENTS,
+             COUNT_IF(COURSE_ROLE = 'S' AND AVAILABLE_IND) AS AVAILABLE_STUDENTS
+      FROM {{ database }}.CDM_LMS.PERSON_COURSE
+      WHERE ROW_DELETED_TIME IS NULL
+      GROUP BY COURSE_ID
+  ),
+  items AS (
+      SELECT ci.COURSE_ID, COUNT(*) AS ITEMS,
+             COUNT_IF(GREATEST_IGNORE_NULLS(ci.CREATED_TIME, ci.MODIFIED_TIME) > co.CREATED_TIME) AS NEW_UPDATED_ITEMS
+      FROM {{ database }}.CDM_LMS.COURSE_ITEM ci
+      JOIN {{ database }}.CDM_LMS.COURSE co ON co.ID = ci.COURSE_ID
+      WHERE ci.ROW_DELETED_TIME IS NULL
+      GROUP BY ci.COURSE_ID
+  ),
+  counts AS (
+      SELECT co.ID AS COURSE_ID, co.AVAILABLE_IND,
+             ZEROIFNULL(e.INSTRUCTORS) AS INSTRUCTORS, ZEROIFNULL(e.STUDENTS) AS STUDENTS,
+             ZEROIFNULL(e.AVAILABLE_STUDENTS) AS AVAILABLE_STUDENTS,
+             ZEROIFNULL(i.ITEMS) AS ITEMS, ZEROIFNULL(i.NEW_UPDATED_ITEMS) AS NEW_UPDATED_ITEMS
+      FROM {{ database }}.CDM_LMS.COURSE co
+      LEFT JOIN enrollees e ON e.COURSE_ID = co.ID
+      LEFT JOIN items i ON i.COURSE_ID = co.ID
+      WHERE co.ROW_DELETED_TIME IS NULL
+  )
+  SELECT COURSE_ID, INSTRUCTORS, STUDENTS, AVAILABLE_STUDENTS, ITEMS, NEW_UPDATED_ITEMS,
+         IFF(ITEMS > 0, NEW_UPDATED_ITEMS / ITEMS, 0) AS NEW_UPDATED_SHARE,
+         IFF(INSTRUCTORS > 0, 'Yes', 'No') AS INSTRUCTOR_ENROLLED,
+         IFF(STUDENTS > 0, 'Yes', 'No') AS STUDENTS_ENROLLED,
+         IFF(NEW_UPDATED_ITEMS > 0, 'Yes', 'No') AS ITEMS_UPDATED,
+         IFF(AVAILABLE_IND, 'Yes', 'No') AS AVAILABLE,
+         IFF(INSTRUCTORS > 0 AND STUDENTS > 0 AND NEW_UPDATED_ITEMS > 0, 'Ready', 'Not ready') AS READINESS
+  FROM counts
+entities:
+  - {name: course, column: COURSE_ID, type: foreign}
+dimensions:
+  - {name: readiness, column: READINESS, type: categorical, description: "'Ready' or 'Not ready'", synonyms: [course readiness, ready to start]}
+  - {name: instructor_enrolled, column: INSTRUCTOR_ENROLLED, type: categorical, description: "'Yes' when a primary or sandbox instructor is enrolled"}
+  - {name: students_enrolled, column: STUDENTS_ENROLLED, type: categorical}
+  - {name: items_updated, column: ITEMS_UPDATED, type: categorical, description: "'Yes' when an item was created or modified after the course was created"}
+  - {name: available, column: AVAILABLE, type: categorical, description: "'Yes' when the course is available to students"}
+measures:
+  - {name: courses, agg: count_distinct, expr: COURSE_ID, unit: courses}
+  - {name: ready_courses, agg: count_distinct, expr: "IFF(READINESS = 'Ready', COURSE_ID, NULL)", unit: courses}
+  - {name: pct_ready, agg: avg, expr: "IFF(READINESS = 'Ready', 100, 0)", unit: percent, description: "Share of courses ready to start"}
+  - {name: pct_not_ready, agg: avg, expr: "IFF(READINESS = 'Ready', 0, 100)", unit: percent}
+  - {name: instructors, agg: max, expr: INSTRUCTORS, unit: people, description: "Per course: enrolled primary or sandbox instructors"}
+  - {name: students, agg: max, expr: STUDENTS, unit: people, description: "Per course: enrolled students"}
+  - {name: available_students, agg: max, expr: AVAILABLE_STUDENTS, unit: people, description: "Per course: students whose enrollment is available"}
+  - {name: items, agg: max, expr: ITEMS, unit: items, description: "Per course: course items"}
+  - {name: new_updated_items, agg: max, expr: NEW_UPDATED_ITEMS, unit: items}
+  - {name: new_updated_share, agg: max, expr: NEW_UPDATED_SHARE, unit: ratio, description: "Per course: share of items created or modified since the course was created"}

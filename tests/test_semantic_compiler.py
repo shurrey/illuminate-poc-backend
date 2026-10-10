@@ -441,3 +441,16 @@ def test_collab_events_count_hands_and_shown_polls_by_local_day():
                        filters=[{"dimension": "in_course", "op": "in", "values": ["Yes"]}]))
     assert "COUNT(DISTINCT SESSION_ID)" in sql and "EVENT_GROUP" in sql
     assert "COUNT(DISTINCT IFF(POLL_SHOWN = 1, SESSION_ID, NULL))" in sql
+
+
+CR = "dataset.course_readiness.v1"
+
+
+def test_course_readiness_counts_each_course_once_and_reads_course_attributes_by_key():
+    sql = _outer(_real(measures=[f"{CR}:{m}" for m in ("courses", "ready_courses", "pct_ready", "pct_not_ready")],
+                       dimensions=["readiness", "instructor_enrolled", "students_enrolled", "items_updated", "available",
+                                   "dataset.courses.v1:term_name", "dataset.courses.v1:ih_level_1"]))
+    assert "LEFT JOIN DS_COURSES_V1" in sql and "COUNT(DISTINCT" in sql
+    from semantic_layer.catalog import load_catalog
+    cte = build_ctes(load_catalog(), [CR], "DB")["DS_COURSE_READINESS_V1"]
+    assert "ZEROIFNULL" in cte and "ROW_DELETED_TIME IS NULL" in cte
