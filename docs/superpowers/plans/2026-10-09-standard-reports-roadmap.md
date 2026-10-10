@@ -45,8 +45,13 @@ equal length), and the date-range filter shifts it accordingly. Without it, peri
 **Done:**
 - **Learning Platform Adoption.** Plan `2026-10-10-standard-reports-phase-2-platform-adoption.md`; B #120–#126, F #34–#37.
 - **Learning Tool Activity & Use.** Plan `2026-10-10-standard-reports-phase-2b-tool-activity.md`; B #128–#132, F #38–#39.
+- **Assessment & Grades.** Plan `2026-10-10-standard-reports-phase-2c-assessment-grades.md`; B #135–#137, #139–#140,
+  F #40–#43.
 
-Both were reviewed, fixed and checked live.
+All three were reviewed, fixed and checked live.
+
+**In progress:** Collaboration Session Activity, plan `2026-10-10-standard-reports-phase-2d-collaboration-sessions.md`.
+Its datasets are in (B #138).
 
 Deferred minors:
 - a cleared comparison range runs all-time;
@@ -59,7 +64,15 @@ Deferred minors:
 - validation misses bad `time_overlap` refs and per-query `filters_ignored` typos;
 - the course help-text title says "available";
 - the role filter shrinks the role pie instead of highlighting;
-- `average_by`'s Info text uses raw names.
+- `average_by`'s Info text uses raw names;
+- Assessment & Grades:
+  - every change to the grading-time number reruns every visual;
+  - a blank or negative grading time is accepted;
+  - non-finite numbers return 500;
+  - the primary-node join uses `ANY_VALUE`;
+  - hierarchy filters match any node while grouping uses the primary one;
+  - `courses.v1` level synonyms differ from `course_filters_ih`;
+  - an empty current term has no hint to clear it.
 
 Each report is one PR in B (its definition) and is verified live in F. Datasets and definitions it needs land first,
 in their own PRs.
