@@ -590,3 +590,18 @@ def test_learning_tools_comparison_queries_use_only_the_comparison_range_and_fil
             assert sorted(ignored + list(report.visual(v.id).queries[q].get("filters_ignored", []))) == expected, (v.id, q)
             comparison = v.id.endswith("_comparison") or q == "previous"
             assert str(contract.time_range.start) == ("2026-08-01" if comparison else "2026-09-01"), (v.id, q)
+
+
+def test_the_ai_course_donut_follows_the_filters_like_the_node_bars():
+    report = load_reports()["report.ai_design_assistant_adoption.v1"]
+    v = report.visual("courses_share")
+    assert v.transform["kind"] == "part_of_whole"
+    using, _ = merged_contract(report, v, v.transform["part"], {"item_type": ["Assignment"]}, CATALOG)
+    assert ("ai_used", "in", ["Yes"]) in [(f.dimension, f.op, f.values) for f in using.filters]
+    assert ("dataset.course_item_ai_usage.v1:item_type_name", "in", ["Assignment"]) in [(f.dimension, f.op, f.values) for f in using.filters]
+    assert "course_uses_ai" not in str(v.queries)
+
+
+def test_the_ai_kpi_help_says_which_courses_the_kpis_cover():
+    text = load_reports()["report.ai_design_assistant_adoption.v1"].visual("kpi_help").text
+    assert "term" in text and "filters" in text
