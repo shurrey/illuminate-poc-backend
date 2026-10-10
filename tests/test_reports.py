@@ -429,3 +429,33 @@ def test_minimum_attendees_narrows_only_the_attendance_statistics():
     narrowed = {key for key, (c, _) in _collab_contracts().items()
                 if any(f.dimension.endswith("attendee_count") and f.op == "gte" and f.values == [2] for f in c.filters)}
     assert narrowed and all(v.startswith("attendance_") and v.endswith("_kpi") for v, _ in narrowed)
+
+
+IH_FILTERS = [{"id": f"ih{n}", "label": f"L{n}", "control": "select", "dimension": f"dataset.courses.v1:ih_level_{n}"}
+              for n in range(1, 5)]
+BY_NODE = {"id": "by_node", "type": "bar", "title": "By node",
+           "queries": {"main": {"measures": ["dataset.course_readiness.v1:pct_ready"],
+                                "child_of": {"filters": ["ih1", "ih2", "ih3", "ih4"],
+                                             "dimensions": [f"dataset.courses.v1:ih_level_{n}" for n in range(1, 5)],
+                                             "as": "node"},
+                                "order_by": [{"field": "node", "direction": "asc"}]}},
+           "encode": {"x": "node", "y": "pct_ready"}}
+
+
+@pytest.mark.parametrize("chosen, level", [({}, 1), ({"ih1": ["Arts"]}, 2), ({"ih1": ["Arts"], "ih2": ["Music"]}, 3),
+                                           ({f"ih{n}": ["x"] for n in range(1, 5)}, 4), ({"ih2": ["Music"]}, 1)])
+def test_child_of_groups_by_the_level_below_the_deepest_chosen_one(chosen, level):
+    from semantic_layer.reports import output_renames
+    report = _report(IH_FILTERS, [BY_NODE])
+    contract, _ = merged_contract(report, report.visual("by_node"), "main", chosen, CATALOG)
+    assert contract.dimensions[0] == f"dataset.courses.v1:ih_level_{level}"
+    assert [o.field for o in contract.order_by] == [f"ih_level_{level}"]
+    assert output_renames(report, report.visual("by_node"), "main", chosen) == {f"ih_level_{level}": "node"}
+
+
+def test_a_child_of_visual_validates_against_its_alias_and_its_lists_must_match():
+    assert validate_report(_report(IH_FILTERS, [BY_NODE]), CATALOG) == []
+    bad = {**BY_NODE, "queries": {"main": {**BY_NODE["queries"]["main"],
+                                           "child_of": {"filters": ["ih1", "nope"], "dimensions": ["dataset.courses.v1:ih_level_1"], "as": "node"}}}}
+    problems = validate_report(_report(IH_FILTERS, [bad]), CATALOG)
+    assert any("child_of" in p for p in problems)

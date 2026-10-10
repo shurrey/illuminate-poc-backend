@@ -101,3 +101,18 @@ def test_authors_get_identity(client, ran, monkeypatch):
 def test_a_malformed_value_is_a_400(client):
     resp = run(client, "students", "current", {"dates": ["2026-01-01"]})
     assert resp.status_code == 400 and "dates" in resp.json()["detail"]
+
+
+def test_run_renames_the_child_node_column_to_its_alias(client, monkeypatch):
+    from semantic_layer.reports import Report
+    report = Report(id="report.nodes.v1", title="t", area="leading", description="d",
+                    filters=[{"id": f"ih{n}", "label": "L", "control": "select", "dimension": f"dataset.courses.v1:ih_level_{n}"} for n in (1, 2)],
+                    pages=[{"title": "p", "visuals": [{"id": "by_node", "type": "bar", "title": "t", "queries": {"main": {
+                        "measures": ["dataset.course_readiness.v1:courses"],
+                        "child_of": {"filters": ["ih1", "ih2"], "dimensions": ["dataset.courses.v1:ih_level_1", "dataset.courses.v1:ih_level_2"], "as": "node"}}},
+                        "encode": {"x": "node", "y": "courses"}}]}])
+    monkeypatch.setattr(lambda_handler, "_reports", lambda: {report.id: report})
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": ["IH_LEVEL_2", "COURSES"], "rows": [{"IH_LEVEL_2": "Music", "COURSES": 3}]})
+    body = client.post("/api/v1/reports/report.nodes.v1/run", headers=AUTH,
+                       json={"visual": "by_node", "query": "main", "values": {"ih1": ["Arts"]}}).json()
+    assert body["columns"] == ["node", "courses"] and body["rows"] == [{"node": "Music", "courses": 3}]

@@ -152,15 +152,37 @@ class QuerySpec(BaseModel):
     filters_ignored: list[str] = []
     # [{dimension, op, param}]: a filter whose value is a number control's current value.
     param_filters: list[dict[str, str]] = []
+    # {filters, dimensions, as}: group by dimensions[k], k = how many leading filters have a value;
+    # /run returns that column as `as`.
+    child_of: Optional[dict[str, Any]] = None
 
 
 def query_contract(spec: dict[str, Any]) -> QuerySpec:
     spec = dict(spec)
     time_dimension, date_filter = spec.pop("time_dimension", None), spec.pop("date_filter", None)
     time_overlap, filters_ignored = spec.pop("time_overlap", None), spec.pop("filters_ignored", [])
-    param_filters = spec.pop("param_filters", [])
+    param_filters, child_of = spec.pop("param_filters", []), spec.pop("child_of", None)
     return QuerySpec(contract=QueryContract(**spec), time_dimension=time_dimension, date_filter=date_filter,
-                     time_overlap=time_overlap, filters_ignored=filters_ignored, param_filters=param_filters)
+                     time_overlap=time_overlap, filters_ignored=filters_ignored, param_filters=param_filters,
+                     child_of=child_of)
+
+
+def _child_dimension(child_of: dict[str, Any], values: dict[str, Any]) -> str:
+    depth = 0
+    for fid in child_of["filters"]:
+        if not values.get(fid):
+            break
+        depth += 1
+    dims = child_of["dimensions"]
+    return dims[min(depth, len(dims) - 1)]
+
+
+def output_renames(report: Report, visual: Visual, query_name: str, values: dict[str, Any]) -> dict[str, str]:
+    """Result column -> the name /run returns it under (a child_of column becomes its alias)."""
+    child_of = query_contract(visual.queries[query_name]).child_of
+    if not child_of:
+        return {}
+    return {_child_dimension(child_of, values).rpartition(":")[2]: child_of["as"]}
 
 
 def _coerce(filter_id: str, values: list, dim_type: str) -> list:
@@ -251,7 +273,14 @@ def merged_contract(report: Report, visual: Visual, query_name: str, values: dic
         raw = values.get(param.id) or [param.default]
         filters.append(ContractFilter(dimension=pf["dimension"], op=pf["op"],
                                       values=_coerce(param.id, raw if isinstance(raw, list) else [raw], "numeric")[:1]))
-    return contract.model_copy(update={"filters": filters, "time_range": time_range}), ignored
+    update: dict[str, Any] = {"filters": filters, "time_range": time_range}
+    if spec.child_of:
+        ref = _child_dimension(spec.child_of, values)
+        name = ref.rpartition(":")[2]
+        update["dimensions"] = [ref, *contract.dimensions]
+        update["order_by"] = [o.model_copy(update={"field": name}) if o.field == spec.child_of["as"] else o
+                              for o in contract.order_by]
+    return contract.model_copy(update=update), ignored
 
 
 def _dimension_named(ref: str, catalog: Catalog):
@@ -314,16 +343,19 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
                 contract = spec.contract
                 if spec.date_filter is not None and spec.date_filter not in date_ids:
                     raise ValueError(f"date_filter {spec.date_filter!r} is not one of the report's date ranges {date_ids}")
-                compile_query(contract, catalog, database, allow_identity=True)
+                if not spec.child_of:
+                    compile_query(contract, catalog, database, allow_identity=True)
                 merged, ignored = merged_contract(report, v, name, sample, catalog, database)
                 compile_query(merged, catalog, database, allow_identity=True)
+                if spec.child_of:
+                    _check_child_of(report, spec, catalog, database)
             except (CompileError, ValidationError, ValueError) as e:
                 problems.append(f"{v.id}/{name}: {e}")
                 continue
             own_date = spec.date_filter or (date_ids[0] if date_ids else None)
             applied |= {fid for fid in sample if fid not in ignored and fid not in v.filters_ignored
                         and fid not in spec.filters_ignored and (fid not in date_ids or fid == own_date)}
-            returned |= _output_names(contract, catalog)
+            returned |= _output_names(contract, catalog) | ({spec.child_of["as"]} if spec.child_of else set())
         if v.transform is not None:
             inputs = [v.transform.get(k) for k in ("value", "baseline", "query", "days_query") if v.transform.get(k)]
             named = v.transform.get("queries") or []
@@ -341,6 +373,17 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
         if f.id in sample and f.id not in applied:
             problems.append(f"filter {f.id}: no visual can apply it")
     return problems
+
+
+def _check_child_of(report: Report, spec: QuerySpec, catalog: Catalog, database: str) -> None:
+    child_of, ids = spec.child_of, {f.id for f in report.filters}
+    filters, dims = child_of.get("filters", []), child_of.get("dimensions", [])
+    if not child_of.get("as") or not dims or len(filters) != len(dims) or not set(filters) <= ids:
+        raise ValueError(f"child_of needs `as` and equal-length filters (known: {sorted(ids)}) and dimensions")
+    order = [o for o in spec.contract.order_by if o.field != child_of["as"]]
+    for ref in dims:
+        compile_query(spec.contract.model_copy(update={"dimensions": [ref, *spec.contract.dimensions], "order_by": order}),
+                      catalog, database, allow_identity=True)
 
 
 def _as_date(value: Any) -> Optional[date]:
