@@ -17,7 +17,9 @@ filters:
 - id: in_course
   label: Linked to a course
   control: select
-  dimension: dataset.collab_sessions.v1:in_course
+  dimensions:
+  - ref: in_course
+  - ref: dataset.collab_sessions.v1:in_course
 - id: term
   label: Course term
   control: multi_select
@@ -82,7 +84,7 @@ pages:
     type: text
     title: Session duration
     text: Session length is the attended length of each Collaborate session that started in the date range, in minutes. Each
-      statistic is over sessions.
+      statistic is over sessions, including sessions no one attended.
   - id: avg_length
     type: kpi
     title: What's the average session length?

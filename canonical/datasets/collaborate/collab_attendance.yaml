@@ -5,6 +5,7 @@ description: >
   last leave dates in the institution's timezone, minutes attended, and the institution hierarchy
   nodes of the courses linked to the session's room as a ';'-separated list (filter with contains).
   Every attendance is dated in its instance's timezone, including sessions not linked to a course.
+  Attendance in deleted sessions, or sessions that never started, is left out.
 notes: >
   Deviation: bbd-analytics finds the timezone through the session's hierarchy row, so attendance in
   sessions not linked to a course is dated in UTC; here every attendance uses its instance's
@@ -38,7 +39,7 @@ base_sql: |
          IFF(lr.ROOM_ID IS NULL, 'No', 'Yes') AS IN_COURSE,
          ri.IH_NODES
   FROM {{ database }}.CDM_CLB.ATTENDANCE att
-  LEFT JOIN {{ database }}.CDM_CLB.SESSION se ON se.ID = att.SESSION_ID
+  JOIN {{ database }}.CDM_CLB.SESSION se ON se.ID = att.SESSION_ID AND se.ROW_DELETED_TIME IS NULL AND se.START_TIME IS NOT NULL
   LEFT JOIN linked_rooms lr ON lr.ROOM_ID = se.ROOM_ID
   LEFT JOIN room_ih ri ON ri.ROOM_ID = se.ROOM_ID
   LEFT JOIN instance_tz tz ON tz.CLB_INSTANCE_ID = att.INSTANCE_ID

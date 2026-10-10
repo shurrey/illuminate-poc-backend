@@ -56,6 +56,7 @@ base_sql: |
   LEFT JOIN instance_tz tz ON tz.CLB_INSTANCE_ID = s.INSTANCE_ID
   LEFT JOIN linked_rooms lr ON lr.ROOM_ID = s.ROOM_ID
   LEFT JOIN room_ih ri ON ri.ROOM_ID = s.ROOM_ID
+  WHERE s.ROW_DELETED_TIME IS NULL AND s.START_TIME IS NOT NULL
 entities:
   - {name: collab_session, column: SESSION_ID, type: foreign}
   - {name: collab_room, column: ROOM_ID, type: foreign}
