@@ -230,3 +230,30 @@ def test_lms_sessions_have_an_access_modality():
     from semantic_layer.contract import QueryContract
     sql = compile_query(QueryContract(measures=["dataset.lms_sessions.v1:sessions"], dimensions=["access_modality"]), CATALOG, "DB").sql
     assert "ACCESS_MODALITY" in sql
+
+
+def _levels(op="path"):
+    return [{"id": f"ih{n}", "label": f"Level {n}", "control": "select", "exclude_values": ["-", "All Nodes"],
+             "dimensions": [{"ref": f"dataset.course_filters_ih.v1:ih_level_{n}"}, {"ref": "ih_nodes", "op": op}],
+             **({"depends_on": [f"ih{p}" for p in range(1, n)]} if n > 1 else {})} for n in (1, 2)]
+
+
+def test_a_path_filter_matches_the_whole_path_prefix_from_level_one():
+    report = _report(_levels(), [SESSIONS])
+    contract, ignored = merged_contract(report, report.visual("sessions"), "main", {"ih1": ["Nursing"], "ih2": ["Art"]}, CATALOG)
+    assert ignored == []
+    assert [(f.dimension, f.op, f.values) for f in contract.filters] == [
+        ("ih_nodes", "contains", [";||Nursing||"]), ("ih_nodes", "contains", [";||Nursing||Art||"])]
+
+
+def test_a_path_filter_compiles_to_a_delimited_containment():
+    from semantic_layer.compiler import compile_query
+    report = _report(_levels(), [SESSIONS])
+    contract, _ = merged_contract(report, report.visual("sessions"), "main", {"ih1": ["Nursing"]}, CATALOG)
+    assert "';||nursing||'" in compile_query(contract, CATALOG, "DB").sql.lower()
+
+
+def test_platform_hierarchy_paths_start_with_a_separator():
+    from semantic_layer.compiler import build_ctes
+    sql = build_ctes(CATALOG, ["dataset.lms_sessions.v1"], "DB")["DS_LMS_SESSIONS_V1"]
+    assert "';' || LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';')" in sql

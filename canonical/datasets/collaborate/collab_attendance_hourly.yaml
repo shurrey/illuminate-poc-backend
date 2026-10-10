@@ -26,7 +26,7 @@ dimensions:
   - {name: hour, column: DATE_HOUR, type: time, grains: [hour, day, week, month, quarter, year]}
   - {name: day, column: DAY_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: slot_label, column: SLOT_LABEL, type: categorical, description: "Two-hour slot of the hour, '12 AM' to '10 PM'"}
-  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
 measures:
   - {name: attendees, agg: count_distinct, expr: PERSON_ID, unit: people, synonyms: [concurrent attendees]}
   - {name: attendee_hours, agg: count_distinct, expr: "DATE_HOUR::STRING || '|' || PERSON_ID::STRING", unit: hours, description: "Distinct hour and person pairs"}

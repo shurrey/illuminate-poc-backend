@@ -11,7 +11,7 @@ source: bbdata-bbd-analytics snowflake/migrations/bbd_analytics/repeatable/R__PL
 base_sql: |
   WITH course_ih AS (
       SELECT ihc.COURSE_ID,
-             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+             ';' || LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
       FROM {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc
       JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
       GROUP BY ihc.COURSE_ID
@@ -33,7 +33,7 @@ dimensions:
   - {name: login_date, column: FIRST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: last_access_date, column: LAST_ACCESSED_DATE, type: time, grains: [day, week, month, quarter, year]}
   - {name: mobile, column: MOBILE_IND, type: boolean}
-  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths of the course; filter with contains"}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
 measures:
   - {name: course_logins, agg: count_distinct, expr: COURSE_ACTIVITY_ID, unit: logins, synonyms: [course visits, course accesses]}
   - {name: courses_accessed, agg: count_distinct, expr: COURSE_ID, unit: courses}

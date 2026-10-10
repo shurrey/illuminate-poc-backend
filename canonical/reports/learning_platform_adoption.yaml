@@ -17,36 +17,48 @@ filters:
 - id: ih1
   label: Institutional hierarchy level 1
   control: select
+  exclude_values:
+  - '-'
+  - All Nodes
   dimensions:
   - ref: dataset.course_filters_ih.v1:ih_level_1
   - ref: ih_nodes
-    op: contains
+    op: path
 - id: ih2
   label: Institutional hierarchy level 2
   control: select
+  exclude_values:
+  - '-'
+  - All Nodes
   dimensions:
   - ref: dataset.course_filters_ih.v1:ih_level_2
   - ref: ih_nodes
-    op: contains
+    op: path
   depends_on:
   - ih1
 - id: ih3
   label: Institutional hierarchy level 3
   control: select
+  exclude_values:
+  - '-'
+  - All Nodes
   dimensions:
   - ref: dataset.course_filters_ih.v1:ih_level_3
   - ref: ih_nodes
-    op: contains
+    op: path
   depends_on:
   - ih1
   - ih2
 - id: ih4
   label: Institutional hierarchy level 4+
   control: select
+  exclude_values:
+  - '-'
+  - All Nodes
   dimensions:
   - ref: dataset.course_filters_ih.v1:ih_level_4
   - ref: ih_nodes
-    op: contains
+    op: path
   depends_on:
   - ih1
   - ih2

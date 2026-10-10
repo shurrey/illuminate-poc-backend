@@ -15,7 +15,7 @@ base_sql: |
   ),
   room_ih AS (
       SELECT cr.CLB_ROOM_ID AS ROOM_ID,
-             LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
+             ';' || LISTAGG(DISTINCT ih.HIERARCHY_NAME_SEQ, ';') WITHIN GROUP (ORDER BY ih.HIERARCHY_NAME_SEQ) AS IH_NODES
       FROM {{ database }}.CDM_MAP.COURSE_ROOM cr
       JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY_COURSE ihc ON ihc.COURSE_ID = cr.LMS_COURSE_ID
       JOIN {{ database }}.CDM_LMS.INSTITUTION_HIERARCHY ih ON ih.ID = ihc.INSTITUTION_HIERARCHY_ID
@@ -41,7 +41,7 @@ dimensions:
   - {name: deleted, column: DELETED_IND, type: boolean}
   - {name: allows_guests, column: ALLOW_GUEST_IND, type: boolean}
   - {name: linked_courses, column: LINKED_COURSES, type: numeric}
-  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "';'-separated institution hierarchy paths; filter with contains"}
+  - {name: ih_nodes, column: IH_NODES, type: categorical, description: "Hierarchy paths of the courses involved, each written as ;||Level 1||Level 2||"}
 measures:
   - {name: rooms, agg: count_distinct, expr: ROOM_ID, unit: rooms, synonyms: [collaborate rooms]}
   - {name: rooms_linked_to_courses, agg: count_distinct, expr: "IFF(LINKED_COURSES > 0, ROOM_ID, NULL)", unit: rooms}
