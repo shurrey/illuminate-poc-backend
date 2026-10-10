@@ -21,7 +21,9 @@ filters:
 - id: tool
   label: Tool
   control: select
-  dimension: dataset.course_tool_activity.v1:tool_name
+  dimensions:
+  - ref: tool_name
+  - ref: dataset.course_tool_activity.v1:tool_name
 pages:
 - title: User Activity
   visuals:
@@ -188,41 +190,25 @@ pages:
   visuals:
   - id: courses_using_tools
     type: pie
-    title: How many active and available courses use learning tools?
+    title: How many active courses use learning tools?
     queries:
       all:
         measures:
-        - dataset.courses.v1:courses
+        - dataset.course_tool_use.v1:courses
         time_overlap:
-          start: course_start
-          end: course_end
-        filters:
-        - dimension: course_deleted
-          op: eq
-          values:
-          - false
-        - dimension: is_child_course
-          op: eq
-          values:
-          - 0
-        - dimension: course_available
-          op: eq
-          values:
-          - true
+          start: course_start_date
+          end: course_end_date
         filters_ignored:
         - tool
       using:
         measures:
-        - dataset.course_tool_activity.v1:courses
+        - dataset.course_tool_use.v1:courses
+        time_dimension: event_time
         filters:
-        - dimension: course_available
+        - dimension: event_type
           op: eq
           values:
-          - true
-        - dimension: dataset.courses.v1:course_deleted
-          op: eq
-          values:
-          - false
+          - activity
     transform:
       kind: part_of_whole
       whole: all
@@ -240,5 +226,5 @@ pages:
   - id: courses_help
     type: text
     title: Active and available courses
-    text: Active courses are available courses that run during the selected date range. A course is using learning tools when
-      it has tool activity in that range.
+    text: Active courses are courses that run during the selected date range. A course is using learning tools when it has
+      tool activity in that range.
