@@ -660,3 +660,38 @@ def test_teaching_kpis_cover_only_courses_that_have_what_they_measure():
         assert ("teaching_course", ["Yes"]) in dims(vid), vid
     for vid in ("collab_min", "collab_median", "collab_max"):
         assert ("has_collab", ["Yes"]) in dims(vid), vid
+
+
+SEN_VALUES = {"dates": {"start": "2025-01-01", "end": "2026-06-30"}, "term": ["Q4: 2026"], "duration": ["Fixed"],
+              "modality": ["Online"], "ih1": ["Arts"], "course": ["BIO-101"]}
+
+
+def _sen():
+    return load_reports()["report.student_engagement.v1"]
+
+
+def test_student_engagement_applies_every_filter_and_groups_nodes_by_child():
+    report = _sen()
+    assert [p.title for p in report.pages] == ["Course Access", "Engagement with Course Content", "Engagement with Assessments"]
+    for v in report.visuals():
+        for q in v.queries:
+            contract, ignored = merged_contract(report, v, q, SEN_VALUES, CATALOG)
+            assert ignored == [], (v.id, q)
+            if v.queries[q].get("child_of"):
+                assert contract.dimensions[0] == "dataset.courses.v1:ih_level_2", (v.id, q)
+
+
+def test_student_tables_select_identity_and_nothing_else_selects_it():
+    report = _sen()
+    identity = {"student_first_name", "student_last_name", "student_email", "student_id",
+                "person_first_name", "person_last_name", "person_mail", "person_institution_id"}
+    for v in report.visuals():
+        for q in v.queries.values():
+            named = {d.rpartition(":")[2] for d in q.get("dimensions", [])}
+            assert bool(named & identity) == v.id.endswith("_by_student"), v.id
+
+
+def test_per_type_content_statistics_are_per_enrollment():
+    sita = CATALOG.datasets["dataset.student_item_tool_activity.v1"]
+    assert {m.name for m in sita.measures} >= {"median_interactions", "min_interactions", "max_interactions",
+                                               "item_interactions", "tool_interactions"}

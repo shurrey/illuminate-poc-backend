@@ -1,0 +1,24 @@
+id: dataset.persons.v1
+display_name: People
+description: >
+  Every person in the LMS once: first and last name, email and institutional id (the student id,
+  else the user id, batch uid or source id). All of these identify a person, so only Admin, Author
+  and Developer roles can see them.
+grain: one row per person
+domain: reference
+complete: true
+source: CDM_LMS.PERSON
+base_sql: |
+  SELECT pe.ID AS PERSON_ID, pe.FIRST_NAME, pe.LAST_NAME, pe.EMAIL,
+         COALESCE(pe.STAGE:student_id, pe.STAGE:user_id, pe.STAGE:batch_uid, pe.SOURCE_ID)::STRING AS INSTITUTION_ID
+  FROM {{ database }}.CDM_LMS.PERSON pe
+entities:
+  - {name: person, column: PERSON_ID, type: primary}
+dimensions:
+  - {name: person_first_name, column: FIRST_NAME, type: categorical}
+  - {name: person_last_name, column: LAST_NAME, type: categorical}
+  - {name: person_institution_id, column: INSTITUTION_ID, type: categorical}
+  - {name: person_mail, column: EMAIL, type: categorical}
+measures:
+  - {name: people, agg: count_distinct, expr: PERSON_ID, unit: people}
+pii_columns: [PERSON_ID, FIRST_NAME, LAST_NAME, EMAIL, INSTITUTION_ID]
