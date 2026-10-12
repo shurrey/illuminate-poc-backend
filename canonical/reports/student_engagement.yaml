@@ -1,0 +1,686 @@
+id: report.student_engagement.v1
+title: Student Engagement
+area: learning
+description: 'How active students are in their courses: course access, engagement with content, and timeliness with assessments.'
+filters:
+- id: dates
+  label: Course creation date
+  control: date_range
+  time_dimension: dataset.courses.v1:course_creation_date
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+  default: current_term
+- id: duration
+  label: Course duration type
+  control: select
+  dimension: dataset.courses.v1:course_duration
+- id: modality
+  label: Course modality
+  control: multi_select
+  dimension: dataset.courses.v1:delivery_method
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  dimension: dataset.courses.v1:ih_level_1
+  exclude_values:
+  - '-'
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  dimension: dataset.courses.v1:ih_level_2
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  dimension: dataset.courses.v1:ih_level_3
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  dimension: dataset.courses.v1:ih_level_4
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+- id: course
+  label: Course ID
+  control: multi_select
+  dimension: dataset.courses.v1:course_number
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+  - ih4
+pages:
+- title: Course Access
+  visuals:
+  - id: access_help
+    type: text
+    title: How active are students in courses?
+    text: 'Counts student enrollments, not unique students: a student enrolled in three courses counts three times. A student
+      is active in a course with 5 minutes or more of activity there; recently active means their last access was in the last
+      7 days. Access frequency is the share of the course''s days on which the student accessed it.'
+  - id: access_max
+    type: kpi
+    title: What's the maximum frequency of student access?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:max_access_pct
+    encode:
+      value: max_access_pct
+      unit: percent
+  - id: access_min
+    type: kpi
+    title: What's the minimum frequency of student access?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:min_access_pct
+    encode:
+      value: min_access_pct
+      unit: percent
+  - id: access_median
+    type: kpi
+    title: What's the median frequency of student access?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:median_access_pct
+    encode:
+      value: median_access_pct
+      unit: percent
+  - id: engaged_share
+    type: pie
+    title: How many students are active or inactive in courses?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:enrollments
+        dimensions:
+        - engaged
+        order_by:
+        - field: enrollments
+          direction: desc
+    encode:
+      label: engaged
+      value: enrollments
+      donut: true
+  - id: recency_share
+    type: pie
+    title: Of the active students, what proportion have been active recently?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:enrollments
+        dimensions:
+        - recency
+        order_by:
+        - field: enrollments
+          direction: desc
+        filters:
+        - dimension: dataset.student_enrollments.v1:engaged
+          op: in
+          values:
+          - Active
+    encode:
+      label: recency
+      value: enrollments
+      donut: true
+  - id: engaged_by_node
+    type: bar
+    title: What's the distribution of active and inactive students per institutional hierarchy node?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:active_enrollments
+        - dataset.student_enrollments.v1:inactive_enrollments
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - active_enrollments
+      - inactive_enrollments
+      horizontal: true
+      stacked: true
+  - id: access_distribution
+    type: bar
+    title: What's the student distribution by frequency of course access?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:enrollments
+        dimensions:
+        - access_bin
+        order_by:
+        - field: access_bin
+          direction: asc
+        limit: 100
+    encode:
+      x: access_bin
+      y: enrollments
+  - id: access_by_course
+    type: table
+    title: What's the student engagement per course?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:enrollments
+        - dataset.student_enrollments.v1:pct_active
+        - dataset.student_enrollments.v1:pct_recently_active
+        - dataset.student_enrollments.v1:avg_hours
+        - dataset.student_enrollments.v1:avg_hours_per_week
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - dataset.courses.v1:delivery_method
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - delivery_method
+      - enrollments
+      - pct_active
+      - pct_recently_active
+      - avg_hours
+      - avg_hours_per_week
+      units:
+        access_pct: percent
+        pct_active: percent
+        pct_recently_active: percent
+        content_completion: ratio
+        share_on_time: ratio
+        share_late: ratio
+        share_overdue: ratio
+  - id: access_by_student
+    type: table
+    title: Are students engaging with courses?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:accesses
+        - dataset.student_enrollments.v1:access_pct
+        - dataset.student_enrollments.v1:interactions
+        - dataset.student_enrollments.v1:submissions
+        - dataset.student_enrollments.v1:hours
+        dimensions:
+        - dataset.student_enrollments.v1:student_id
+        - dataset.student_enrollments.v1:student_first_name
+        - dataset.student_enrollments.v1:student_last_name
+        - dataset.student_enrollments.v1:student_email
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:term_name
+        - recency
+        order_by:
+        - field: student_first_name
+          direction: asc
+        - field: student_last_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - student_id
+      - student_first_name
+      - student_last_name
+      - student_email
+      - course_number
+      - term_name
+      - recency
+      - accesses
+      - access_pct
+      - interactions
+      - submissions
+      - hours
+      units:
+        access_pct: percent
+        pct_active: percent
+        pct_recently_active: percent
+        content_completion: ratio
+        share_on_time: ratio
+        share_late: ratio
+        share_overdue: ratio
+- title: Engagement with Course Content
+  visuals:
+  - id: content_help
+    type: text
+    title: Engagement with course content
+    text: Interactions are a student's actions with course content items and tools in the course. The minimum, median and
+      maximum cover active student enrollments.
+  - id: interactions_min
+    type: kpi
+    title: What's the minimum total interactions in course content?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:min_interactions
+        filters:
+        - dimension: dataset.student_enrollments.v1:engaged
+          op: in
+          values:
+          - Active
+    encode:
+      value: min_interactions
+  - id: interactions_max
+    type: kpi
+    title: What's the maximum total interactions in course content?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:max_interactions
+        filters:
+        - dimension: dataset.student_enrollments.v1:engaged
+          op: in
+          values:
+          - Active
+    encode:
+      value: max_interactions
+  - id: interactions_median
+    type: kpi
+    title: What's the median total interactions in course content?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:median_interactions
+        filters:
+        - dimension: dataset.student_enrollments.v1:engaged
+          op: in
+          values:
+          - Active
+    encode:
+      value: median_interactions
+  - id: interactions_distribution
+    type: bar
+    title: What's the student distribution by total interactions with course content?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:enrollments
+        dimensions:
+        - interactions_bin
+        - interactions_bin_start
+        order_by:
+        - field: interactions_bin_start
+          direction: asc
+        limit: 100
+        filters:
+        - dimension: dataset.student_enrollments.v1:engaged
+          op: in
+          values:
+          - Active
+    encode:
+      x: interactions_bin
+      y: enrollments
+  - id: interactions_by_type
+    type: table
+    title: What's the total interactions by course item type?
+    queries:
+      main:
+        measures:
+        - dataset.student_item_tool_activity.v1:enrollments
+        - dataset.student_item_tool_activity.v1:interactions
+        - dataset.student_item_tool_activity.v1:min_interactions
+        - dataset.student_item_tool_activity.v1:median_interactions
+        - dataset.student_item_tool_activity.v1:max_interactions
+        - dataset.student_item_tool_activity.v1:minutes_per_student
+        dimensions:
+        - item_or_tool
+        - type_name
+        order_by:
+        - field: interactions
+          direction: desc
+        limit: 200
+    encode:
+      columns:
+      - item_or_tool
+      - type_name
+      - enrollments
+      - interactions
+      - min_interactions
+      - median_interactions
+      - max_interactions
+      - minutes_per_student
+  - id: content_by_node
+    type: bar
+    title: How do institutional hierarchy nodes compare in regards to student engagement with course content?
+    queries:
+      main:
+        measures:
+        - dataset.student_item_tool_activity.v1:item_interactions
+        - dataset.student_item_tool_activity.v1:tool_interactions
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - item_interactions
+      - tool_interactions
+      horizontal: true
+      stacked: true
+  - id: content_recency
+    type: pie
+    title: Are students engaging with course content?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:enrollments
+        dimensions:
+        - recency
+        order_by:
+        - field: enrollments
+          direction: desc
+    encode:
+      label: recency
+      value: enrollments
+      donut: true
+  - id: content_by_course
+    type: table
+    title: What's the student engagement with content per course?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:students
+        - dataset.student_enrollments.v1:interactions
+        - dataset.student_enrollments.v1:content_completion
+        - dataset.student_enrollments.v1:avg_hours
+        - dataset.student_enrollments.v1:avg_hours_per_week
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - dataset.courses.v1:delivery_method
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+        filters:
+        - dimension: dataset.student_enrollments.v1:engaged
+          op: in
+          values:
+          - Active
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - delivery_method
+      - students
+      - interactions
+      - content_completion
+      - avg_hours
+      - avg_hours_per_week
+      units:
+        access_pct: percent
+        pct_active: percent
+        pct_recently_active: percent
+        content_completion: ratio
+        share_on_time: ratio
+        share_late: ratio
+        share_overdue: ratio
+  - id: content_by_student
+    type: table
+    title: What's the level of engagement with course content per student?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:course_content_items
+        - dataset.student_enrollments.v1:content_reviewed
+        - dataset.student_enrollments.v1:content_completed
+        - dataset.student_enrollments.v1:content_completion
+        - dataset.student_enrollments.v1:interactions
+        dimensions:
+        - dataset.student_enrollments.v1:student_id
+        - dataset.student_enrollments.v1:student_first_name
+        - dataset.student_enrollments.v1:student_last_name
+        - dataset.student_enrollments.v1:student_email
+        - dataset.courses.v1:course_number
+        - recency
+        order_by:
+        - field: student_first_name
+          direction: asc
+        - field: student_last_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - student_id
+      - student_first_name
+      - student_last_name
+      - student_email
+      - course_number
+      - recency
+      - course_content_items
+      - content_reviewed
+      - content_completed
+      - content_completion
+      - interactions
+      units:
+        access_pct: percent
+        pct_active: percent
+        pct_recently_active: percent
+        content_completion: ratio
+        share_on_time: ratio
+        share_late: ratio
+        share_overdue: ratio
+- title: Engagement with Assessments
+  visuals:
+  - id: assessments_help
+    type: text
+    title: How timely do students complete course assessments?
+    text: 'Submissions due to active students: on time, late, overdue (past due and not submitted) or upcoming (not yet due).
+      Shares are out of all submissions due.'
+  - id: timeliness_share
+    type: pie
+    title: How timely do students complete assessments?
+    queries:
+      main:
+        measures:
+        - dataset.student_assignments.v1:on_time
+        - dataset.student_assignments.v1:late
+        - dataset.student_assignments.v1:overdue
+        - dataset.student_assignments.v1:upcoming
+    transform:
+      kind: unpivot
+      query: main
+      fields:
+      - field: on_time
+        label: On-time submissions
+      - field: late
+        label: Late submissions
+      - field: overdue
+        label: Overdue submissions
+      - field: upcoming
+        label: Upcoming submissions
+    encode:
+      label: category
+      value: value
+      donut: true
+  - id: timeliness_by_type
+    type: table
+    title: How does assessment completion vary per assessment type?
+    queries:
+      main:
+        measures:
+        - dataset.student_assignments.v1:due_items
+        - dataset.student_assignments.v1:share_on_time
+        - dataset.student_assignments.v1:share_late
+        - dataset.student_assignments.v1:share_overdue
+        dimensions:
+        - item_type
+        order_by:
+        - field: due_items
+          direction: desc
+        limit: 100
+    encode:
+      columns:
+      - item_type
+      - due_items
+      - share_on_time
+      - share_late
+      - share_overdue
+      units:
+        access_pct: percent
+        pct_active: percent
+        pct_recently_active: percent
+        content_completion: ratio
+        share_on_time: ratio
+        share_late: ratio
+        share_overdue: ratio
+  - id: timeliness_by_node
+    type: bar
+    title: How does assessment completion vary per institutional hierarchy node?
+    queries:
+      main:
+        measures:
+        - dataset.student_assignments.v1:on_time
+        - dataset.student_assignments.v1:late
+        - dataset.student_assignments.v1:overdue
+        - dataset.student_assignments.v1:upcoming
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - on_time
+      - late
+      - overdue
+      - upcoming
+      horizontal: true
+      stacked: true
+  - id: timeliness_by_course
+    type: table
+    title: How do courses compare in regards to student engagement with assessments?
+    queries:
+      main:
+        measures:
+        - dataset.student_assignments.v1:students
+        - dataset.student_assignments.v1:students_with_overdue
+        - dataset.student_assignments.v1:due_items
+        - dataset.student_assignments.v1:share_on_time
+        - dataset.student_assignments.v1:share_overdue
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - dataset.courses.v1:term_name
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - term_name
+      - students
+      - students_with_overdue
+      - due_items
+      - share_on_time
+      - share_overdue
+      units:
+        access_pct: percent
+        pct_active: percent
+        pct_recently_active: percent
+        content_completion: ratio
+        share_on_time: ratio
+        share_late: ratio
+        share_overdue: ratio
+  - id: timeliness_by_student
+    type: table
+    title: How do students compare in regards to engagement with assessments?
+    queries:
+      main:
+        measures:
+        - dataset.student_assignments.v1:due_items
+        - dataset.student_assignments.v1:on_time
+        - dataset.student_assignments.v1:late
+        - dataset.student_assignments.v1:overdue
+        - dataset.student_assignments.v1:share_on_time
+        dimensions:
+        - dataset.persons.v1:person_institution_id
+        - dataset.persons.v1:person_first_name
+        - dataset.persons.v1:person_last_name
+        - dataset.persons.v1:person_mail
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:term_name
+        order_by:
+        - field: person_first_name
+          direction: asc
+        - field: person_last_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - person_institution_id
+      - person_first_name
+      - person_last_name
+      - person_mail
+      - course_number
+      - term_name
+      - due_items
+      - on_time
+      - late
+      - overdue
+      - share_on_time
+      units:
+        access_pct: percent
+        pct_active: percent
+        pct_recently_active: percent
+        content_completion: ratio
+        share_on_time: ratio
+        share_late: ratio
+        share_overdue: ratio

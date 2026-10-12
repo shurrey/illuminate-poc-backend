@@ -59,4 +59,9 @@ measures:
   - {name: used, agg: sum, expr: USED, unit: items, description: "Distinct items or tools each enrollment used, summed"}
   - {name: minutes_per_student, agg: ratio, numerator: minutes, denominator: students, unit: minutes}
   - {name: interactions_per_student, agg: ratio, numerator: interactions, denominator: students, unit: interactions}
+  - {name: median_interactions, agg: median, expr: INTERACTION_CNT, unit: interactions, description: "Per enrollment and type"}
+  - {name: min_interactions, agg: min, expr: INTERACTION_CNT, unit: interactions}
+  - {name: max_interactions, agg: max, expr: INTERACTION_CNT, unit: interactions}
+  - {name: item_interactions, agg: sum, expr: "IFF(ITEM_OR_TOOL = 'ITEM', INTERACTION_CNT, 0)", unit: interactions, description: "Interactions with course content items"}
+  - {name: tool_interactions, agg: sum, expr: "IFF(ITEM_OR_TOOL = 'TOOL', INTERACTION_CNT, 0)", unit: interactions}
 pii_columns: [PERSON_ID, PERSON_COURSE_ID]
