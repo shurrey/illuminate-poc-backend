@@ -516,3 +516,21 @@ def test_instructor_tool_engagement_labels_each_course_and_keeps_courses_with_no
         "courses", "median_interactions", "max_interactions", "min_interactions", "median_contributions", "interactions_per_week")],
         dimensions=["type_name", "engagement", "dataset.courses.v1:ih_level_1"]))
     assert "MEDIAN(" in sql and "LEFT JOIN DS_COURSES_V1" in sql
+
+
+SE = "dataset.student_enrollments.v1"
+
+
+def test_student_enrollments_keep_inactive_enrollments_and_hide_identity():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    cte = build_ctes(cat, [SE], "DB")["DS_STUDENT_ENROLLMENTS_V1"]
+    assert "LEFT JOIN DS_COURSE_STUDENT_ACTIVITY_V1" in cte and "COURSE_ROLE = 'S'" in cte
+    assert "'Inactive'" in cte and "'Recently active'" in cte and "'95-100'" in cte
+    ds = cat.datasets[SE]
+    for name in ("student_first_name", "student_last_name", "student_email", "student_id"):
+        assert ds.is_pii(ds.dimension(name).column), name
+    sql = _outer(_real(measures=[f"{SE}:{m}" for m in ("enrollments", "students", "median_access_pct", "max_access_pct",
+                                                         "min_access_pct", "median_interactions", "recently_active_enrollments")],
+                       dimensions=["engaged", "recency", "access_bin", "interactions_bin", "dataset.courses.v1:ih_level_1"]))
+    assert "MEDIAN(" in sql and "LEFT JOIN DS_COURSES_V1" in sql
