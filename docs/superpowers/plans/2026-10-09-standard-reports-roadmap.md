@@ -165,6 +165,30 @@ Deferred minors:
 
 ## Phase 5: Student-level reports
 
+**Done:**
+- **Student Performance & Grades.** Plan `2026-10-12-standard-reports-phase-5a-student-performance.md`; B #172–#173,
+  #176.
+- **Student Summary.** Plan `2026-10-12-standard-reports-phase-5b-student-summary.md`; B #175, #177, #179.
+- **Student Summary (Reach).** Plan `2026-10-12-standard-reports-phase-5c-student-summary-reach.md`; B #178–#179.
+
+Also:
+- reports can require filters (B #174, F #46);
+- `__hour` grains keep their time;
+- person chooser labels are unique.
+
+Reach's engagement scores are not in the data; a note replaces those visuals.
+
+Deferred minors:
+- a blank or non-finite boundary;
+- grade-item edge cases;
+- institution-wide windows per run;
+- the heat-map day count;
+- no identity audit entry for filter-revealed data;
+- the student chooser lists every person;
+- `course_ended` shows as 0/1.
+
+All fourteen standard reports are built.
+
 `persons` (P6) · `student_grade_items` (P15) · P20 (hour / weekday grains) · P21 (paging) · P24 (percentiles) ·
 Student Performance & Grades · Student Summary · Student Summary (Reach). Reach's engagement-score visuals render as
 not available.
