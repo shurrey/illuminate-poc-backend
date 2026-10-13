@@ -1,0 +1,459 @@
+id: report.social_collaborative_engagement.v1
+title: Social & Collaborative Engagement
+area: learning
+description: How students engage with social learning tools and Collaborate sessions.
+filters:
+- id: dates
+  label: Course creation date
+  control: date_range
+  time_dimension: dataset.courses.v1:course_creation_date
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+  default: current_term
+- id: duration
+  label: Course duration type
+  control: select
+  dimension: dataset.courses.v1:course_duration
+- id: modality
+  label: Course modality
+  control: multi_select
+  dimension: dataset.courses.v1:delivery_method
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  dimension: dataset.courses.v1:ih_level_1
+  exclude_values:
+  - '-'
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  dimension: dataset.courses.v1:ih_level_2
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  dimension: dataset.courses.v1:ih_level_3
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  dimension: dataset.courses.v1:ih_level_4
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+- id: course
+  label: Course ID
+  control: multi_select
+  dimension: dataset.courses.v1:course_number
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+  - ih4
+pages:
+- title: Learning Tools Engagement
+  visuals:
+  - id: social_help
+    type: text
+    title: How are students engaging with learning tools?
+    text: Social learning tools are discussions, blogs, journals, wikis and similar tools. Interactions count a student's
+      accesses to them; contributions count their posts and submissions. Participating students contributed, reviewing students
+      only interacted, and inactive students did neither. Counts are student enrollments.
+  - id: social_min
+    type: kpi
+    title: What's the minimum total interaction count in learning tools?
+    queries:
+      main:
+        measures:
+        - dataset.student_social_engagement.v1:min_interactions
+    encode:
+      value: min_interactions
+  - id: social_median
+    type: kpi
+    title: What's the median total interaction count in learning tools?
+    queries:
+      main:
+        measures:
+        - dataset.student_social_engagement.v1:median_interactions
+    encode:
+      value: median_interactions
+  - id: social_max
+    type: kpi
+    title: What's the maximum total interaction count in learning tools?
+    queries:
+      main:
+        measures:
+        - dataset.student_social_engagement.v1:max_interactions
+    encode:
+      value: max_interactions
+  - id: social_share
+    type: pie
+    title: What proportion of students engage with learning tools?
+    queries:
+      main:
+        measures:
+        - dataset.student_social_engagement.v1:enrollments
+        dimensions:
+        - engagement
+        order_by:
+        - field: enrollments
+          direction: desc
+    encode:
+      label: engagement
+      value: enrollments
+      donut: true
+  - id: social_distribution
+    type: bar
+    title: What's the student distribution by total interaction count in learning tools?
+    queries:
+      main:
+        measures:
+        - dataset.student_social_engagement.v1:enrollments
+        dimensions:
+        - interactions_bin
+        - interactions_bin_start
+        order_by:
+        - field: interactions_bin_start
+          direction: asc
+        limit: 100
+    encode:
+      x: interactions_bin
+      y: enrollments
+  - id: social_by_tool
+    type: table
+    title: What's the total interaction count by learning tool?
+    queries:
+      main:
+        measures:
+        - dataset.social_interactions_by_type.v1:people
+        - dataset.social_interactions_by_type.v1:min_access_rows
+        - dataset.social_interactions_by_type.v1:median_access_rows
+        - dataset.social_interactions_by_type.v1:max_access_rows
+        - dataset.social_interactions_by_type.v1:submissions
+        - dataset.social_interactions_by_type.v1:share_who_submitted
+        dimensions:
+        - type_name
+        order_by:
+        - field: people
+          direction: desc
+        limit: 100
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - S
+        - dimension: social
+          op: eq
+          values:
+          - 1
+    encode:
+      columns:
+      - type_name
+      - people
+      - min_access_rows
+      - median_access_rows
+      - max_access_rows
+      - submissions
+      - share_who_submitted
+      units:
+        share_of_items_used: ratio
+        share_who_submitted: ratio
+        participation_pct: percent
+  - id: social_by_node
+    type: bar
+    title: How do institutional hierarchy nodes compare in regards to student engagement with learning tools?
+    queries:
+      main:
+        measures:
+        - dataset.student_social_engagement.v1:participating_enrollments
+        - dataset.student_social_engagement.v1:reviewing_enrollments
+        - dataset.student_social_engagement.v1:inactive_enrollments
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y:
+      - participating_enrollments
+      - reviewing_enrollments
+      - inactive_enrollments
+      horizontal: true
+      stacked: true
+  - id: social_by_course
+    type: table
+    title: What's the student engagement with learning tools per course?
+    queries:
+      main:
+        measures:
+        - dataset.student_social_engagement.v1:enrollments
+        - dataset.student_social_engagement.v1:active_enrollments
+        - dataset.student_social_engagement.v1:interactions
+        - dataset.student_social_engagement.v1:contributions
+        - dataset.student_social_engagement.v1:share_of_items_used
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - dataset.courses.v1:delivery_method
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - delivery_method
+      - enrollments
+      - active_enrollments
+      - interactions
+      - contributions
+      - share_of_items_used
+      units:
+        share_of_items_used: ratio
+        share_who_submitted: ratio
+        participation_pct: percent
+  - id: social_by_student
+    type: table
+    title: What's the level of engagement with learning tools per student?
+    queries:
+      main:
+        measures:
+        - dataset.student_social_engagement.v1:items_available
+        - dataset.student_social_engagement.v1:items_used
+        - dataset.student_social_engagement.v1:share_of_items_used
+        - dataset.student_social_engagement.v1:interactions
+        - dataset.student_social_engagement.v1:contributions
+        dimensions:
+        - dataset.persons.v1:person_institution_id
+        - dataset.persons.v1:person_first_name
+        - dataset.persons.v1:person_last_name
+        - dataset.persons.v1:person_mail
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:term_name
+        - engagement
+        order_by:
+        - field: person_first_name
+          direction: asc
+        - field: person_last_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - person_institution_id
+      - person_first_name
+      - person_last_name
+      - person_mail
+      - course_number
+      - term_name
+      - engagement
+      - items_available
+      - items_used
+      - share_of_items_used
+      - interactions
+      - contributions
+      units:
+        share_of_items_used: ratio
+        share_who_submitted: ratio
+        participation_pct: percent
+- title: Virtual Classroom Engagement
+  visuals:
+  - id: collab_help
+    type: text
+    title: How much do students participate in Collaborate sessions?
+    text: Participation is the share of a course's Collaborate session time (sessions run by staff and attended by at least
+      one student) that a student attended. Courses with no sessions are shown separately and left out of the participation
+      figures.
+  - id: collab_max
+    type: kpi
+    title: What's the maximum student participation in Collaborate sessions?
+    queries:
+      main:
+        measures:
+        - dataset.student_collab_participation.v1:max_participation_pct
+    encode:
+      value: max_participation_pct
+      unit: percent
+  - id: collab_min
+    type: kpi
+    title: What's the minimum student participation in Collaborate sessions?
+    queries:
+      main:
+        measures:
+        - dataset.student_collab_participation.v1:min_participation_pct
+    encode:
+      value: min_participation_pct
+      unit: percent
+  - id: collab_median
+    type: kpi
+    title: What's the median student participation in Collaborate sessions?
+    queries:
+      main:
+        measures:
+        - dataset.student_collab_participation.v1:median_participation_pct
+    encode:
+      value: median_participation_pct
+      unit: percent
+  - id: collab_distribution
+    type: bar
+    title: What's the student distribution by participation in Collaborate sessions?
+    queries:
+      main:
+        measures:
+        - dataset.student_collab_participation.v1:enrollments
+        dimensions:
+        - participation_bin
+        order_by:
+        - field: participation_bin
+          direction: asc
+        limit: 100
+        filters:
+        - dimension: participation_bin
+          op: not_null
+          values: []
+    encode:
+      x: participation_bin
+      y: enrollments
+  - id: collab_share
+    type: pie
+    title: What proportion of students participate in Collaborate sessions?
+    queries:
+      main:
+        measures:
+        - dataset.student_collab_participation.v1:enrollments
+        dimensions:
+        - status
+        order_by:
+        - field: enrollments
+          direction: desc
+    encode:
+      label: status
+      value: enrollments
+      donut: true
+  - id: collab_by_node
+    type: bar
+    title: How do institutional hierarchy nodes compare in regards to participation in Collaborate sessions?
+    queries:
+      main:
+        measures:
+        - dataset.student_collab_participation.v1:participation_pct
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        filters:
+        - dimension: participation_bin
+          op: not_null
+          values: []
+        order_by:
+        - field: node
+          direction: asc
+        limit: 200
+    encode:
+      x: node
+      y: participation_pct
+      horizontal: true
+  - id: collab_by_course
+    type: table
+    title: What's the student participation in Collaborate sessions per course?
+    queries:
+      main:
+        measures:
+        - dataset.student_collab_participation.v1:enrollments
+        - dataset.student_collab_participation.v1:participating_enrollments
+        - dataset.student_collab_participation.v1:course_sessions
+        - dataset.student_collab_participation.v1:participation_pct
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - dataset.courses.v1:delivery_method
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - delivery_method
+      - enrollments
+      - participating_enrollments
+      - course_sessions
+      - participation_pct
+      units:
+        share_of_items_used: ratio
+        share_who_submitted: ratio
+        participation_pct: percent
+  - id: collab_by_student
+    type: table
+    title: What's the level of participation in Collaborate sessions per student?
+    queries:
+      main:
+        measures:
+        - dataset.student_collab_participation.v1:course_sessions
+        - dataset.student_collab_participation.v1:sessions_attended
+        - dataset.student_collab_participation.v1:attended_minutes
+        - dataset.student_collab_participation.v1:participation_pct
+        dimensions:
+        - dataset.persons.v1:person_institution_id
+        - dataset.persons.v1:person_first_name
+        - dataset.persons.v1:person_last_name
+        - dataset.persons.v1:person_mail
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:term_name
+        - status
+        order_by:
+        - field: person_first_name
+          direction: asc
+        - field: person_last_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - person_institution_id
+      - person_first_name
+      - person_last_name
+      - person_mail
+      - course_number
+      - term_name
+      - status
+      - course_sessions
+      - sessions_attended
+      - attended_minutes
+      - participation_pct
+      units:
+        share_of_items_used: ratio
+        share_who_submitted: ratio
+        participation_pct: percent
