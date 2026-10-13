@@ -302,6 +302,13 @@ def _selections(contract: QueryContract, catalog: Catalog) -> list[tuple[str, Da
     return out
 
 
+def _check_identity_filter(f, target: Dataset, dim, allow_identity: bool) -> None:
+    """Without identity rights a PII dimension filters by exact value or presence only: a substring or
+    range match would let the caller read the value back one guess at a time."""
+    if not allow_identity and target.is_pii(dim.column) and f.op not in ("eq", "neq", "in", "not_in", "is_null", "not_null"):
+        raise CompileError(f"{f.dimension!r} identifies a person; without identity access it takes exact values only (eq, in, is_null, ...)")
+
+
 def _group_query(base: Dataset, selections: list, contract: QueryContract, catalog: Catalog,
                  allow_identity: bool = False) -> tuple[exp.Select, list[str]]:
     """One aggregate SELECT over base (plus many-to-one joins) and the dataset ids it reads."""
@@ -320,9 +327,11 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
             if via is None:
                 raise
             _check_filter_values(f, via[1])
+            _check_identity_filter(f, via[0], via[1], allow_identity)
             semi.append((f, *via))
             continue
         _check_filter_values(f, dim)
+        _check_identity_filter(f, target, dim, allow_identity)
         filters.append((f, target, dim))
     if base.required_time_range:
         tr = contract.time_range

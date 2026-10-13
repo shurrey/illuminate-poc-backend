@@ -216,6 +216,7 @@ pages:
       - avg_hours_per_week
       units:
         access_pct: percent
+        avg_access_pct: percent
         pct_active: percent
         pct_recently_active: percent
         content_completion: ratio
@@ -229,7 +230,7 @@ pages:
       main:
         measures:
         - dataset.student_enrollments.v1:accesses
-        - dataset.student_enrollments.v1:access_pct
+        - dataset.student_enrollments.v1:avg_access_pct
         - dataset.student_enrollments.v1:interactions
         - dataset.student_enrollments.v1:submissions
         - dataset.student_enrollments.v1:hours
@@ -257,12 +258,13 @@ pages:
       - term_name
       - recency
       - accesses
-      - access_pct
+      - avg_access_pct
       - interactions
       - submissions
       - hours
       units:
         access_pct: percent
+        avg_access_pct: percent
         pct_active: percent
         pct_recently_active: percent
         content_completion: ratio
@@ -452,6 +454,7 @@ pages:
       - avg_hours_per_week
       units:
         access_pct: percent
+        avg_access_pct: percent
         pct_active: percent
         pct_recently_active: percent
         content_completion: ratio
@@ -497,6 +500,7 @@ pages:
       - interactions
       units:
         access_pct: percent
+        avg_access_pct: percent
         pct_active: percent
         pct_recently_active: percent
         content_completion: ratio
@@ -508,8 +512,8 @@ pages:
   - id: assessments_help
     type: text
     title: How timely do students complete course assessments?
-    text: 'Submissions due to active students: on time, late, overdue (past due and not submitted) or upcoming (not yet due).
-      Shares are out of all submissions due.'
+    text: 'Submissions due on gradebook items that count towards the final grade, for students with an available enrollment:
+      on time, late, overdue (past due and not submitted) or upcoming (not yet due). Shares are out of all submissions due.'
   - id: timeliness_share
     type: pie
     title: How timely do students complete assessments?
@@ -520,6 +524,11 @@ pages:
         - dataset.student_assignments.v1:late
         - dataset.student_assignments.v1:overdue
         - dataset.student_assignments.v1:upcoming
+        filters:
+        - dimension: counts_towards_grade
+          op: eq
+          values:
+          - true
     transform:
       kind: unpivot
       query: main
@@ -552,6 +561,11 @@ pages:
         - field: due_items
           direction: desc
         limit: 100
+        filters:
+        - dimension: counts_towards_grade
+          op: eq
+          values:
+          - true
     encode:
       columns:
       - item_type
@@ -561,6 +575,7 @@ pages:
       - share_overdue
       units:
         access_pct: percent
+        avg_access_pct: percent
         pct_active: percent
         pct_recently_active: percent
         content_completion: ratio
@@ -593,6 +608,11 @@ pages:
         - field: node
           direction: asc
         limit: 200
+        filters:
+        - dimension: counts_towards_grade
+          op: eq
+          values:
+          - true
     encode:
       x: node
       y:
@@ -621,6 +641,11 @@ pages:
         - field: course_number
           direction: asc
         limit: 1000
+        filters:
+        - dimension: counts_towards_grade
+          op: eq
+          values:
+          - true
     encode:
       columns:
       - course_number
@@ -633,6 +658,7 @@ pages:
       - share_overdue
       units:
         access_pct: percent
+        avg_access_pct: percent
         pct_active: percent
         pct_recently_active: percent
         content_completion: ratio
@@ -663,6 +689,11 @@ pages:
         - field: person_last_name
           direction: asc
         limit: 1000
+        filters:
+        - dimension: counts_towards_grade
+          op: eq
+          values:
+          - true
     encode:
       columns:
       - person_institution_id
@@ -678,6 +709,7 @@ pages:
       - share_on_time
       units:
         access_pct: percent
+        avg_access_pct: percent
         pct_active: percent
         pct_recently_active: percent
         content_completion: ratio

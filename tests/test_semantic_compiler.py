@@ -525,7 +525,7 @@ def test_student_enrollments_keep_inactive_enrollments_and_hide_identity():
     from semantic_layer.catalog import load_catalog
     cat = load_catalog()
     cte = build_ctes(cat, [SE], "DB")["DS_STUDENT_ENROLLMENTS_V1"]
-    assert "LEFT JOIN DS_COURSE_STUDENT_ACTIVITY_V1" in cte and "COURSE_ROLE = 'S'" in cte
+    assert "LEFT JOIN DS_COURSE_STUDENT_ACTIVITY_V1" in cte and "pc.STUDENT_IND" in cte
     assert "'Inactive'" in cte and "'Recently active'" in cte and "'95-100'" in cte
     ds = cat.datasets[SE]
     for name in ("student_first_name", "student_last_name", "student_email", "student_id"):
@@ -549,3 +549,27 @@ def test_social_and_collab_rollups_are_one_row_per_student_enrollment():
         assert "MEDIAN(" in _outer(_real(measures=[f"{ds}:{m}" for m in measures], dimensions=["dataset.courses.v1:ih_level_1"]))
     sibt = cat.datasets["dataset.social_interactions_by_type.v1"]
     assert {m.name for m in sibt.measures} >= {"median_access_rows", "min_access_rows", "max_access_rows"}
+
+
+@pytest.mark.parametrize("op, values, allowed", [("contains", ["jane"], False), ("eq", ["jane@x.edu"], True),
+                                                 ("in", ["jane@x.edu"], True)])
+def test_callers_without_identity_filter_identity_only_by_exact_value(op, values, allowed):
+    contract = dict(measures=["dataset.student_enrollments.v1:enrollments"],
+                    filters=[{"dimension": "dataset.student_enrollments.v1:student_email", "op": op, "values": values}])
+    semi = dict(measures=["dataset.lms_sessions.v1:sessions"],
+                filters=[{"dimension": "dataset.persons.v1:person_mail", "op": op, "values": values}])
+    for c in (contract, semi):
+        if allowed:
+            _real(**c)
+        else:
+            with pytest.raises(CompileError, match="exact"):
+                _real(**c)
+        from semantic_layer.catalog import load_catalog
+        compile_query(QueryContract(**c), load_catalog(), "DB", allow_identity=True)
+
+
+def test_student_enrollments_use_the_student_flag_keep_unnamed_students_and_course_item_totals():
+    from semantic_layer.catalog import load_catalog
+    cte = build_ctes(load_catalog(), [SE], "DB")["DS_STUDENT_ENROLLMENTS_V1"]
+    assert "pc.STUDENT_IND" in cte and "NVL(pe.LAST_NAME, '')" in cte
+    assert "OVER (PARTITION BY e.COURSE_ID)" in cte
