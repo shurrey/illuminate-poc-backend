@@ -805,7 +805,7 @@ def test_student_summary_is_about_one_chosen_student_and_requires_identity():
 
 def test_student_summary_reach_is_about_one_chosen_student_and_requires_identity():
     report = load_reports()["report.student_summary_reach.v1"]
-    assert report.required_filters == ["student"]
+    assert report.required_filters == ["student", "dates"]
     values = {"student": ["123 - Jane Doe"], "course": ["BIO-101 - Biology"], "dates": {"start": "2026-09-01", "end": "2026-09-30"}}
     for v in report.visuals():
         if v.type == "text":
@@ -823,3 +823,14 @@ def test_student_summary_requires_its_activity_range_and_says_peers_include_the_
     assert report.required_filters == ["student", "dates"]
     assert "course average" in report.visual("overview_help").text
     assert "last year" not in report.visual("log_help").text
+
+
+@pytest.mark.parametrize("report_id", ["report.student_summary.v1", "report.student_summary_reach.v1"])
+def test_student_submission_status_counts_submittable_items_of_active_enrollments(report_id):
+    report = load_reports()[report_id]
+    for v in report.visuals():
+        for q in v.queries.values():
+            if any(m.startswith("dataset.student_assignments.v1:") for m in q.get("measures", [])):
+                f = q.get("filters", [])
+                assert {"dimension": "item_type", "op": "not_in", "values": ["STANDALONE_GRADE_CENTER_COLUMN", "OTHER"]} in f, v.id
+                assert {"dimension": "active", "op": "eq", "values": [1]} in f, v.id

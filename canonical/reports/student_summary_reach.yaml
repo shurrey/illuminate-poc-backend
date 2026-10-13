@@ -22,6 +22,7 @@ filters:
   default: last_30_days
 required_filters:
 - student
+- dates
 pages:
 - title: Overview
   visuals:
@@ -68,6 +69,16 @@ pages:
       main:
         measures:
         - dataset.student_assignments.v1:overdue
+        filters:
+        - dimension: item_type
+          op: not_in
+          values:
+          - STANDALONE_GRADE_CENTER_COLUMN
+          - OTHER
+        - dimension: active
+          op: eq
+          values:
+          - 1
         filters_ignored:
         - dates
     encode:
@@ -143,6 +154,16 @@ pages:
         - field: course_name
           direction: asc
         limit: 200
+        filters:
+        - dimension: item_type
+          op: not_in
+          values:
+          - STANDALONE_GRADE_CENTER_COLUMN
+          - OTHER
+        - dimension: active
+          op: eq
+          values:
+          - 1
         filters_ignored:
         - dates
     encode:

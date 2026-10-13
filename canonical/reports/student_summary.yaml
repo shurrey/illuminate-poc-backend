@@ -123,6 +123,16 @@ pages:
         - dataset.student_assignments.v1:late
         - dataset.student_assignments.v1:overdue
         - dataset.student_assignments.v1:upcoming
+        filters:
+        - dimension: item_type
+          op: not_in
+          values:
+          - STANDALONE_GRADE_CENTER_COLUMN
+          - OTHER
+        - dimension: active
+          op: eq
+          values:
+          - 1
         filters_ignored:
         - dates
     encode:
@@ -188,6 +198,16 @@ pages:
         - field: course_name
           direction: asc
         limit: 200
+        filters:
+        - dimension: item_type
+          op: not_in
+          values:
+          - STANDALONE_GRADE_CENTER_COLUMN
+          - OTHER
+        - dimension: active
+          op: eq
+          values:
+          - 1
         filters_ignored:
         - dates
     encode:
