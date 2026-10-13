@@ -115,10 +115,15 @@ class Report(_Definition):
     area: Literal["learning", "teaching", "leading"]
     description: str
     filters: list[ReportFilter] = Field(default_factory=list)
+    # Filters that must have a value before any visual runs (e.g. the course of a one-course report).
+    required_filters: list[str] = Field(default_factory=list)
     pages: list[Page]
 
     @model_validator(mode="after")
     def _references(self) -> "Report":
+        unknown = sorted(set(self.required_filters) - {f.id for f in self.filters})
+        if unknown:
+            raise ValueError(f"{self.id}: required_filters names unknown filters {unknown}")
         ids = [v.id for p in self.pages for v in p.visuals]
         if len(ids) != len(set(ids)):
             raise ValueError(f"{self.id}: visual ids must be unique")

@@ -764,3 +764,18 @@ def test_student_performance_applies_filters_and_the_boundary_only_to_boundary_q
                 assert page == "Grade Boundary" and bounded[0].values == [70], (v.id, q)
             if v.queries[q].get("child_of"):
                 assert contract.dimensions[0] == "dataset.courses.v1:ih_level_2", (v.id, q)
+
+
+def test_course_summary_needs_a_course_and_counts_by_role_flags():
+    report = load_reports()["report.course_summary.v1"]
+    assert report.required_filters == ["course"]
+    for vid in ("student_heat", "instructor_heat"):
+        assert "filters" not in report.visual(vid).queries["days"], vid
+    for vid in ("grading_time_weekly", "submission_status_weekly", "submission_status"):
+        assert {"dimension": "has_due_date", "op": "eq", "values": [True]} in report.visual(vid).queries["main"]["filters"], vid
+    assert report.visual("total_students").queries["main"]["measures"] == ["dataset.student_enrollments.v1:students"]
+    text = str(report.model_dump())
+    assert "'course_role'" not in text.replace("'course_role_description'", "")
+    from semantic_layer.compiler import build_ctes
+    cte = build_ctes(CATALOG, ["dataset.course_teaching_summary.v1"], "DB")["DS_COURSE_TEACHING_SUMMARY_V1"]
+    assert "p.INSTRUCTOR_MINUTES / p.ACTIVE_INSTRUCTORS" in cte

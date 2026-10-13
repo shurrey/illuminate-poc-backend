@@ -54,6 +54,8 @@ base_sql: |
          DECODE(FLOOR(HOUR(ph.ACTIVITY_HOUR) / 3), 0, '12 AM–3 AM', 1, '3 AM–6 AM', 2, '6 AM–9 AM', 3, '9 AM–12 PM',
                 4, '12 PM–3 PM', 5, '3 PM–6 PM', 6, '6 PM–9 PM', '9 PM–12 AM') AS HOUR_GROUP,
          pc.COURSE_ROLE,
+         NVL(pc.STUDENT_IND, FALSE) AS STUDENT_IND,
+         NVL(pc.ACT_AS_INSTRUCTOR_IND, FALSE) AS INSTRUCTOR_IND,
          NVL(pc.COURSE_ROLE_SOURCE_DESC, 'Unknown') AS COURSE_ROLE_SOURCE_DESC,
          NVL(pc.COURSE_ROLE_DESC, 'Unknown') AS COURSE_ROLE_DESC,
          NVL(c.AVAILABLE_IND, FALSE) AS COURSE_AVAILABLE_IND,
@@ -75,6 +77,8 @@ dimensions:
   - {name: tool_key, column: TOOL_KEY, type: categorical, description: "Untranslated key, e.g. 'resource/x-bb-folder.name'"}
   - {name: course_role, column: COURSE_ROLE, type: categorical, description: "S student, I instructor; NULL when the person has no enrollment in the course"}
   - {name: course_role_description, column: COURSE_ROLE_DESC, type: categorical}
+  - {name: student, column: STUDENT_IND, type: boolean, description: "True for student enrollments, including custom student roles"}
+  - {name: instructor, column: INSTRUCTOR_IND, type: boolean, description: "True for enrollments that act as instructor, including custom roles"}
   - {name: course_available, column: COURSE_AVAILABLE_IND, type: boolean}
   - {name: tool_available, column: TOOL_AVAILABLE_IND, type: boolean}
   - {name: activity_time, column: ACTIVITY_HOUR, type: time, grains: [hour, day, week, month, quarter, year], description: "The hour of activity, in the institution's local time"}

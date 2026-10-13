@@ -963,6 +963,9 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
     visual = report.visual(request.visual)
     if visual is None or request.query not in visual.queries:
         raise HTTPException(status_code=404, detail=f"{report_id} has no query {request.visual}/{request.query}")
+    missing = [f for f in report.filters if f.id in report.required_filters and not request.values.get(f.id)]
+    if missing:
+        return {"unavailable": f"Choose {missing[0].label} to see this"}
     catalog, _ = _catalog_for(user)
     try:
         contract, ignored = merged_contract(report, visual, request.query, request.values, catalog, _semantic_database())
