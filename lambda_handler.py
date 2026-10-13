@@ -969,6 +969,8 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
     except ReportValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not role_allows_identity(user):
+        if visual.requires_identity:
+            return {"unavailable": "Requires Author access"}
         kept = [d for d in contract.dimensions if not _is_identity(d, catalog)]
         if contract.dimensions and not kept:
             return {"unavailable": "Requires Author access"}

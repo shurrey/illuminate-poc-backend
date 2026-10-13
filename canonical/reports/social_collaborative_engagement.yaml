@@ -137,23 +137,23 @@ pages:
     queries:
       main:
         measures:
-        - dataset.social_interactions_by_type.v1:people
+        - dataset.social_interactions_by_type.v1:enrollments
         - dataset.social_interactions_by_type.v1:min_access_rows
         - dataset.social_interactions_by_type.v1:median_access_rows
         - dataset.social_interactions_by_type.v1:max_access_rows
         - dataset.social_interactions_by_type.v1:submissions
-        - dataset.social_interactions_by_type.v1:share_who_submitted
+        - dataset.social_interactions_by_type.v1:share_enrollments_submitted
         dimensions:
         - type_name
         order_by:
-        - field: people
+        - field: enrollments
           direction: desc
         limit: 100
         filters:
-        - dimension: course_role
-          op: in
+        - dimension: student
+          op: eq
           values:
-          - S
+          - true
         - dimension: social
           op: eq
           values:
@@ -161,15 +161,15 @@ pages:
     encode:
       columns:
       - type_name
-      - people
+      - enrollments
       - min_access_rows
       - median_access_rows
       - max_access_rows
       - submissions
-      - share_who_submitted
+      - share_enrollments_submitted
       units:
         share_of_items_used: ratio
-        share_who_submitted: ratio
+        share_enrollments_submitted: ratio
         participation_pct: percent
   - id: social_by_node
     type: bar
@@ -235,7 +235,7 @@ pages:
       - share_of_items_used
       units:
         share_of_items_used: ratio
-        share_who_submitted: ratio
+        share_enrollments_submitted: ratio
         participation_pct: percent
   - id: social_by_student
     type: table
@@ -278,8 +278,9 @@ pages:
       - contributions
       units:
         share_of_items_used: ratio
-        share_who_submitted: ratio
+        share_enrollments_submitted: ratio
         participation_pct: percent
+    requires_identity: true
 - title: Virtual Classroom Engagement
   visuals:
   - id: collab_help
@@ -414,7 +415,7 @@ pages:
       - participation_pct
       units:
         share_of_items_used: ratio
-        share_who_submitted: ratio
+        share_enrollments_submitted: ratio
         participation_pct: percent
   - id: collab_by_student
     type: table
@@ -455,5 +456,6 @@ pages:
       - participation_pct
       units:
         share_of_items_used: ratio
-        share_who_submitted: ratio
+        share_enrollments_submitted: ratio
         participation_pct: percent
+    requires_identity: true

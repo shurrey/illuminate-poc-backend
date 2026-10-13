@@ -271,6 +271,7 @@ pages:
         share_on_time: ratio
         share_late: ratio
         share_overdue: ratio
+    requires_identity: true
 - title: Engagement with Course Content
   visuals:
   - id: content_help
@@ -507,6 +508,7 @@ pages:
         share_on_time: ratio
         share_late: ratio
         share_overdue: ratio
+    requires_identity: true
 - title: Engagement with Assessments
   visuals:
   - id: assessments_help
@@ -716,3 +718,4 @@ pages:
         share_on_time: ratio
         share_late: ratio
         share_overdue: ratio
+    requires_identity: true

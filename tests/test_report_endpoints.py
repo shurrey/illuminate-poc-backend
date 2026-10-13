@@ -129,3 +129,16 @@ def test_identity_reaches_authors_through_the_guard_and_never_viewers(client, mo
     as_role(monkeypatch)
     run(client, "roster_by_term")
     assert seen == [(True, True), (False, True)]
+
+
+def test_viewers_get_unavailable_for_a_visual_that_requires_identity(client, monkeypatch):
+    from semantic_layer.reports import Report
+    report = Report(id="report.people.v1", title="t", area="learning", description="d", filters=[],
+                    pages=[{"title": "p", "visuals": [{"id": "per_student", "type": "table", "title": "t", "requires_identity": True,
+                                                       "queries": {"main": {"measures": ["dataset.course_student_activity.v1:students"],
+                                                                            "dimensions": ["dataset.courses.v1:term_name"]}}}]}])
+    monkeypatch.setattr(lambda_handler, "_reports", lambda: {report.id: report})
+    body = client.post("/api/v1/reports/report.people.v1/run", headers=AUTH, json={"visual": "per_student", "query": "main", "values": {}}).json()
+    assert body == {"unavailable": "Requires Author access"}
+    as_role(monkeypatch, "illuminate-authors")
+    assert "rows" in client.post("/api/v1/reports/report.people.v1/run", headers=AUTH, json={"visual": "per_student", "query": "main", "values": {}}).json()

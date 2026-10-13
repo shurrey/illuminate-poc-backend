@@ -92,6 +92,8 @@ class Visual(_Definition):
     transform: Optional[dict[str, Any]] = None
     encode: dict[str, Any] = Field(default_factory=dict)
     filters_ignored: list[str] = Field(default_factory=list)
+    # A per-person table: unavailable to roles without identity access rather than shown grouped without names.
+    requires_identity: bool = False
 
     @model_validator(mode="after")
     def _shape(self) -> "Visual":
