@@ -24,7 +24,7 @@ base_sql: |
       FROM {{ database }}.CDM_LMS.PERSON_COURSE pc
       JOIN {{ ref('dataset.course_filters.v1') }} fv ON fv.COURSE_ID = pc.COURSE_ID AND fv.COURSE_ROLE = 'S'
       JOIN {{ database }}.CDM_LMS.PERSON pe ON pe.ID = pc.PERSON_ID
-      WHERE pc.STUDENT_IND = TRUE
+      WHERE pc.STUDENT_IND = TRUE AND pc.ROW_DELETED_TIME IS NULL
   ),
   bucket_name AS (
       SELECT BUCKET, BUCKET_DESC

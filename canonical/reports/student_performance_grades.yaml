@@ -73,7 +73,8 @@ pages:
     type: text
     title: How are students performing in courses?
     text: A student's grade is the greater of their final grade and their summed score on the gradebook items that count towards
-      the grade, as a percentage. Enrollments with no scored item are not graded and are left out of the grade statistics.
+      the grade, as a percentage; it can exceed 100% with extra credit. Counts are student enrollments (dropped enrollments
+      are left out). Enrollments with no scored item are not graded and are left out of the grade statistics.
   - id: grade_max
     type: kpi
     title: What's the maximum grade?
