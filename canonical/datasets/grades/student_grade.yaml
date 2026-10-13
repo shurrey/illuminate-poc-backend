@@ -83,7 +83,8 @@ base_sql: |
       LEFT JOIN final_grades fi ON fi.PERSON_COURSE_ID = ap.PERSON_COURSE_ID
       LEFT JOIN counted_grades co ON co.PERSON_COURSE_ID = ap.PERSON_COURSE_ID
   )
-  SELECT sb.*, IFF(sb.GRADE_PERCENTAGE IS NULL, 'Not graded', bn.BUCKET_DESC) AS BUCKET_DESC
+  SELECT sb.*, IFF(sb.GRADE_PERCENTAGE IS NULL, 'Not graded', bn.BUCKET_DESC) AS BUCKET_DESC,
+         IFF(sb.GRADE_PERCENTAGE IS NULL, 'Not graded', 'Graded') AS GRADED_STATUS
   FROM student_bucket sb
   LEFT JOIN bucket_name bn ON bn.BUCKET = sb.BUCKET
 entities:
@@ -94,6 +95,9 @@ dimensions:
   - {name: grade_band, column: BUCKET_DESC, type: categorical, description: "5-point grade_percentage band, '<0%' to '>100%', or 'Not graded'", synonyms: [grade range, grade bucket]}
   - {name: enrollment_available, column: PERSON_COURSE_AVAILABLE, type: boolean}
   - {name: enrollment_enabled, column: PERSON_COURSE_ENABLED, type: boolean}
+  - {name: grade_band_order, column: BUCKET, type: numeric, description: "Sort order of grade_band"}
+  - {name: grade_percentage_value, column: GRADE_PERCENTAGE, type: numeric, description: "The enrollment's grade as a percentage; empty when not graded"}
+  - {name: graded_status, column: GRADED_STATUS, type: categorical, description: "Graded or Not graded"}
   - {name: graded_items, column: ENROLLMENT_ITEMS, type: numeric, description: "Graded non-final items counted for the enrollment"}
 measures:
   - {name: students, agg: count_distinct, expr: PERSON_ID, unit: students}
@@ -101,6 +105,8 @@ measures:
   - {name: graded_enrollments, agg: count_distinct, expr: "IFF(GRADE_PERCENTAGE IS NOT NULL, PERSON_COURSE_ID, NULL)", unit: enrollments}
   - {name: average_grade_percentage, agg: avg, expr: GRADE_PERCENTAGE, unit: percent, synonyms: [average grade, mean grade, gpa]}
   - {name: median_grade_percentage, agg: median, expr: GRADE_PERCENTAGE, unit: percent}
+  - {name: min_grade_percentage, agg: min, expr: GRADE_PERCENTAGE, unit: percent}
+  - {name: max_grade_percentage, agg: max, expr: GRADE_PERCENTAGE, unit: percent}
   - {name: average_final_grade, agg: avg, expr: "FINAL_GRADE * 100", unit: percent}
   - {name: average_normalized_score, agg: avg, expr: AVG_NORMALIZED_SCORE, unit: score}
   - {name: failing_enrollments, agg: count_distinct, expr: "IFF(GRADE_PERCENTAGE < 60, PERSON_COURSE_ID, NULL)", unit: enrollments, description: "Graded enrollments below 60%"}
