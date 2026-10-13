@@ -1,0 +1,568 @@
+id: report.student_performance_grades.v1
+title: Student Performance & Grades
+area: learning
+description: 'How students are performing in courses: grade distribution, and performance across a grade boundary you set.'
+filters:
+- id: dates
+  label: Course creation date
+  control: date_range
+  time_dimension: dataset.courses.v1:course_creation_date
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+  default: current_term
+- id: duration
+  label: Course duration type
+  control: select
+  dimension: dataset.courses.v1:course_duration
+- id: modality
+  label: Course modality
+  control: multi_select
+  dimension: dataset.courses.v1:delivery_method
+- id: ih1
+  label: Institutional hierarchy level 1
+  control: select
+  dimension: dataset.courses.v1:ih_level_1
+  exclude_values:
+  - '-'
+- id: ih2
+  label: Institutional hierarchy level 2
+  control: select
+  dimension: dataset.courses.v1:ih_level_2
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+- id: ih3
+  label: Institutional hierarchy level 3
+  control: select
+  dimension: dataset.courses.v1:ih_level_3
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+- id: ih4
+  label: Institutional hierarchy level 4+
+  control: select
+  dimension: dataset.courses.v1:ih_level_4
+  exclude_values:
+  - '-'
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+- id: course
+  label: Course ID
+  control: multi_select
+  dimension: dataset.courses.v1:course_number
+  depends_on:
+  - ih1
+  - ih2
+  - ih3
+  - ih4
+- id: boundary
+  label: Grade boundary (%)
+  control: number
+  default: 50
+pages:
+- title: Grade Distribution
+  visuals:
+  - id: grades_help
+    type: text
+    title: How are students performing in courses?
+    text: A student's grade is the greater of their final grade and their summed score on the gradebook items that count towards
+      the grade, as a percentage. Enrollments with no scored item are not graded and are left out of the grade statistics.
+  - id: grade_max
+    type: kpi
+    title: What's the maximum grade?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:max_grade_percentage
+    encode:
+      value: max_grade_percentage
+      unit: percent
+  - id: grade_median
+    type: kpi
+    title: What's the median grade?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:median_grade_percentage
+    encode:
+      value: median_grade_percentage
+      unit: percent
+  - id: grade_min
+    type: kpi
+    title: What's the minimum grade?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:min_grade_percentage
+    encode:
+      value: min_grade_percentage
+      unit: percent
+  - id: grade_distribution
+    type: bar
+    title: What's the student distribution by grade?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:enrollments
+        dimensions:
+        - grade_band
+        - grade_band_order
+        filters:
+        - dimension: graded_status
+          op: in
+          values:
+          - Graded
+        order_by:
+        - field: grade_band_order
+          direction: asc
+        limit: 30
+    encode:
+      x: grade_band
+      y: enrollments
+  - id: graded_share
+    type: pie
+    title: What proportion of students was graded?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:enrollments
+        dimensions:
+        - graded_status
+        order_by:
+        - field: enrollments
+          direction: desc
+    encode:
+      label: graded_status
+      value: enrollments
+      donut: true
+  - id: grades_by_course
+    type: table
+    title: What's the grade distribution per course?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:enrollments
+        - dataset.student_grade.v1:graded_enrollments
+        - dataset.student_grade.v1:min_grade_percentage
+        - dataset.student_grade.v1:median_grade_percentage
+        - dataset.student_grade.v1:average_grade_percentage
+        - dataset.student_grade.v1:max_grade_percentage
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - dataset.courses.v1:delivery_method
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - delivery_method
+      - enrollments
+      - graded_enrollments
+      - min_grade_percentage
+      - median_grade_percentage
+      - average_grade_percentage
+      - max_grade_percentage
+      units:
+        min_grade_percentage: percent
+        median_grade_percentage: percent
+        average_grade_percentage: percent
+        max_grade_percentage: percent
+        Pass rate: ratio
+        At or above the boundary: ratio
+        Below the boundary: ratio
+  - id: grades_by_student
+    type: table
+    title: How are students performing in courses?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:average_grade_percentage
+        - dataset.student_grade.v1:average_final_grade
+        - dataset.student_grade.v1:average_normalized_score
+        dimensions:
+        - dataset.persons.v1:person_institution_id
+        - dataset.persons.v1:person_first_name
+        - dataset.persons.v1:person_last_name
+        - dataset.persons.v1:person_mail
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:term_name
+        - grade_band
+        - graded_items
+        order_by:
+        - field: person_first_name
+          direction: asc
+        - field: person_last_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - person_institution_id
+      - person_first_name
+      - person_last_name
+      - person_mail
+      - course_number
+      - term_name
+      - grade_band
+      - graded_items
+      - average_grade_percentage
+      - average_final_grade
+      - average_normalized_score
+      units:
+        average_grade_percentage: percent
+        average_final_grade: percent
+    requires_identity: true
+- title: Grade Boundary
+  visuals:
+  - id: boundary_help
+    type: text
+    title: How are students performing across grade boundaries?
+    text: Graded enrollments at or above the grade boundary you set, and below it. The pass rate is the share at or above.
+  - id: boundary_share
+    type: pie
+    title: What proportion of students have grades at or above, and below the grade boundary?
+    queries:
+      all:
+        measures:
+        - dataset.student_grade.v1:graded_enrollments
+      above:
+        measures:
+        - dataset.student_grade.v1:graded_enrollments
+        param_filters:
+        - dimension: grade_percentage_value
+          op: gte
+          param: boundary
+    transform:
+      kind: part_of_whole
+      whole: all
+      part: above
+      field: graded_enrollments
+      labels:
+      - At or above the boundary
+      - Below the boundary
+    encode:
+      label: category
+      value: value
+      donut: true
+  - id: boundary_by_node
+    type: bar
+    title: What's the distribution of students across grade boundaries per institutional hierarchy node?
+    queries:
+      all:
+        measures:
+        - dataset.student_grade.v1:graded_enrollments
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        limit: 1000
+        order_by:
+        - field: node
+          direction: asc
+      above:
+        measures:
+        - dataset.student_grade.v1:graded_enrollments
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        limit: 1000
+        param_filters:
+        - dimension: grade_percentage_value
+          op: gte
+          param: boundary
+        order_by:
+        - field: node
+          direction: asc
+    transform:
+      kind: join
+      queries:
+      - all
+      - above
+      'on':
+      - node
+      as:
+        above:
+          graded_enrollments: at_or_above
+      differences:
+        below:
+        - graded_enrollments
+        - at_or_above
+      ratios:
+        Pass rate:
+        - at_or_above
+        - graded_enrollments
+        At or above the boundary:
+        - at_or_above
+        - graded_enrollments
+        Below the boundary:
+        - below
+        - graded_enrollments
+      left: true
+      fill_zero:
+      - at_or_above
+    encode:
+      x: node
+      y:
+      - At or above the boundary
+      - Below the boundary
+      stacked: true
+      horizontal: true
+  - id: boundary_node_table
+    type: table
+    title: How do institutional hierarchy nodes compare in regards to student performance across grade boundaries?
+    queries:
+      all:
+        measures:
+        - dataset.student_grade.v1:graded_enrollments
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        limit: 1000
+        order_by:
+        - field: node
+          direction: asc
+      above:
+        measures:
+        - dataset.student_grade.v1:graded_enrollments
+        child_of:
+          filters:
+          - ih1
+          - ih2
+          - ih3
+          - ih4
+          dimensions:
+          - dataset.courses.v1:ih_level_1
+          - dataset.courses.v1:ih_level_2
+          - dataset.courses.v1:ih_level_3
+          - dataset.courses.v1:ih_level_4
+          as: node
+        limit: 1000
+        param_filters:
+        - dimension: grade_percentage_value
+          op: gte
+          param: boundary
+        order_by:
+        - field: node
+          direction: asc
+    transform:
+      kind: join
+      queries:
+      - all
+      - above
+      'on':
+      - node
+      as:
+        above:
+          graded_enrollments: at_or_above
+      differences:
+        below:
+        - graded_enrollments
+        - at_or_above
+      ratios:
+        Pass rate:
+        - at_or_above
+        - graded_enrollments
+        At or above the boundary:
+        - at_or_above
+        - graded_enrollments
+        Below the boundary:
+        - below
+        - graded_enrollments
+      left: true
+      fill_zero:
+      - at_or_above
+    encode:
+      columns:
+      - node
+      - graded_enrollments
+      - at_or_above
+      - below
+      - Pass rate
+      units:
+        min_grade_percentage: percent
+        median_grade_percentage: percent
+        average_grade_percentage: percent
+        max_grade_percentage: percent
+        Pass rate: ratio
+        At or above the boundary: ratio
+        Below the boundary: ratio
+  - id: boundary_by_course
+    type: table
+    title: How do courses compare in regards to student performance across grade boundaries?
+    queries:
+      all:
+        measures:
+        - dataset.student_grade.v1:graded_enrollments
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        limit: 1000
+        order_by:
+        - field: course_number
+          direction: asc
+      above:
+        measures:
+        - dataset.student_grade.v1:graded_enrollments
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        limit: 1000
+        param_filters:
+        - dimension: grade_percentage_value
+          op: gte
+          param: boundary
+        order_by:
+        - field: course_number
+          direction: asc
+    transform:
+      kind: join
+      queries:
+      - all
+      - above
+      'on':
+      - course_number
+      - course_name
+      as:
+        above:
+          graded_enrollments: at_or_above
+      differences:
+        below:
+        - graded_enrollments
+        - at_or_above
+      ratios:
+        Pass rate:
+        - at_or_above
+        - graded_enrollments
+        At or above the boundary:
+        - at_or_above
+        - graded_enrollments
+        Below the boundary:
+        - below
+        - graded_enrollments
+      left: true
+      fill_zero:
+      - at_or_above
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - graded_enrollments
+      - at_or_above
+      - below
+      - Pass rate
+      units:
+        min_grade_percentage: percent
+        median_grade_percentage: percent
+        average_grade_percentage: percent
+        max_grade_percentage: percent
+        Pass rate: ratio
+        At or above the boundary: ratio
+        Below the boundary: ratio
+  - id: above_by_student
+    type: table
+    title: Which students are at or above the grade boundary?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:average_grade_percentage
+        dimensions:
+        - dataset.persons.v1:person_institution_id
+        - dataset.persons.v1:person_first_name
+        - dataset.persons.v1:person_last_name
+        - dataset.persons.v1:person_mail
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:term_name
+        param_filters:
+        - dimension: grade_percentage_value
+          op: gte
+          param: boundary
+        order_by:
+        - field: person_first_name
+          direction: asc
+        - field: person_last_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - person_institution_id
+      - person_first_name
+      - person_last_name
+      - person_mail
+      - course_number
+      - term_name
+      - average_grade_percentage
+      units:
+        average_grade_percentage: percent
+    requires_identity: true
+  - id: below_by_student
+    type: table
+    title: Which students are below the grade boundary?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:average_grade_percentage
+        dimensions:
+        - dataset.persons.v1:person_institution_id
+        - dataset.persons.v1:person_first_name
+        - dataset.persons.v1:person_last_name
+        - dataset.persons.v1:person_mail
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:term_name
+        param_filters:
+        - dimension: grade_percentage_value
+          op: lt
+          param: boundary
+        order_by:
+        - field: person_first_name
+          direction: asc
+        - field: person_last_name
+          direction: asc
+        limit: 1000
+    encode:
+      columns:
+      - person_institution_id
+      - person_first_name
+      - person_last_name
+      - person_mail
+      - course_number
+      - term_name
+      - average_grade_percentage
+      units:
+        average_grade_percentage: percent
+    requires_identity: true

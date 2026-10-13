@@ -749,3 +749,18 @@ def test_every_visual_that_selects_identity_requires_it(report_id):
             return bool(dim) and ds.is_pii(dim.column)
         selects = any(pii(d, q) for q in v.queries.values() for d in q.get("dimensions", []))
         assert v.requires_identity == selects, v.id
+
+
+def test_student_performance_applies_filters_and_the_boundary_only_to_boundary_queries():
+    report = load_reports()["report.student_performance_grades.v1"]
+    assert [p.title for p in report.pages] == ["Grade Distribution", "Grade Boundary"]
+    for v in report.visuals():
+        page = next(p.title for p in report.pages if v in p.visuals)
+        for q in v.queries:
+            contract, ignored = merged_contract(report, v, q, {**SEN_VALUES, "boundary": ["70"]}, CATALOG)
+            assert ignored == [], (v.id, q)
+            bounded = [f for f in contract.filters if f.dimension.endswith("grade_percentage_value")]
+            if bounded:
+                assert page == "Grade Boundary" and bounded[0].values == [70], (v.id, q)
+            if v.queries[q].get("child_of"):
+                assert contract.dimensions[0] == "dataset.courses.v1:ih_level_2", (v.id, q)
