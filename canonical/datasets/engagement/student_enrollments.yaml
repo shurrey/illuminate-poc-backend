@@ -45,7 +45,11 @@ base_sql: |
              CONCAT(LPAD(TO_VARCHAR(FLOOR(ACCESS_PCT / 5) * 5), 2, '0'), '-', LPAD(TO_VARCHAR(FLOOR(ACCESS_PCT / 5) * 5 + 5), 2, '0'))) AS ACCESS_BIN,
          IFF(INTERACTIONS >= 500, '500+', CONCAT(TO_VARCHAR(FLOOR(INTERACTIONS / 25) * 25), '-', TO_VARCHAR(FLOOR(INTERACTIONS / 25) * 25 + 24))) AS INTERACTIONS_BIN,
          LEAST(FLOOR(INTERACTIONS / 25) * 25, 500) AS INTERACTIONS_BIN_START,
-         MINUTES / 60 / GREATEST(NVL(COURSE_WEEKS, 1), 1) AS HOURS_PER_WEEK
+         MINUTES / 60 / GREATEST(NVL(COURSE_WEEKS, 1), 1) AS HOURS_PER_WEEK,
+         IFF(MINUTES / 60 / GREATEST(NVL(COURSE_WEEKS, 1), 1) >= 10, '10+',
+             CONCAT(TO_VARCHAR(FLOOR(MINUTES / 60 / GREATEST(NVL(COURSE_WEEKS, 1), 1))), '-',
+                    TO_VARCHAR(FLOOR(MINUTES / 60 / GREATEST(NVL(COURSE_WEEKS, 1), 1)) + 1))) AS HOURS_PER_WEEK_BIN,
+         LEAST(FLOOR(MINUTES / 60 / GREATEST(NVL(COURSE_WEEKS, 1), 1)), 10) AS HOURS_PER_WEEK_BIN_START
   FROM joined j
 entities:
   - {name: person_course, column: PERSON_COURSE_ID, type: primary}
@@ -61,6 +65,8 @@ dimensions:
   - {name: access_bin, column: ACCESS_BIN, type: categorical, description: "Access frequency in 5-point steps ('00-05' ... '95-100')"}
   - {name: interactions_bin, column: INTERACTIONS_BIN, type: categorical, description: "Interactions in 25s ('0-24' ... '500+'); sort by interactions_bin_start"}
   - {name: interactions_bin_start, column: INTERACTIONS_BIN_START, type: numeric}
+  - {name: hours_per_week_bin, column: HOURS_PER_WEEK_BIN, type: categorical, description: "Hours in the course per week, in whole hours ('0-1' ... '10+'); sort by hours_per_week_bin_start"}
+  - {name: hours_per_week_bin_start, column: HOURS_PER_WEEK_BIN_START, type: numeric}
   - {name: last_access, column: LAST_ACCESS, type: time, grains: [day, week, month]}
 measures:
   - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
