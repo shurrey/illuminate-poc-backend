@@ -142,3 +142,15 @@ def test_viewers_get_unavailable_for_a_visual_that_requires_identity(client, mon
     assert body == {"unavailable": "Requires Author access"}
     as_role(monkeypatch, "illuminate-authors")
     assert "rows" in client.post("/api/v1/reports/report.people.v1/run", headers=AUTH, json={"visual": "per_student", "query": "main", "values": {}}).json()
+
+
+def test_a_report_with_a_required_filter_runs_nothing_until_it_is_chosen(client, monkeypatch):
+    from semantic_layer.reports import Report
+    report = Report(id="report.one.v1", title="t", area="teaching", description="d", required_filters=["course"],
+                    filters=[{"id": "course", "label": "Course", "control": "select", "dimension": "dataset.courses.v1:course_id_name"}],
+                    pages=[{"title": "p", "visuals": [{"id": "n", "type": "kpi", "title": "t",
+                                                       "queries": {"main": {"measures": ["dataset.courses.v1:courses"]}}}]}])
+    monkeypatch.setattr(lambda_handler, "_reports", lambda: {report.id: report})
+    post = lambda values: client.post("/api/v1/reports/report.one.v1/run", headers=AUTH, json={"visual": "n", "query": "main", "values": values}).json()
+    assert post({}) == {"unavailable": "Choose Course to see this"}
+    assert "rows" in post({"course": ["BIO-101 - Biology"]})

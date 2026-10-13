@@ -34,6 +34,7 @@ base_sql: |
              NVL(i.AVAILABLE_ENROLLMENT_ROLE_COUNT, 0) AS AVAILABLE_INSTRUCTORS,
              NVL(s.AVAILABLE_ENROLLMENT_ROLE_COUNT, 0) AS AVAILABLE_STUDENTS,
              NVL(s.ACTIVE_ROLE_CNT, 0) AS ACTIVE_STUDENTS,
+             NVL(i.ACTIVE_ROLE_CNT, 0) AS ACTIVE_INSTRUCTORS,
              NVL(i.TOTAL_MIN_IN_COURSE, 0) AS INSTRUCTOR_MINUTES, NVL(s.TOTAL_MIN_IN_COURSE, 0) AS STUDENT_MINUTES,
              NVL(i.CNT_DAYS, 0) AS INSTRUCTOR_DAYS, NVL(s.CLB_COUNT_PERSON, 0) AS COLLAB_STUDENTS,
              i.MAX_LOGIN_ACCESSED_TIME AS INSTRUCTOR_LAST_ACCESS,
@@ -50,7 +51,7 @@ base_sql: |
          IFF(LEAST(100, 100 * p.INSTRUCTOR_DAYS / p.ELAPSED_DAYS) >= 95, '95-100',
              CONCAT(LPAD(TO_VARCHAR(FLOOR(LEAST(100, 100 * p.INSTRUCTOR_DAYS / p.ELAPSED_DAYS) / 5) * 5), 2, '0'), '-',
                     LPAD(TO_VARCHAR(FLOOR(LEAST(100, 100 * p.INSTRUCTOR_DAYS / p.ELAPSED_DAYS) / 5) * 5 + 5), 2, '0'))) AS ACCESS_BIN,
-         IFF(p.INSTRUCTORS > 0, p.INSTRUCTOR_MINUTES / p.INSTRUCTORS, NULL) AS MINUTES_PER_INSTRUCTOR,
+         IFF(p.ACTIVE_INSTRUCTORS > 0, p.INSTRUCTOR_MINUTES / p.ACTIVE_INSTRUCTORS, NULL) AS MINUTES_PER_INSTRUCTOR,
          IFF(p.ACTIVE_STUDENTS > 0, p.STUDENT_MINUTES / p.ACTIVE_STUDENTS, NULL) AS MINUTES_PER_STUDENT,
          CASE WHEN p.INSTRUCTOR_LAST_ACCESS IS NULL THEN 'Inactive'
               WHEN DATEDIFF(day, p.INSTRUCTOR_LAST_ACCESS, CURRENT_DATE()) <= 7 THEN 'Recently active'
@@ -89,8 +90,8 @@ measures:
   - {name: max_access_pct, agg: max, expr: ACCESS_PCT, unit: percent}
   - {name: min_access_pct, agg: min, expr: ACCESS_PCT, unit: percent}
   - {name: avg_access_pct, agg: avg, expr: ACCESS_PCT, unit: percent}
-  - {name: minutes_per_instructor, agg: avg, expr: MINUTES_PER_INSTRUCTOR, unit: minutes}
-  - {name: minutes_per_student, agg: avg, expr: MINUTES_PER_STUDENT, unit: minutes}
+  - {name: minutes_per_instructor, agg: avg, expr: MINUTES_PER_INSTRUCTOR, unit: minutes, description: "Minutes in the course per active instructor"}
+  - {name: minutes_per_student, agg: avg, expr: MINUTES_PER_STUDENT, unit: minutes, description: "Minutes in the course per active student"}
   - {name: courses_with_collab, agg: count_distinct, expr: "IFF(HAS_COLLAB = 'Yes', COURSE_ID, NULL)", unit: courses}
   - {name: sessions, agg: sum, expr: CLB_SESSION_CNT, unit: sessions}
   - {name: total_session_hours, agg: sum, expr: SESSION_HOURS, unit: hours}

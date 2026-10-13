@@ -1,3 +1,5 @@
+required_filters:
+- course
 id: report.course_summary.v1
 title: Course Summary
 area: teaching
@@ -17,8 +19,9 @@ pages:
   - id: overview_help
     type: text
     title: Course summary
-    text: Choose a course to see its overview, student engagement and performance, instructional practice and design. The
-      activity date range narrows the charts of activity over time.
+    text: The overview, student engagement and performance, instructional practice and design of the course you choose. The
+      activity date range narrows the charts of activity over time. Class size and instructor totals count enrollments in
+      the instructor role.
   - id: course_info
     type: table
     title: Course information
@@ -67,7 +70,7 @@ pages:
     queries:
       main:
         measures:
-        - dataset.course_teaching_summary.v1:students
+        - dataset.student_enrollments.v1:students
         filters_ignored:
         - dates
     encode:
@@ -89,17 +92,17 @@ pages:
     queries:
       main:
         measures:
-        - dataset.course_role_activity.v1:enrolled_people
+        - dataset.course_tool_activity.v1:people
         dimensions:
-        - course_role
+        - course_role_description
         order_by:
-        - field: enrolled_people
+        - field: people
           direction: desc
         filters_ignored:
         - dates
     encode:
-      label: course_role
-      value: enrolled_people
+      label: course_role_description
+      value: people
       donut: true
   - id: grading_speed
     type: bar
@@ -149,7 +152,8 @@ pages:
     type: text
     title: Student engagement and performance
     text: A student is active with 5 minutes or more in the course. Weekly charts and the heat map follow the activity date
-      range; the heat map shows the average number of students active in each day and time slot.
+      range; the heat map shows, for each weekday and time slot, the average number of students active on days the course
+      had activity.
   - id: active_share
     type: pie
     title: What proportion of students are active?
@@ -201,10 +205,10 @@ pages:
           direction: asc
         limit: 400
         filters:
-        - dimension: course_role
-          op: in
+        - dimension: student
+          op: eq
           values:
-          - S
+          - true
     encode:
       x: activity_date__week
       y: people
@@ -222,10 +226,10 @@ pages:
           direction: asc
         limit: 400
         filters:
-        - dimension: course_role
-          op: in
+        - dimension: student
+          op: eq
           values:
-          - S
+          - true
     encode:
       x: activity_date__week
       y: minutes
@@ -242,20 +246,15 @@ pages:
         - hour_group_start
         limit: 100
         filters:
-        - dimension: course_role
-          op: in
+        - dimension: student
+          op: eq
           values:
-          - S
+          - true
       days:
         measures:
         - dataset.course_tool_activity.v1:days
         dimensions:
         - day_of_week
-        filters:
-        - dimension: course_role
-          op: in
-          values:
-          - S
     transform:
       kind: per_weekday_average
       query: main
@@ -308,10 +307,10 @@ pages:
           direction: desc
         limit: 10
         filters:
-        - dimension: course_role
-          op: in
+        - dimension: student
+          op: eq
           values:
-          - S
+          - true
         filters_ignored:
         - dates
     encode:
@@ -361,7 +360,9 @@ pages:
   - id: practice_help
     type: text
     title: Instructional practice
-    text: Grading charts follow each submission's due week. Instructor charts and the heat map follow the activity date range.
+    text: Grading over time and submission status cover submissions with a due date, by due week. Instructor charts, the heat
+      map and the per-instructor table follow the activity date range. Minutes per instructor and per student divide by active
+      instructors and active students.
   - id: grading_time_weekly
     type: line
     title: How long does it take to grade a submission?
@@ -376,6 +377,10 @@ pages:
           direction: asc
         limit: 400
         filters:
+        - dimension: has_due_date
+          op: eq
+          values:
+          - true
         - dimension: graded
           op: eq
           values:
@@ -398,6 +403,11 @@ pages:
         - field: due_time__week
           direction: asc
         limit: 400
+        filters:
+        - dimension: has_due_date
+          op: eq
+          values:
+          - true
         time_dimension: due_time
     encode:
       x: due_time__week
@@ -412,6 +422,11 @@ pages:
         measures:
         - dataset.grade_response_time.v1:graded_attempts
         - dataset.grade_response_time.v1:ungraded_attempts
+        filters:
+        - dimension: has_due_date
+          op: eq
+          values:
+          - true
         filters_ignored:
         - dates
     transform:
@@ -432,25 +447,23 @@ pages:
     queries:
       main:
         measures:
-        - dataset.course_role_activity.v1:enrolled_people
-        - dataset.course_role_activity.v1:active_people
-        - dataset.course_role_activity.v1:activity_days
-        - dataset.course_role_activity.v1:minutes_in_course
+        - dataset.course_tool_activity.v1:people
+        - dataset.course_tool_activity.v1:days
+        - dataset.course_tool_activity.v1:minutes
+        - dataset.course_tool_activity.v1:activity_rows
         dimensions:
-        - course_role
+        - course_role_description
         order_by:
-        - field: course_role
-          direction: asc
+        - field: people
+          direction: desc
         limit: 1000
-        filters_ignored:
-        - dates
     encode:
       columns:
-      - course_role
-      - enrolled_people
-      - active_people
-      - activity_days
-      - minutes_in_course
+      - course_role_description
+      - people
+      - days
+      - minutes
+      - activity_rows
   - id: instructor_minutes_weekly
     type: line
     title: How much time do instructors spend in the course per week?
@@ -465,10 +478,10 @@ pages:
           direction: asc
         limit: 400
         filters:
-        - dimension: course_role
-          op: in
+        - dimension: instructor
+          op: eq
           values:
-          - I
+          - true
     encode:
       x: activity_date__week
       y: minutes
@@ -485,20 +498,15 @@ pages:
         - hour_group_start
         limit: 100
         filters:
-        - dimension: course_role
-          op: in
+        - dimension: instructor
+          op: eq
           values:
-          - I
+          - true
       days:
         measures:
         - dataset.course_tool_activity.v1:days
         dimensions:
         - day_of_week
-        filters:
-        - dimension: course_role
-          op: in
-          values:
-          - I
     transform:
       kind: per_weekday_average
       query: main
@@ -590,10 +598,10 @@ pages:
           direction: desc
         limit: 1000
         filters:
-        - dimension: course_role
-          op: in
+        - dimension: instructor
+          op: eq
           values:
-          - I
+          - true
     encode:
       columns:
       - person_first_name
