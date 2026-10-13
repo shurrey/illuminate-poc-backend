@@ -159,3 +159,24 @@ def test_freehand_pii_outside_a_count_or_filter_is_blocked_anywhere_in_the_state
 ])
 def test_freehand_pii_in_a_count_or_filter_is_allowed(sql, executed):
     assert "error" not in snowflake_client.validate_and_execute(sql)
+
+
+COMPILED_NAMES = "WITH DS AS (SELECT FIRST_NAME, EMAIL FROM CDM_LMS.PERSON) SELECT FIRST_NAME AS first, EMAIL AS mail FROM DS"
+
+
+def test_compiled_identity_passes_only_when_the_caller_may_see_identity(monkeypatch):
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": [], "rows": []})
+    assert "error" in snowflake_client.validate_and_execute(COMPILED_NAMES, compiled=True)
+    assert "error" not in snowflake_client.validate_and_execute(COMPILED_NAMES, compiled=True, allow_identity=True)
+
+
+def test_freehand_sql_never_returns_identity_whatever_the_role(monkeypatch):
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": [], "rows": []})
+    assert "error" in snowflake_client.validate_and_execute("SELECT EMAIL FROM CDM_LMS.PERSON", allow_identity=True)
+
+
+def test_declared_dataset_pii_is_guarded_for_callers_without_identity(monkeypatch):
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": [], "rows": []})
+    sql = "WITH DS AS (SELECT CREATOR_NAME FROM CDM_LMS.PERSON) SELECT CREATOR_NAME AS creator_name FROM DS"
+    assert "error" in snowflake_client.validate_and_execute(sql, compiled=True, extra_pii={"CREATOR_NAME"})
+    assert "error" not in snowflake_client.validate_and_execute(sql, compiled=True, extra_pii={"CREATOR_NAME"}, allow_identity=True)

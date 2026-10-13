@@ -105,13 +105,16 @@ def _in_filter(node) -> bool:
     return False
 
 
-def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool = False) -> dict:
+def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool = False,
+                         allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset()) -> dict:
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
     Allowed statement types: SELECT, WITH (CTE), SHOW, DESCRIBE.
     Blocked: DML/DDL in any subquery, non-CDM/INFORMATION_SCHEMA references, LIMIT > 1000, and
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
+    allow_identity lifts the projection check for compiled SQL only (callers whose role may see
+    identity); extra_pii adds dataset-declared PII column names to the check.
 
     Returns:
         {"columns": [...], "rows": [...]} on success
@@ -203,7 +206,10 @@ def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool
     # column returns one row per value, so neither unlocks PII. Compiled SQL is checked on its
     # outermost projection. Freehand SQL is checked everywhere except filter conditions, since
     # UNPIVOT, FLATTEN, PIVOT and MATCH_RECOGNIZE move PII values out of the projections.
-    if compiled:
+    pii_names = PII_COLUMN_NAMES | {name.upper() for name in extra_pii}
+    if compiled and allow_identity:
+        scopes = []
+    elif compiled:
         outer = stmt.find(exp.Select)
         scopes = [(col, sel) for sel in (outer.expressions if outer else []) for col in sel.find_all(exp.Column)]
     else:
@@ -213,7 +219,7 @@ def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool
         scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
     for col_node, scope in scopes:
         col_name = col_node.name.upper().strip('"').strip("'")
-        if col_name in PII_COLUMN_NAMES and not inside_counting_aggregate(col_node, scope):
+        if col_name in pii_names and not inside_counting_aggregate(col_node, scope):
             return {
                 "error": (
                     f"Column '{col_name}' contains personally identifiable information (PII). "

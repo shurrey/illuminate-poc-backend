@@ -111,4 +111,4 @@ def test_query_runs_through_the_guard_as_compiled_sql(client, monkeypatch):
     monkeypatch.setattr(snowflake_client, "validate_and_execute",
                         lambda sql, params=None, **k: seen.update(k) or {"columns": [], "rows": []})
     client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
-    assert seen == {"compiled": True}
+    assert seen["compiled"] is True and "PERSON_EMAIL" in seen["extra_pii"]
