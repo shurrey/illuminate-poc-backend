@@ -695,3 +695,17 @@ def test_per_type_content_statistics_are_per_enrollment():
     sita = CATALOG.datasets["dataset.student_item_tool_activity.v1"]
     assert {m.name for m in sita.measures} >= {"median_interactions", "min_interactions", "max_interactions",
                                                "item_interactions", "tool_interactions"}
+
+
+def test_social_collaborative_applies_filters_groups_by_child_and_keeps_identity_to_student_tables():
+    report = load_reports()["report.social_collaborative_engagement.v1"]
+    assert [p.title for p in report.pages] == ["Learning Tools Engagement", "Virtual Classroom Engagement"]
+    identity = {"person_first_name", "person_last_name", "person_mail", "person_institution_id"}
+    for v in report.visuals():
+        for q in v.queries:
+            contract, ignored = merged_contract(report, v, q, SEN_VALUES, CATALOG)
+            assert ignored == [], (v.id, q)
+            if v.queries[q].get("child_of"):
+                assert contract.dimensions[0] == "dataset.courses.v1:ih_level_2", (v.id, q)
+            named = {d.rpartition(":")[2] for d in v.queries[q].get("dimensions", [])}
+            assert bool(named & identity) == v.id.endswith("_by_student"), v.id
