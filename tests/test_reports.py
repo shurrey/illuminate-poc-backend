@@ -709,3 +709,12 @@ def test_social_collaborative_applies_filters_groups_by_child_and_keeps_identity
                 assert contract.dimensions[0] == "dataset.courses.v1:ih_level_2", (v.id, q)
             named = {d.rpartition(":")[2] for d in v.queries[q].get("dimensions", [])}
             assert bool(named & identity) == v.id.endswith("_by_student"), v.id
+
+
+def test_assessment_timeliness_counts_grades_towards_the_final_grade_and_student_access_is_averaged():
+    report = _sen()
+    for v in report.visuals():
+        for q in v.queries.values():
+            if any(m.startswith("dataset.student_assignments.v1:") for m in q.get("measures", [])):
+                assert {"dimension": "counts_towards_grade", "op": "eq", "values": [True]} in q.get("filters", []), v.id
+    assert "dataset.student_enrollments.v1:avg_access_pct" in report.visual("access_by_student").queries["main"]["measures"]

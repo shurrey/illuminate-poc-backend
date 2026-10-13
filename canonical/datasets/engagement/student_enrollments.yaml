@@ -21,8 +21,8 @@ base_sql: |
       FROM {{ database }}.CDM_LMS.PERSON_COURSE pc
       JOIN courses c ON c.COURSE_ID = pc.COURSE_ID
       JOIN {{ database }}.CDM_LMS.PERSON pe ON pe.ID = pc.PERSON_ID
-      WHERE pc.COURSE_ROLE = 'S' AND pc.ROW_DELETED_TIME IS NULL
-        AND pe.LAST_NAME NOT LIKE '%PreviewUser' AND pe.LAST_NAME NOT LIKE 'bbsupport%'
+      WHERE pc.STUDENT_IND AND pc.ROW_DELETED_TIME IS NULL
+        AND NVL(pe.LAST_NAME, '') NOT LIKE '%PreviewUser' AND NVL(pe.LAST_NAME, '') NOT LIKE 'bbsupport%'
   ),
   joined AS (
       SELECT e.*,
@@ -32,7 +32,7 @@ base_sql: |
              LEAST(100, 100 * NVL(a.PERCENT_ACTIVITY, 0)) AS ACCESS_PCT,
              NVL(a.PERSON_REVIEWED_CONTENT_ITEMS_CNT, 0) AS CONTENT_REVIEWED,
              NVL(a.PERSON_COMPLETED_CONTENT_ITEMS_CNT, 0) AS CONTENT_COMPLETED,
-             NVL(a.TOTAL_COURSE_CONTENT_ITEM_CNT, 0) AS COURSE_CONTENT_ITEMS
+             NVL(MAX(a.TOTAL_COURSE_CONTENT_ITEM_CNT) OVER (PARTITION BY e.COURSE_ID), 0) AS COURSE_CONTENT_ITEMS
       FROM enrollments e
       LEFT JOIN {{ ref('dataset.course_student_activity.v1') }} a ON a.PERSON_COURSE_ID = e.PERSON_COURSE_ID
   )
