@@ -17,7 +17,7 @@ base_sql: |
       JOIN {{ database }}.CDM_MAP.COURSE_ROOM cr ON cr.CLB_ROOM_ID = se.ROOM_ID
       JOIN {{ database }}.CDM_MAP.PERSON mp ON mp.CLB_PERSON_ID = att.PERSON_ID
       JOIN {{ database }}.CDM_LMS.PERSON_COURSE p ON p.PERSON_ID = mp.LMS_PERSON_ID AND p.COURSE_ID = cr.LMS_COURSE_ID
-      WHERE p.COURSE_ROLE NOT IN ('S', 'G')
+      WHERE NOT p.STUDENT_IND AND p.COURSE_ROLE <> 'G'
   ),
   attended AS (
       SELECT cr.LMS_COURSE_ID AS COURSE_ID, p.ID AS PERSON_COURSE_ID, att.SESSION_ID,
@@ -30,7 +30,7 @@ base_sql: |
       JOIN {{ database }}.CDM_MAP.COURSE_ROOM cr ON cr.CLB_ROOM_ID = se.ROOM_ID
       JOIN {{ database }}.CDM_MAP.PERSON mp ON mp.CLB_PERSON_ID = att.PERSON_ID
       JOIN {{ database }}.CDM_LMS.PERSON_COURSE p
-        ON p.PERSON_ID = mp.LMS_PERSON_ID AND p.COURSE_ID = cr.LMS_COURSE_ID AND p.COURSE_ROLE = 'S'
+        ON p.PERSON_ID = mp.LMS_PERSON_ID AND p.COURSE_ID = cr.LMS_COURSE_ID AND p.STUDENT_IND
       GROUP BY cr.LMS_COURSE_ID, p.ID, att.SESSION_ID
   ),
   students AS (

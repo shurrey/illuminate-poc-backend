@@ -735,3 +735,17 @@ def test_course_summary_scopes_every_query_to_the_chosen_course():
 def test_student_hours_per_week_have_a_bin():
     se = CATALOG.datasets["dataset.student_enrollments.v1"]
     assert se.dimension("hours_per_week_bin") is not None and se.dimension("hours_per_week_bin_start") is not None
+
+
+@pytest.mark.parametrize("report_id", sorted(load_reports(REPORTS_DIR)))
+def test_every_visual_that_selects_identity_requires_it(report_id):
+    from semantic_layer.compiler import compile_query
+    report = load_reports(REPORTS_DIR)[report_id]
+    for v in report.visuals():
+        def pii(d, q):
+            ds_id = d.rpartition(":")[0] or (q.get("measures") or [""])[0].rpartition(":")[0]
+            ds = CATALOG.datasets.get(ds_id)
+            dim = ds.dimension(d.rpartition(":")[2]) if ds else None
+            return bool(dim) and ds.is_pii(dim.column)
+        selects = any(pii(d, q) for q in v.queries.values() for d in q.get("dimensions", []))
+        assert v.requires_identity == selects, v.id

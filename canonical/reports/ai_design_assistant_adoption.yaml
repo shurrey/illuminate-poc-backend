@@ -313,3 +313,4 @@ pages:
       - ai_courses
       - ai_items
       - available_ai_items
+    requires_identity: true

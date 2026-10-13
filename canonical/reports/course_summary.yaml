@@ -355,6 +355,7 @@ pages:
       - avg_access_pct
       units:
         avg_access_pct: percent
+    requires_identity: true
 - title: Instructional Practice
   visuals:
   - id: practice_help
@@ -602,6 +603,7 @@ pages:
       - minutes
       - activity_rows
       - days
+    requires_identity: true
 - title: Course Design
   visuals:
   - id: design_help

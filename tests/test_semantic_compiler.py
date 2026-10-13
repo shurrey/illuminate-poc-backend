@@ -540,7 +540,7 @@ def test_social_and_collab_rollups_are_one_row_per_student_enrollment():
     from semantic_layer.catalog import load_catalog
     cat = load_catalog()
     social = build_ctes(cat, ["dataset.student_social_engagement.v1"], "DB")["DS_STUDENT_SOCIAL_ENGAGEMENT_V1"]
-    assert "COURSE_ROLE = 'S'" in social and "SOCIAL_INTERACTIONS_IND = 1" in social and "GROUP BY" in social.upper()
+    assert "STUDENT_IND" in social and "SOCIAL_INTERACTIONS_IND = 1" in social and "GROUP BY" in social.upper()
     assert "'Participating'" in social and "'Reviewing'" in social and "'Inactive'" in social
     collab = build_ctes(cat, ["dataset.student_collab_participation.v1"], "DB")["DS_STUDENT_COLLAB_PARTICIPATION_V1"]
     assert "'No sessions'" in collab and "'Did not participate'" in collab and "LEAST(100" in collab
@@ -573,3 +573,15 @@ def test_student_enrollments_use_the_student_flag_keep_unnamed_students_and_cour
     cte = build_ctes(load_catalog(), [SE], "DB")["DS_STUDENT_ENROLLMENTS_V1"]
     assert "pc.STUDENT_IND" in cte and "NVL(pe.LAST_NAME, '')" in cte
     assert "OVER (PARTITION BY e.COURSE_ID)" in cte
+
+
+def test_social_and_collab_populations_use_the_student_flag_and_skip_deleted_rows():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    sibt = build_ctes(cat, ["dataset.social_interactions_by_type.v1"], "DB")["DS_SOCIAL_INTERACTIONS_BY_TYPE_V1"]
+    assert "ci.ROW_DELETED_TIME IS NULL" in sibt and "p.ROW_DELETED_TIME IS NULL" in sibt and "NVL(pe.LAST_NAME, '')" in sibt
+    assert "STUDENT_IND" in build_ctes(cat, ["dataset.student_social_engagement.v1"], "DB")["DS_STUDENT_SOCIAL_ENGAGEMENT_V1"]
+    cssa = build_ctes(cat, ["dataset.collab_session_student_activity.v1"], "DB")["DS_COLLAB_SESSION_STUDENT_ACTIVITY_V1"]
+    assert "NOT p.STUDENT_IND" in cssa and "p.STUDENT_IND" in cssa.replace("NOT p.STUDENT_IND", "")
+    assert {m.name for m in cat.datasets["dataset.social_interactions_by_type.v1"].measures} >= {
+        "enrollments", "enrollments_who_submitted", "share_enrollments_submitted"}
