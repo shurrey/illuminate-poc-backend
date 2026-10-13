@@ -84,7 +84,8 @@ base_sql: |
       LEFT JOIN counted_grades co ON co.PERSON_COURSE_ID = ap.PERSON_COURSE_ID
   )
   SELECT sb.*, IFF(sb.GRADE_PERCENTAGE IS NULL, 'Not graded', bn.BUCKET_DESC) AS BUCKET_DESC,
-         IFF(sb.GRADE_PERCENTAGE IS NULL, 'Not graded', 'Graded') AS GRADED_STATUS
+         IFF(sb.GRADE_PERCENTAGE IS NULL, 'Not graded', 'Graded') AS GRADED_STATUS,
+         AVG(sb.GRADE_PERCENTAGE) OVER (PARTITION BY sb.COURSE_ID) AS COURSE_AVG_GRADE
   FROM student_bucket sb
   LEFT JOIN bucket_name bn ON bn.BUCKET = sb.BUCKET
 entities:
@@ -105,6 +106,7 @@ measures:
   - {name: graded_enrollments, agg: count_distinct, expr: "IFF(GRADE_PERCENTAGE IS NOT NULL, PERSON_COURSE_ID, NULL)", unit: enrollments}
   - {name: average_grade_percentage, agg: avg, expr: GRADE_PERCENTAGE, unit: percent, synonyms: [average grade, mean grade, gpa]}
   - {name: median_grade_percentage, agg: median, expr: GRADE_PERCENTAGE, unit: percent}
+  - {name: peers_average_grade, agg: avg, expr: COURSE_AVG_GRADE, unit: percent, description: "The course's average grade over its graded students"}
   - {name: min_grade_percentage, agg: min, expr: GRADE_PERCENTAGE, unit: percent}
   - {name: max_grade_percentage, agg: max, expr: GRADE_PERCENTAGE, unit: percent}
   - {name: average_final_grade, agg: avg, expr: "FINAL_GRADE * 100", unit: percent}

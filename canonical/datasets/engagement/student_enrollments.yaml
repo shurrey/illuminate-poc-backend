@@ -37,6 +37,9 @@ base_sql: |
       LEFT JOIN {{ ref('dataset.course_student_activity.v1') }} a ON a.PERSON_COURSE_ID = e.PERSON_COURSE_ID
   )
   SELECT j.*,
+         AVG(MINUTES / 60) OVER (PARTITION BY COURSE_ID) AS COURSE_AVG_HOURS,
+         AVG(ACCESS_PCT) OVER (PARTITION BY COURSE_ID) AS COURSE_AVG_ACCESS_PCT,
+         AVG(INTERACTIONS) OVER (PARTITION BY COURSE_ID) AS COURSE_AVG_INTERACTIONS,
          IFF(MINUTES >= 5, 'Active', 'Inactive') AS ENGAGED,
          CASE WHEN MINUTES < 5 THEN 'Inactive'
               WHEN LAST_ACCESS >= DATEADD(day, -7, CURRENT_DATE()) THEN 'Recently active'
@@ -94,5 +97,8 @@ measures:
   - {name: content_reviewed, agg: sum, expr: CONTENT_REVIEWED, unit: items}
   - {name: content_completed, agg: sum, expr: CONTENT_COMPLETED, unit: items}
   - {name: course_content_items, agg: sum, expr: COURSE_CONTENT_ITEMS, unit: items}
+  - {name: peers_avg_hours, agg: avg, expr: COURSE_AVG_HOURS, unit: hours, description: "Hours in the course per student enrollment, averaged over the course's students"}
+  - {name: peers_avg_access_pct, agg: avg, expr: COURSE_AVG_ACCESS_PCT, unit: percent}
+  - {name: peers_avg_interactions, agg: avg, expr: COURSE_AVG_INTERACTIONS, unit: interactions}
   - {name: content_completion, agg: ratio, numerator: content_completed, denominator: course_content_items, unit: ratio}
 pii_columns: [PERSON_ID, PERSON_COURSE_ID, FIRST_NAME, LAST_NAME, EMAIL, STUDENT_ID]
