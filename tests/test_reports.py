@@ -790,7 +790,7 @@ def test_course_summary_needs_a_course_and_counts_by_role_flags():
 
 def test_student_summary_is_about_one_chosen_student_and_requires_identity():
     report = load_reports()["report.student_summary.v1"]
-    assert report.required_filters == ["student"]
+    assert "student" in report.required_filters
     assert [p.title for p in report.pages] == ["Overview", "Engagement and Performance", "Activity Log"]
     values = {"student": ["123 - Jane Doe"], "course": ["BIO-101 - Biology"], "dates": {"start": "2026-09-01", "end": "2026-09-30"}}
     for v in report.visuals():
@@ -816,3 +816,10 @@ def test_student_summary_reach_is_about_one_chosen_student_and_requires_identity
             assert ignored == [], (v.id, q)
             assert ("dataset.persons.v1:person_id_name", ["123 - Jane Doe"]) in [(f.dimension, f.values) for f in contract.filters], (v.id, q)
     assert "not available" in report.visual("engagement_score_help").text
+
+
+def test_student_summary_requires_its_activity_range_and_says_peers_include_the_student():
+    report = load_reports()["report.student_summary.v1"]
+    assert report.required_filters == ["student", "dates"]
+    assert "course average" in report.visual("overview_help").text
+    assert "last year" not in report.visual("log_help").text

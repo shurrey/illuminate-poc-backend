@@ -622,3 +622,21 @@ def test_student_grade_leaves_out_deleted_enrollments():
     from semantic_layer.catalog import load_catalog
     cte = build_ctes(load_catalog(), ["dataset.student_grade.v1"], "DB")["DS_STUDENT_GRADE_V1"]
     assert "pc.STUDENT_IND = TRUE AND pc.ROW_DELETED_TIME IS NULL" in cte
+
+
+def test_hour_grains_keep_the_time_of_day():
+    sql = _outer(_real(measures=["dataset.activity_log.v1:events"], dimensions=["event_time__hour"],
+                       time_range={"dimension": "event_time", "start": "2026-09-01", "end": "2026-09-30"}))
+    assert "CAST(DATE_TRUNC('hour', EVENT_TIME) AS TIMESTAMPNTZ)" in sql or "AS TIMESTAMP_NTZ)" in sql
+    day = _outer(_real(measures=["dataset.activity_log.v1:events"], dimensions=["event_time__day"],
+                       time_range={"dimension": "event_time", "start": "2026-09-01", "end": "2026-09-30"}))
+    assert "AS DATE)" in day
+
+
+def test_person_chooser_labels_are_unique_and_placeholder_attempts_are_not_submissions():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    persons = build_ctes(cat, ["dataset.persons.v1"], "DB")["DS_PERSONS_V1"]
+    assert "COUNT(*) OVER (PARTITION BY" in persons and "PERSON_ID" in persons
+    items = build_ctes(cat, ["dataset.student_grade_items.v1"], "DB")["DS_STUDENT_GRADE_ITEMS_V1"]
+    assert "> '1970-01-01'" in items

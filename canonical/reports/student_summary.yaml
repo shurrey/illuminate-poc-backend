@@ -22,15 +22,16 @@ filters:
   default: last_30_days
 required_filters:
 - student
+- dates
 pages:
 - title: Overview
   visuals:
   - id: overview_help
     type: text
     title: Student overview
-    text: How the chosen student is engaging and performing in their courses. Peer figures are the averages of the other students
-      in the same course. The activity date range (last 30 days by default) narrows the activity log, the access heat map
-      and weekly activity.
+    text: How the chosen student is engaging and performing in their courses. Peer figures are the course average over all
+      its students, the chosen student included. The activity date range (last 30 days by default) narrows the activity log,
+      the access heat map and weekly activity.
   - id: student_info
     type: table
     title: Student information
@@ -163,23 +164,6 @@ pages:
       - avg_hours
       - peers_avg_hours
       horizontal: true
-    requires_identity: true
-  - id: weekly_activity
-    type: line
-    title: How much is the student active each week?
-    queries:
-      main:
-        measures:
-        - dataset.activity_log.v1:events
-        dimensions:
-        - event_time__week
-        order_by:
-        - field: event_time__week
-          direction: asc
-        limit: 400
-    encode:
-      x: event_time__week
-      y: events
     requires_identity: true
 - title: Engagement and Performance
   visuals:
@@ -341,7 +325,8 @@ pages:
   - id: log_help
     type: text
     title: What is the student activity within courses?
-    text: 'Every recorded event for the student in the last year: logins, course, item and tool access, submissions and more.'
+    text: 'The student''s recorded events in the activity date range: logins, course, item and tool access, submissions and
+      more. The access heat map counts the days with activity in each weekday and time slot.'
   - id: events_by_type
     type: bar
     title: What's the student's activity by event type?
