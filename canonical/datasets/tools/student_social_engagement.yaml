@@ -1,0 +1,48 @@
+id: dataset.student_social_engagement.v1
+display_name: Student engagement with social tools
+description: >
+  One row per student enrollment in courses with social tools (discussions, blogs, journals, wikis
+  and other social interaction types): interactions (access rows) and contributions (submissions)
+  across those tools, items available and used, and engagement: Participating (contributed),
+  Reviewing (interacted without contributing) or Inactive. Statistics are per enrollment.
+grain: one row per student enrollment
+domain: tools
+source: CDM_LMS.COURSE_ITEM, CDM_LMS.SUBMISSION, CDM_LMS.COURSE_ACTIVITY
+depends_on: [dataset.social_interactions_by_type.v1]
+base_sql: |
+  WITH rows_ AS (
+      SELECT PERSON_COURSE_ID, ANY_VALUE(COURSE_ID) AS COURSE_ID, ANY_VALUE(PERSON_ID) AS PERSON_ID,
+             SUM(ACCESS_ROWS) AS INTERACTIONS, SUM(SUBMISSIONS) AS CONTRIBUTIONS,
+             SUM(ITEMS_AVAILABLE) AS ITEMS_AVAILABLE, SUM(ITEMS_USED) AS ITEMS_USED
+      FROM {{ ref('dataset.social_interactions_by_type.v1') }}
+      WHERE COURSE_ROLE = 'S' AND SOCIAL_INTERACTIONS_IND = 1
+      GROUP BY PERSON_COURSE_ID
+  )
+  SELECT r.*,
+         CASE WHEN CONTRIBUTIONS > 0 THEN 'Participating' WHEN INTERACTIONS > 0 THEN 'Reviewing' ELSE 'Inactive' END AS ENGAGEMENT,
+         IFF(INTERACTIONS >= 200, '200+', CONCAT(TO_VARCHAR(FLOOR(INTERACTIONS / 10) * 10), '-', TO_VARCHAR(FLOOR(INTERACTIONS / 10) * 10 + 9))) AS INTERACTIONS_BIN,
+         LEAST(FLOOR(INTERACTIONS / 10) * 10, 200) AS INTERACTIONS_BIN_START
+  FROM rows_ r
+entities:
+  - {name: person_course, column: PERSON_COURSE_ID, type: primary}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: engagement, column: ENGAGEMENT, type: categorical, description: "Participating (contributed), Reviewing (interacted only) or Inactive"}
+  - {name: interactions_bin, column: INTERACTIONS_BIN, type: categorical, description: "Interactions in 10s ('0-9' ... '200+'); sort by interactions_bin_start"}
+  - {name: interactions_bin_start, column: INTERACTIONS_BIN_START, type: numeric}
+measures:
+  - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
+  - {name: active_enrollments, agg: count_distinct, expr: "IFF(ENGAGEMENT <> 'Inactive', PERSON_COURSE_ID, NULL)", unit: enrollments}
+  - {name: participating_enrollments, agg: count_distinct, expr: "IFF(ENGAGEMENT = 'Participating', PERSON_COURSE_ID, NULL)", unit: enrollments}
+  - {name: reviewing_enrollments, agg: count_distinct, expr: "IFF(ENGAGEMENT = 'Reviewing', PERSON_COURSE_ID, NULL)", unit: enrollments}
+  - {name: inactive_enrollments, agg: count_distinct, expr: "IFF(ENGAGEMENT = 'Inactive', PERSON_COURSE_ID, NULL)", unit: enrollments}
+  - {name: interactions, agg: sum, expr: INTERACTIONS, unit: interactions}
+  - {name: contributions, agg: sum, expr: CONTRIBUTIONS, unit: contributions}
+  - {name: median_interactions, agg: median, expr: INTERACTIONS, unit: interactions}
+  - {name: min_interactions, agg: min, expr: INTERACTIONS, unit: interactions}
+  - {name: max_interactions, agg: max, expr: INTERACTIONS, unit: interactions}
+  - {name: items_available, agg: sum, expr: ITEMS_AVAILABLE, unit: items}
+  - {name: items_used, agg: sum, expr: ITEMS_USED, unit: items}
+  - {name: share_of_items_used, agg: ratio, numerator: items_used, denominator: items_available, unit: ratio}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]

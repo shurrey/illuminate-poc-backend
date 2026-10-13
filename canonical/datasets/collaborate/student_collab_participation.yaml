@@ -1,0 +1,56 @@
+id: dataset.student_collab_participation.v1
+display_name: Student participation in Collaborate sessions
+description: >
+  One row per active student enrollment: the course's Collaborate sessions (run by staff and attended
+  by at least one student), how many of them and how many minutes the student attended, and
+  participation, the share of the course's session time the student attended (0-100, in 10-point
+  bins). Status is Participated, Did not participate, or No sessions (the course had none).
+grain: one row per active student enrollment
+domain: collaborate
+source: CDM_CLB.ATTENDANCE, CDM_CLB.SESSION
+depends_on: [dataset.collab_session_student_activity.v1]
+base_sql: |
+  WITH att AS (
+      SELECT * FROM {{ ref('dataset.collab_session_student_activity.v1') }}
+  ),
+  course_sessions AS (
+      SELECT COURSE_ID, COUNT(*) AS COURSE_SESSIONS, SUM(SESSION_MIN) AS COURSE_SESSION_MIN
+      FROM (SELECT DISTINCT COURSE_ID, SESSION_ID, SESSION_MIN FROM att WHERE SESSION_ID IS NOT NULL)
+      GROUP BY COURSE_ID
+  ),
+  enrollment AS (
+      SELECT PERSON_COURSE_ID, ANY_VALUE(COURSE_ID) AS COURSE_ID, ANY_VALUE(PERSON_ID) AS PERSON_ID,
+             COUNT(SESSION_ID) AS SESSIONS_ATTENDED, SUM(ATTENDED_MIN) AS ATTENDED_MIN, MAX(LAST_JOIN_TIME) AS LAST_JOIN
+      FROM att
+      GROUP BY PERSON_COURSE_ID
+  )
+  SELECT e.*, NVL(cs.COURSE_SESSIONS, 0) AS COURSE_SESSIONS, NVL(cs.COURSE_SESSION_MIN, 0) AS COURSE_SESSION_MIN,
+         IFF(NVL(cs.COURSE_SESSION_MIN, 0) > 0, LEAST(100, 100 * e.ATTENDED_MIN / cs.COURSE_SESSION_MIN), NULL) AS PARTICIPATION_PCT,
+         CASE WHEN NVL(cs.COURSE_SESSIONS, 0) = 0 THEN 'No sessions'
+              WHEN e.SESSIONS_ATTENDED > 0 THEN 'Participated' ELSE 'Did not participate' END AS STATUS,
+         IFF(NVL(cs.COURSE_SESSION_MIN, 0) > 0,
+             IFF(LEAST(100, 100 * e.ATTENDED_MIN / cs.COURSE_SESSION_MIN) >= 90, '90-100',
+                 CONCAT(TO_VARCHAR(FLOOR(LEAST(100, 100 * e.ATTENDED_MIN / cs.COURSE_SESSION_MIN) / 10) * 10), '-',
+                        TO_VARCHAR(FLOOR(LEAST(100, 100 * e.ATTENDED_MIN / cs.COURSE_SESSION_MIN) / 10) * 10 + 10))),
+             NULL) AS PARTICIPATION_BIN
+  FROM enrollment e
+  LEFT JOIN course_sessions cs ON cs.COURSE_ID = e.COURSE_ID
+entities:
+  - {name: person_course, column: PERSON_COURSE_ID, type: primary}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: status, column: STATUS, type: categorical, description: "Participated, Did not participate, or No sessions"}
+  - {name: participation_bin, column: PARTICIPATION_BIN, type: categorical, description: "Participation in 10-point steps ('0-10' ... '90-100'); empty when the course had no sessions"}
+  - {name: last_join, column: LAST_JOIN, type: time, grains: [day, week, month]}
+measures:
+  - {name: enrollments, agg: count_distinct, expr: PERSON_COURSE_ID, unit: enrollments}
+  - {name: participating_enrollments, agg: count_distinct, expr: "IFF(STATUS = 'Participated', PERSON_COURSE_ID, NULL)", unit: enrollments}
+  - {name: course_sessions, agg: max, expr: COURSE_SESSIONS, unit: sessions, description: "Per course: sessions held"}
+  - {name: sessions_attended, agg: sum, expr: SESSIONS_ATTENDED, unit: sessions}
+  - {name: attended_minutes, agg: sum, expr: ATTENDED_MIN, unit: minutes}
+  - {name: participation_pct, agg: avg, expr: PARTICIPATION_PCT, unit: percent, description: "Share of the course's session time attended, averaged over enrollments"}
+  - {name: median_participation_pct, agg: median, expr: PARTICIPATION_PCT, unit: percent}
+  - {name: min_participation_pct, agg: min, expr: PARTICIPATION_PCT, unit: percent}
+  - {name: max_participation_pct, agg: max, expr: PARTICIPATION_PCT, unit: percent}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]

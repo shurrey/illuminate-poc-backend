@@ -534,3 +534,18 @@ def test_student_enrollments_keep_inactive_enrollments_and_hide_identity():
                                                          "min_access_pct", "median_interactions", "recently_active_enrollments")],
                        dimensions=["engaged", "recency", "access_bin", "interactions_bin", "dataset.courses.v1:ih_level_1"]))
     assert "MEDIAN(" in sql and "LEFT JOIN DS_COURSES_V1" in sql
+
+
+def test_social_and_collab_rollups_are_one_row_per_student_enrollment():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    social = build_ctes(cat, ["dataset.student_social_engagement.v1"], "DB")["DS_STUDENT_SOCIAL_ENGAGEMENT_V1"]
+    assert "COURSE_ROLE = 'S'" in social and "SOCIAL_INTERACTIONS_IND = 1" in social and "GROUP BY" in social.upper()
+    assert "'Participating'" in social and "'Reviewing'" in social and "'Inactive'" in social
+    collab = build_ctes(cat, ["dataset.student_collab_participation.v1"], "DB")["DS_STUDENT_COLLAB_PARTICIPATION_V1"]
+    assert "'No sessions'" in collab and "'Did not participate'" in collab and "LEAST(100" in collab
+    for ds, measures in (("dataset.student_social_engagement.v1", ("enrollments", "median_interactions", "min_interactions", "max_interactions")),
+                         ("dataset.student_collab_participation.v1", ("enrollments", "median_participation_pct", "max_participation_pct"))):
+        assert "MEDIAN(" in _outer(_real(measures=[f"{ds}:{m}" for m in measures], dimensions=["dataset.courses.v1:ih_level_1"]))
+    sibt = cat.datasets["dataset.social_interactions_by_type.v1"]
+    assert {m.name for m in sibt.measures} >= {"median_access_rows", "min_access_rows", "max_access_rows"}
