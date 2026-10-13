@@ -841,7 +841,7 @@ async def semantic_catalog(
 async def semantic_query(contract: QueryContract, authorization: Optional[str] = Header(None)):
     """Compile a semantic query contract and run it through the execution guard."""
     compiled = _compile_contract(contract, authorization)
-    result = await _execute(compiled)
+    result = await _execute(compiled, _get_user_from_token(authorization))
     from fastapi.responses import JSONResponse
 
     # jsonable_encoder turns Snowflake's Decimal into numbers; response-model serialisation makes them strings.
@@ -853,14 +853,19 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
     }))
 
 
-async def _execute(compiled) -> dict:
-    """Run compiled SQL through the guard; the named result, or a 502 carrying the SQL."""
+async def _execute(compiled, user: Optional[dict] = None) -> dict:
+    """Run compiled SQL through the guard, with the caller's identity rights and every dataset's
+    declared PII columns; the named result, or a 502 carrying the SQL."""
     import asyncio
-    from snowflake_client import validate_and_execute
+    import snowflake_client
+    from roles import role_allows_identity
     from semantic_layer.compiler import named_result
 
+    allow_identity = bool(user) and role_allows_identity(user)
+    extra_pii = frozenset(c.upper() for ds in _catalog_for(user)[0].datasets.values() for c in ds.pii_columns) if user else frozenset()
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, lambda: validate_and_execute(compiled.sql, compiled=True))
+    result = await loop.run_in_executor(None, lambda: snowflake_client.validate_and_execute(
+        compiled.sql, compiled=True, allow_identity=allow_identity, extra_pii=extra_pii))
     if "error" in result:
         logger.error("Semantic query failed: %s", result["error"])
         message = "The warehouse could not run this query." if result.get("warehouse_error") else result["error"]
@@ -974,7 +979,7 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
                 "order_by": [o for o in contract.order_by if o.field in kept_names or not _is_identity(o.field, catalog)],
             })
     compiled = _compile_for(contract, user)
-    result = await _execute(compiled)
+    result = await _execute(compiled, user)
     from fastapi.responses import JSONResponse
 
     renames = output_renames(report, visual, request.query, request.values)

@@ -116,3 +116,16 @@ def test_run_renames_the_child_node_column_to_its_alias(client, monkeypatch):
     body = client.post("/api/v1/reports/report.nodes.v1/run", headers=AUTH,
                        json={"visual": "by_node", "query": "main", "values": {"ih1": ["Arts"]}}).json()
     assert body["columns"] == ["node", "courses"] and body["rows"] == [{"node": "Music", "courses": 3}]
+
+
+def test_identity_reaches_authors_through_the_guard_and_never_viewers(client, monkeypatch):
+    import snowflake_client as sc
+    seen = []
+    monkeypatch.setattr(sc, "validate_and_execute",
+                        lambda sql, params=None, *, compiled=False, allow_identity=False, extra_pii=frozenset():
+                        seen.append((allow_identity, "PERSON_EMAIL" in extra_pii)) or {"columns": ["PERSON_EMAIL", "STUDENTS"], "rows": []})
+    as_role(monkeypatch, "illuminate-authors")
+    assert run(client, "roster").status_code == 200
+    as_role(monkeypatch)
+    run(client, "roster_by_term")
+    assert seen == [(True, True), (False, True)]
