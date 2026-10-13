@@ -616,3 +616,9 @@ def test_student_summary_datasets_carry_peer_averages_and_grade_items():
     for m in ("peers_avg_hours", "peers_avg_access_pct", "peers_avg_interactions"):
         assert cat.datasets["dataset.student_enrollments.v1"].measure(m) is not None, m
     assert cat.datasets["dataset.student_grade.v1"].measure("peers_average_grade") is not None
+
+
+def test_student_grade_leaves_out_deleted_enrollments():
+    from semantic_layer.catalog import load_catalog
+    cte = build_ctes(load_catalog(), ["dataset.student_grade.v1"], "DB")["DS_STUDENT_GRADE_V1"]
+    assert "pc.STUDENT_IND = TRUE AND pc.ROW_DELETED_TIME IS NULL" in cte
