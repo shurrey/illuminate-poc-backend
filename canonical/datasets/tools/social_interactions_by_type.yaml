@@ -84,6 +84,9 @@ measures:
   - {name: people_who_submitted, agg: count_distinct, expr: "IFF(ITEMS_SUBMITTED > 0, PERSON_ID, NULL)", unit: people}
   - {name: share_who_submitted, agg: ratio, numerator: people_who_submitted, denominator: people, unit: ratio}
   - {name: access_rows, agg: sum, expr: ACCESS_ROWS, unit: accesses}
+  - {name: median_access_rows, agg: median, expr: ACCESS_ROWS, unit: accesses, description: "Per enrollment and type"}
+  - {name: min_access_rows, agg: min, expr: ACCESS_ROWS, unit: accesses}
+  - {name: max_access_rows, agg: max, expr: ACCESS_ROWS, unit: accesses}
   - {name: submissions, agg: sum, expr: SUBMISSIONS, unit: submissions}
   - {name: items_used, agg: sum, expr: ITEMS_USED, unit: items}
   - {name: items_available, agg: sum, expr: ITEMS_AVAILABLE, unit: items, description: "The course's items of the type, summed per enrollment"}
