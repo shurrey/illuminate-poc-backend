@@ -1,0 +1,296 @@
+id: report.student_summary_reach.v1
+title: Student Summary (Reach)
+area: learning
+description: One student's projected grades, timeliness, engagement with content and course access, for advising.
+filters:
+- id: student
+  label: Student ID / name
+  control: select
+  dimension: dataset.persons.v1:person_id_name
+- id: course
+  label: Course ID / name
+  control: multi_select
+  dimension: dataset.courses.v1:course_id_name
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+- id: dates
+  label: Activity date range
+  control: date_range
+  time_dimension: dataset.course_tool_activity.v1:activity_date
+  default: last_30_days
+required_filters:
+- student
+pages:
+- title: Overview
+  visuals:
+  - id: reach_help
+    type: text
+    title: Student summary
+    text: How the chosen student is doing across their courses. Projected grades are the student's current grade in each course.
+      Peer figures are the averages of the other students in the same course. The activity date range (last 30 days by default)
+      narrows weekly time and the access heat map.
+  - id: lowest_grade
+    type: kpi
+    title: What is the lowest projected final grade?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:min_grade_percentage
+        filters_ignored:
+        - dates
+    encode:
+      value: min_grade_percentage
+      unit: percent
+    requires_identity: true
+  - id: courses_below_70
+    type: kpi
+    title: How many courses have a projected final grade below 70%?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:graded_enrollments
+        filters:
+        - dimension: grade_percentage_value
+          op: lt
+          values:
+          - 70
+        filters_ignored:
+        - dates
+    encode:
+      value: graded_enrollments
+    requires_identity: true
+  - id: overdue
+    type: kpi
+    title: How many assessments are currently overdue?
+    queries:
+      main:
+        measures:
+        - dataset.student_assignments.v1:overdue
+        filters_ignored:
+        - dates
+    encode:
+      value: overdue
+    requires_identity: true
+  - id: engagement_score_help
+    type: text
+    title: What is the student's engagement score?
+    text: Engagement scores are not available in this data, so the engagement score, its trend and its comparison with course
+      performance are not shown.
+  - id: student_info
+    type: table
+    title: Student information
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:hours
+        - dataset.student_enrollments.v1:accesses
+        dimensions:
+        - dataset.persons.v1:person_institution_id
+        - dataset.persons.v1:person_first_name
+        - dataset.persons.v1:person_last_name
+        - dataset.persons.v1:person_mail
+        limit: 5
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - person_institution_id
+      - person_first_name
+      - person_last_name
+      - person_mail
+      - hours
+      - accesses
+    requires_identity: true
+  - id: content_by_course
+    type: bar
+    title: What's the student's engagement with content per course?
+    queries:
+      main:
+        measures:
+        - dataset.student_item_tool_activity.v1:item_interactions
+        - dataset.student_item_tool_activity.v1:tool_interactions
+        dimensions:
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_name
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      x: course_name
+      y:
+      - item_interactions
+      - tool_interactions
+      stacked: true
+      horizontal: true
+    requires_identity: true
+  - id: timeliness_by_course
+    type: bar
+    title: How timely does this student complete assessments per course?
+    queries:
+      main:
+        measures:
+        - dataset.student_assignments.v1:on_time
+        - dataset.student_assignments.v1:late
+        - dataset.student_assignments.v1:overdue
+        - dataset.student_assignments.v1:upcoming
+        dimensions:
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_name
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      x: course_name
+      y:
+      - on_time
+      - late
+      - overdue
+      - upcoming
+      stacked: true
+      horizontal: true
+    requires_identity: true
+  - id: grade_vs_peers
+    type: bar
+    title: What's the student's projected grade in each course compared to their peers?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:average_grade_percentage
+        - dataset.student_grade.v1:peers_average_grade
+        dimensions:
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_name
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      x: course_name
+      y:
+      - average_grade_percentage
+      - peers_average_grade
+      horizontal: true
+    requires_identity: true
+  - id: weekly_minutes
+    type: line
+    title: How much time was spent in courses each week?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:minutes
+        dimensions:
+        - activity_date__week
+        order_by:
+        - field: activity_date__week
+          direction: asc
+        limit: 100
+        time_dimension: activity_date
+    encode:
+      x: activity_date__week
+      y: minutes
+    requires_identity: true
+  - id: access_heat
+    type: heatmap
+    title: When does the student typically access their courses?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:days
+        dimensions:
+        - day_of_week
+        - hour_group
+        - hour_group_start
+        limit: 100
+        time_dimension: activity_date
+    encode:
+      x: hour_group
+      y: day_of_week
+      value: days
+      x_sort: hour_group_start
+      y_order:
+      - Sun
+      - Mon
+      - Tue
+      - Wed
+      - Thu
+      - Fri
+      - Sat
+    requires_identity: true
+  - id: course_details
+    type: table
+    title: Additional course details
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:course_content_items
+        - dataset.student_enrollments.v1:content_completed
+        - dataset.student_enrollments.v1:interactions
+        - dataset.student_enrollments.v1:hours
+        dimensions:
+        - dataset.courses.v1:term_name
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - recency
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - term_name
+      - course_number
+      - course_name
+      - recency
+      - course_content_items
+      - content_completed
+      - interactions
+      - hours
+    requires_identity: true
+  - id: assessment_details
+    type: table
+    title: Additional assessment details
+    queries:
+      main:
+        measures:
+        - dataset.student_grade_items.v1:score
+        - dataset.student_grade_items.v1:peers_score
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - item_name
+        - item_type_name
+        - status
+        - due_time__day
+        - attempted_time__day
+        order_by:
+        - field: course_number
+          direction: asc
+        - field: due_time__day
+          direction: asc
+        limit: 1000
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - item_name
+      - item_type_name
+      - status
+      - due_time__day
+      - attempted_time__day
+      - score
+      - peers_score
+      units:
+        score: percent
+        peers_score: percent
+    requires_identity: true
