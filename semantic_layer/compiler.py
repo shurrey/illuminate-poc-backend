@@ -365,9 +365,10 @@ def _group_query(base: Dataset, selections: list, contract: QueryContract, catal
         col = column(target, dim.column)
         node = col
         if grain:
-            # DATE keeps grained keys comparable across datasets whose time columns are DATE vs TIMESTAMP_TZ.
+            # DATE keeps grained keys comparable across datasets whose time columns are DATE vs TIMESTAMP_TZ;
+            # an hour keeps its time of day.
             node = exp.Cast(this=exp.Anonymous(this="DATE_TRUNC", expressions=[exp.Literal.string(grain), col]),
-                            to=exp.DataType.build("DATE"))
+                            to=exp.DataType.build("TIMESTAMP_NTZ" if grain == "hour" else "DATE"))
         select.append(exp.alias_(node, _output_name(ref)))
 
     for out_name, _, measure, metric in selections:

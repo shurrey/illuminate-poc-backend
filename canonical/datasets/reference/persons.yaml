@@ -9,11 +9,17 @@ domain: reference
 complete: true
 source: CDM_LMS.PERSON
 base_sql: |
-  SELECT pe.ID AS PERSON_ID, pe.FIRST_NAME, pe.LAST_NAME, pe.EMAIL,
-         COALESCE(pe.STAGE:student_id, pe.STAGE:user_id, pe.STAGE:batch_uid, pe.SOURCE_ID)::STRING AS INSTITUTION_ID,
-         CONCAT(NVL(COALESCE(pe.STAGE:student_id, pe.STAGE:user_id, pe.STAGE:batch_uid, pe.SOURCE_ID)::STRING, '-'), ' - ',
-                TRIM(CONCAT(NVL(pe.FIRST_NAME, ''), ' ', NVL(pe.LAST_NAME, '')))) AS PERSON_ID_NAME
-  FROM {{ database }}.CDM_LMS.PERSON pe
+  WITH labelled AS (
+      SELECT pe.ID AS PERSON_ID, pe.FIRST_NAME, pe.LAST_NAME, pe.EMAIL,
+             COALESCE(pe.STAGE:student_id, pe.STAGE:user_id, pe.STAGE:batch_uid, pe.SOURCE_ID)::STRING AS INSTITUTION_ID,
+             CONCAT(NVL(COALESCE(pe.STAGE:student_id, pe.STAGE:user_id, pe.STAGE:batch_uid, pe.SOURCE_ID)::STRING, '-'), ' - ',
+                    TRIM(CONCAT(NVL(pe.FIRST_NAME, ''), ' ', NVL(pe.LAST_NAME, '')))) AS LABEL
+      FROM {{ database }}.CDM_LMS.PERSON pe
+  )
+  -- Labels shared by several people get the person's internal id so choosing one never merges two.
+  SELECT PERSON_ID, FIRST_NAME, LAST_NAME, EMAIL, INSTITUTION_ID,
+         IFF(COUNT(*) OVER (PARTITION BY LABEL) > 1, CONCAT(LABEL, ' (', PERSON_ID, ')'), LABEL) AS PERSON_ID_NAME
+  FROM labelled
 entities:
   - {name: person, column: PERSON_ID, type: primary}
 dimensions:

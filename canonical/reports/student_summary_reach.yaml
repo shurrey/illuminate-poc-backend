@@ -29,8 +29,8 @@ pages:
     type: text
     title: Student summary
     text: How the chosen student is doing across their courses. Projected grades are the student's current grade in each course.
-      Peer figures are the averages of the other students in the same course. The activity date range (last 30 days by default)
-      narrows weekly time and the access heat map.
+      Peer figures are the course average over all its students, the chosen student included. The activity date range (last
+      30 days by default) narrows weekly time and the access heat map.
   - id: lowest_grade
     type: kpi
     title: What is the lowest projected final grade?
