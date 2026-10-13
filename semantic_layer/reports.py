@@ -390,7 +390,7 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
                     raise ValueError(f"date_filter {spec.date_filter!r} is not one of the report's date ranges {date_ids}")
                 if spec.measure_from:
                     _check_measure_from(report, spec)
-                if not spec.child_of and not spec.measure_from:
+                if not spec.child_of and not spec.measure_from and not _needs_time_range(contract, catalog):
                     compile_query(contract, catalog, database, allow_identity=True)
                 merged, ignored = merged_contract(report, v, name, sample, catalog, database)
                 compile_query(merged, catalog, database, allow_identity=True)
@@ -421,6 +421,13 @@ def validate_report(report: Report, catalog: Catalog, database: str = _VALIDATIO
         if f.id in sample and f.id not in applied:
             problems.append(f"filter {f.id}: no visual can apply it")
     return problems
+
+
+def _needs_time_range(contract: QueryContract, catalog: Catalog) -> bool:
+    """True when the query's base dataset only compiles with a time range, which the date filter supplies."""
+    ref = (contract.measures or [""])[0]
+    ds = catalog.datasets.get(ref.rpartition(":")[0])
+    return bool(ds and ds.required_time_range)
 
 
 def _check_measure_from(report: Report, spec: QuerySpec) -> None:

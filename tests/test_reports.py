@@ -748,7 +748,14 @@ def test_every_visual_that_selects_identity_requires_it(report_id):
             dim = ds.dimension(d.rpartition(":")[2]) if ds else None
             return bool(dim) and ds.is_pii(dim.column)
         selects = any(pii(d, q) for q in v.queries.values() for d in q.get("dimensions", []))
-        assert v.requires_identity == selects, v.id
+        about_a_person = any(f.id in report.required_filters and ":" in (f.dimension or "")
+                             and CATALOG.datasets[f.dimension.rpartition(":")[0]].is_pii(
+                                 CATALOG.datasets[f.dimension.rpartition(":")[0]].dimension(f.dimension.rpartition(":")[2]).column)
+                             for f in report.filters)
+        if selects:
+            assert v.requires_identity, v.id
+        elif v.requires_identity:
+            assert about_a_person, v.id
 
 
 def test_student_performance_applies_filters_and_the_boundary_only_to_boundary_queries():
@@ -779,3 +786,18 @@ def test_course_summary_needs_a_course_and_counts_by_role_flags():
     from semantic_layer.compiler import build_ctes
     cte = build_ctes(CATALOG, ["dataset.course_teaching_summary.v1"], "DB")["DS_COURSE_TEACHING_SUMMARY_V1"]
     assert "p.INSTRUCTOR_MINUTES / p.ACTIVE_INSTRUCTORS" in cte
+
+
+def test_student_summary_is_about_one_chosen_student_and_requires_identity():
+    report = load_reports()["report.student_summary.v1"]
+    assert report.required_filters == ["student"]
+    assert [p.title for p in report.pages] == ["Overview", "Engagement and Performance", "Activity Log"]
+    values = {"student": ["123 - Jane Doe"], "course": ["BIO-101 - Biology"], "dates": {"start": "2026-09-01", "end": "2026-09-30"}}
+    for v in report.visuals():
+        if v.type == "text":
+            continue
+        assert v.requires_identity, v.id
+        for q in v.queries:
+            contract, ignored = merged_contract(report, v, q, values, CATALOG)
+            assert ignored == [], (v.id, q)
+            assert ("dataset.persons.v1:person_id_name", ["123 - Jane Doe"]) in [(f.dimension, f.values) for f in contract.filters], (v.id, q)
