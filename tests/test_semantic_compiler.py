@@ -585,3 +585,15 @@ def test_social_and_collab_populations_use_the_student_flag_and_skip_deleted_row
     assert "NOT p.STUDENT_IND" in cssa and "p.STUDENT_IND" in cssa.replace("NOT p.STUDENT_IND", "")
     assert {m.name for m in cat.datasets["dataset.social_interactions_by_type.v1"].measures} >= {
         "enrollments", "enrollments_who_submitted", "share_enrollments_submitted"}
+
+
+def test_student_grades_expose_the_grade_value_band_order_and_statistics():
+    from semantic_layer.catalog import load_catalog
+    sg = load_catalog().datasets["dataset.student_grade.v1"]
+    for name in ("grade_percentage_value", "grade_band_order", "graded_status"):
+        assert sg.dimension(name) is not None, name
+    assert {m.name for m in sg.measures} >= {"min_grade_percentage", "max_grade_percentage"}
+    sql = _outer(_real(measures=["dataset.student_grade.v1:enrollments", "dataset.student_grade.v1:max_grade_percentage"],
+                       dimensions=["graded_status", "grade_band", "grade_band_order"],
+                       filters=[{"dimension": "grade_percentage_value", "op": "gte", "values": [50]}]))
+    assert "MAX(GRADE_PERCENTAGE)" in sql and "GRADE_PERCENTAGE >= 50" in sql
