@@ -121,14 +121,43 @@ The first report's PR in F removes the mock reports (`mockReports`, `mockChartDa
 
 ## Phase 3: Instructional Practices
 
-**In progress.** Plan `2026-10-10-standard-reports-phase-3-instructional-practices.md`; B #155, #157–#160. Each
-page reads a course-grain dataset, so per-course statistics are plain aggregates and bins are SQL dimensions.
+**Done.** Plan `2026-10-10-standard-reports-phase-3-instructional-practices.md`; B #155, #157–#160, #162. Each page
+reads a course-grain dataset, so per-course statistics are plain aggregates and bins are SQL dimensions. Deferred
+minors:
+- a blank access bin for courses with no start week;
+- class-size bins have no cap;
+- per-tool medians include zero rows;
+- interactions and contributions count over different windows;
+- Inactive means no access rather than under 5 minutes.
 
 
 P4 (group by IH node) · P10 (CRA instructor definitions) · `course_items` (P11) · `course_groups` (P16) ·
 `collab_course_media` (P17) · bin transform · the report.
 
 ## Phase 4: Student Engagement, Social & Collaborative, Course Summary
+
+**Done:**
+- **Student Engagement.** Plan `2026-10-12-standard-reports-phase-4a-student-engagement.md`; B #163–#165, #168.
+- **Social & Collaborative Engagement.** Plan `2026-10-12-standard-reports-phase-4b-social-collaborative.md`;
+  B #166–#167, #170.
+- **Course Summary.** Plan `2026-10-12-standard-reports-phase-4c-course-summary.md`; B #169.
+
+Along the way:
+- **`persons`** (P6) arrived early;
+- **the execution guard** lets governed queries return identity to Admin, Author and Developer, while freehand
+  SQL stays absolute and Viewers filter PII by exact value only;
+- **per-person visuals** are unavailable to Viewers.
+
+Deferred minors:
+- assessment pages keep preview accounts;
+- "active" differs between pages;
+- courses with no course weeks show students inactive;
+- `_execute` rebuilds the catalog per call;
+- chat doesn't pass declared PII to the guard;
+- social tool statistics include inactive enrollments;
+- participation bin labels overlap;
+- social data covers only courses with submission-taking types.
+
 
 `course_enrollments` (P8) · P19 (two-stage aggregation) · `course_access_by_slot` (P14) ·
 `enrollment_daily_grade_activity` (P18) · the per-dataset definitions for CSA, SCM, SA, SOC, CSSA, CITA, SITA,
