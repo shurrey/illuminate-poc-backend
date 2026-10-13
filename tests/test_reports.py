@@ -718,3 +718,20 @@ def test_assessment_timeliness_counts_grades_towards_the_final_grade_and_student
             if any(m.startswith("dataset.student_assignments.v1:") for m in q.get("measures", [])):
                 assert {"dimension": "counts_towards_grade", "op": "eq", "values": [True]} in q.get("filters", []), v.id
     assert "dataset.student_enrollments.v1:avg_access_pct" in report.visual("access_by_student").queries["main"]["measures"]
+
+
+def test_course_summary_scopes_every_query_to_the_chosen_course():
+    report = load_reports()["report.course_summary.v1"]
+    assert [p.title for p in report.pages] == ["Course Overview", "Student Engagement and Performance",
+                                               "Instructional Practice", "Course Design"]
+    values = {"course": ["BIO-101 - Biology"], "dates": {"start": "2026-09-01", "end": "2026-10-31"}}
+    for v in report.visuals():
+        for q in v.queries:
+            contract, ignored = merged_contract(report, v, q, values, CATALOG)
+            assert ignored == [], (v.id, q)
+            assert ("dataset.courses.v1:course_id_name", ["BIO-101 - Biology"]) in [(f.dimension, f.values) for f in contract.filters], (v.id, q)
+
+
+def test_student_hours_per_week_have_a_bin():
+    se = CATALOG.datasets["dataset.student_enrollments.v1"]
+    assert se.dimension("hours_per_week_bin") is not None and se.dimension("hours_per_week_bin_start") is not None

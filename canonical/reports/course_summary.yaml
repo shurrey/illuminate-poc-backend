@@ -1,0 +1,653 @@
+id: report.course_summary.v1
+title: Course Summary
+area: teaching
+description: 'One course at a glance: overview, student engagement and performance, instructional practice and design.'
+filters:
+- id: course
+  label: Course ID / name
+  control: select
+  dimension: dataset.courses.v1:course_id_name
+- id: dates
+  label: Activity date range
+  control: date_range
+  time_dimension: dataset.course_tool_activity.v1:activity_date
+pages:
+- title: Course Overview
+  visuals:
+  - id: overview_help
+    type: text
+    title: Course summary
+    text: Choose a course to see its overview, student engagement and performance, instructional practice and design. The
+      activity date range narrows the charts of activity over time.
+  - id: course_info
+    type: table
+    title: Course information
+    queries:
+      main:
+        measures:
+        - dataset.courses.v1:courses
+        dimensions:
+        - dataset.courses.v1:term_name
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - dataset.courses.v1:design_mode
+        - dataset.courses.v1:course_duration
+        - dataset.courses.v1:course_start__day
+        - dataset.courses.v1:course_end__day
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 10
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - term_name
+      - course_number
+      - course_name
+      - design_mode
+      - course_duration
+      - course_start__day
+      - course_end__day
+      - courses
+  - id: class_size
+    type: kpi
+    title: What's the course class size?
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:class_size
+        filters_ignored:
+        - dates
+    encode:
+      value: class_size
+  - id: total_students
+    type: kpi
+    title: Total students
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:students
+        filters_ignored:
+        - dates
+    encode:
+      value: students
+  - id: total_instructors
+    type: kpi
+    title: Total instructors
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:instructors
+        filters_ignored:
+        - dates
+    encode:
+      value: instructors
+  - id: roles_share
+    type: pie
+    title: What's the proportion of enrollments per role?
+    queries:
+      main:
+        measures:
+        - dataset.course_role_activity.v1:enrolled_people
+        dimensions:
+        - course_role
+        order_by:
+        - field: enrolled_people
+          direction: desc
+        filters_ignored:
+        - dates
+    encode:
+      label: course_role
+      value: enrolled_people
+      donut: true
+  - id: grading_speed
+    type: bar
+    title: How quickly are submissions graded?
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:graded_attempts
+        dimensions:
+        - response_days_bucket
+        - response_days_capped
+        order_by:
+        - field: response_days_capped
+          direction: asc
+        limit: 100
+        filters:
+        - dimension: graded
+          op: eq
+          values:
+          - 1
+        filters_ignored:
+        - dates
+    encode:
+      x: response_days_bucket
+      y: graded_attempts
+  - id: alt_formats
+    type: pie
+    title: How much do students use alternative formats?
+    queries:
+      main:
+        measures:
+        - dataset.ally_alternative_formats.v1:downloads
+        dimensions:
+        - format_type
+        order_by:
+        - field: downloads
+          direction: desc
+        filters_ignored:
+        - dates
+    encode:
+      label: format_type
+      value: downloads
+      donut: true
+- title: Student Engagement and Performance
+  visuals:
+  - id: engagement_help
+    type: text
+    title: Student engagement and performance
+    text: A student is active with 5 minutes or more in the course. Weekly charts and the heat map follow the activity date
+      range; the heat map shows the average number of students active in each day and time slot.
+  - id: active_share
+    type: pie
+    title: What proportion of students are active?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:enrollments
+        dimensions:
+        - engaged
+        order_by:
+        - field: enrollments
+          direction: desc
+        filters_ignored:
+        - dates
+    encode:
+      label: engaged
+      value: enrollments
+      donut: true
+  - id: hours_distribution
+    type: bar
+    title: How many hours do students spend in the course per week?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:enrollments
+        dimensions:
+        - hours_per_week_bin
+        - hours_per_week_bin_start
+        order_by:
+        - field: hours_per_week_bin_start
+          direction: asc
+        limit: 100
+        filters_ignored:
+        - dates
+    encode:
+      x: hours_per_week_bin
+      y: enrollments
+  - id: students_weekly
+    type: line
+    title: What's the level of student engagement per week?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:people
+        dimensions:
+        - activity_date__week
+        order_by:
+        - field: activity_date__week
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - S
+    encode:
+      x: activity_date__week
+      y: people
+  - id: student_minutes_weekly
+    type: line
+    title: How much time do students spend in the course per week?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:minutes
+        dimensions:
+        - activity_date__week
+        order_by:
+        - field: activity_date__week
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - S
+    encode:
+      x: activity_date__week
+      y: minutes
+  - id: student_heat
+    type: heatmap
+    title: What's the frequency of student access in days and hours per week?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:person_days
+        dimensions:
+        - day_of_week
+        - hour_group
+        - hour_group_start
+        limit: 100
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - S
+      days:
+        measures:
+        - dataset.course_tool_activity.v1:days
+        dimensions:
+        - day_of_week
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - S
+    transform:
+      kind: per_weekday_average
+      query: main
+      field: person_days
+      day: day_of_week
+      days_query: days
+    encode:
+      x: hour_group
+      y: day_of_week
+      value: person_days
+      x_sort: hour_group_start
+      y_order:
+      - Sun
+      - Mon
+      - Tue
+      - Wed
+      - Thu
+      - Fri
+      - Sat
+  - id: top_items
+    type: bar
+    title: What are the top course items by total interactions?
+    queries:
+      main:
+        measures:
+        - dataset.student_item_tool_activity.v1:interactions
+        dimensions:
+        - type_name
+        order_by:
+        - field: interactions
+          direction: desc
+        limit: 10
+        filters_ignored:
+        - dates
+    encode:
+      x: type_name
+      y: interactions
+      horizontal: true
+  - id: top_contributions
+    type: bar
+    title: What are the top course items by total contributions?
+    queries:
+      main:
+        measures:
+        - dataset.social_interactions_by_type.v1:submissions
+        dimensions:
+        - type_name
+        order_by:
+        - field: submissions
+          direction: desc
+        limit: 10
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - S
+        filters_ignored:
+        - dates
+    encode:
+      x: type_name
+      y: submissions
+      horizontal: true
+  - id: engagement_by_student
+    type: table
+    title: What's the level of engagement and performance per student?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:hours
+        - dataset.student_enrollments.v1:accesses
+        - dataset.student_enrollments.v1:interactions
+        - dataset.student_enrollments.v1:submissions
+        - dataset.student_enrollments.v1:avg_access_pct
+        dimensions:
+        - dataset.student_enrollments.v1:student_id
+        - dataset.student_enrollments.v1:student_first_name
+        - dataset.student_enrollments.v1:student_last_name
+        - dataset.student_enrollments.v1:student_email
+        - recency
+        order_by:
+        - field: student_first_name
+          direction: asc
+        limit: 1000
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - student_id
+      - student_first_name
+      - student_last_name
+      - student_email
+      - recency
+      - hours
+      - accesses
+      - interactions
+      - submissions
+      - avg_access_pct
+      units:
+        avg_access_pct: percent
+- title: Instructional Practice
+  visuals:
+  - id: practice_help
+    type: text
+    title: Instructional practice
+    text: Grading charts follow each submission's due week. Instructor charts and the heat map follow the activity date range.
+  - id: grading_time_weekly
+    type: line
+    title: How long does it take to grade a submission?
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:avg_response_days
+        dimensions:
+        - due_time__week
+        order_by:
+        - field: due_time__week
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: graded
+          op: eq
+          values:
+          - 1
+        time_dimension: due_time
+    encode:
+      x: due_time__week
+      y: avg_response_days
+  - id: submission_status_weekly
+    type: line
+    title: What's the submissions status over time?
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:graded_attempts
+        - dataset.grade_response_time.v1:ungraded_attempts
+        dimensions:
+        - due_time__week
+        order_by:
+        - field: due_time__week
+          direction: asc
+        limit: 400
+        time_dimension: due_time
+    encode:
+      x: due_time__week
+      y:
+      - graded_attempts
+      - ungraded_attempts
+  - id: submission_status
+    type: pie
+    title: What's the submissions status?
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:graded_attempts
+        - dataset.grade_response_time.v1:ungraded_attempts
+        filters_ignored:
+        - dates
+    transform:
+      kind: unpivot
+      query: main
+      fields:
+      - field: graded_attempts
+        label: Graded
+      - field: ungraded_attempts
+        label: To grade
+    encode:
+      label: category
+      value: value
+      donut: true
+  - id: activity_by_role
+    type: table
+    title: Main activity per role
+    queries:
+      main:
+        measures:
+        - dataset.course_role_activity.v1:enrolled_people
+        - dataset.course_role_activity.v1:active_people
+        - dataset.course_role_activity.v1:activity_days
+        - dataset.course_role_activity.v1:minutes_in_course
+        dimensions:
+        - course_role
+        order_by:
+        - field: course_role
+          direction: asc
+        limit: 1000
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - course_role
+      - enrolled_people
+      - active_people
+      - activity_days
+      - minutes_in_course
+  - id: instructor_minutes_weekly
+    type: line
+    title: How much time do instructors spend in the course per week?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:minutes
+        dimensions:
+        - activity_date__week
+        order_by:
+        - field: activity_date__week
+          direction: asc
+        limit: 400
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - I
+    encode:
+      x: activity_date__week
+      y: minutes
+  - id: instructor_heat
+    type: heatmap
+    title: What's the frequency of instructor access in days and hours per week?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:person_days
+        dimensions:
+        - day_of_week
+        - hour_group
+        - hour_group_start
+        limit: 100
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - I
+      days:
+        measures:
+        - dataset.course_tool_activity.v1:days
+        dimensions:
+        - day_of_week
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - I
+    transform:
+      kind: per_weekday_average
+      query: main
+      field: person_days
+      day: day_of_week
+      days_query: days
+    encode:
+      x: hour_group
+      y: day_of_week
+      value: person_days
+      x_sort: hour_group_start
+      y_order:
+      - Sun
+      - Mon
+      - Tue
+      - Wed
+      - Thu
+      - Fri
+      - Sat
+  - id: minutes_per_instructor
+    type: kpi
+    title: Minutes in the course per instructor
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:minutes_per_instructor
+        filters_ignored:
+        - dates
+    encode:
+      value: minutes_per_instructor
+  - id: minutes_per_student
+    type: kpi
+    title: Minutes in the course per student
+    queries:
+      main:
+        measures:
+        - dataset.course_teaching_summary.v1:minutes_per_student
+        filters_ignored:
+        - dates
+    encode:
+      value: minutes_per_student
+  - id: grading_by_type
+    type: table
+    title: Instructors grading time
+    queries:
+      main:
+        measures:
+        - dataset.grade_response_time.v1:graded_attempts
+        - dataset.grade_response_time.v1:ungraded_attempts
+        - dataset.grade_response_time.v1:min_response_days
+        - dataset.grade_response_time.v1:avg_response_days
+        - dataset.grade_response_time.v1:max_response_days
+        - dataset.grade_response_time.v1:share_ungraded
+        dimensions:
+        - type_name
+        order_by:
+        - field: graded_attempts
+          direction: desc
+        limit: 1000
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - type_name
+      - graded_attempts
+      - ungraded_attempts
+      - min_response_days
+      - avg_response_days
+      - max_response_days
+      - share_ungraded
+      units:
+        share_ungraded: ratio
+  - id: engagement_by_instructor
+    type: table
+    title: What's the level of engagement per instructor?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:minutes
+        - dataset.course_tool_activity.v1:activity_rows
+        - dataset.course_tool_activity.v1:days
+        dimensions:
+        - dataset.persons.v1:person_first_name
+        - dataset.persons.v1:person_last_name
+        - dataset.persons.v1:person_mail
+        - course_role_description
+        order_by:
+        - field: minutes
+          direction: desc
+        limit: 1000
+        filters:
+        - dimension: course_role
+          op: in
+          values:
+          - I
+    encode:
+      columns:
+      - person_first_name
+      - person_last_name
+      - person_mail
+      - course_role_description
+      - minutes
+      - activity_rows
+      - days
+- title: Course Design
+  visuals:
+  - id: design_help
+    type: text
+    title: Course design
+    text: The course's items used in course design, by group and by type.
+  - id: design_totals
+    type: table
+    title: How is the course designed?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_totals.v1:items
+        - dataset.course_item_totals.v1:assessments
+        - dataset.course_item_totals.v1:contents
+        - dataset.course_item_totals.v1:tools
+        order_by:
+        - field: items
+          direction: desc
+        limit: 10
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - items
+      - assessments
+      - contents
+      - tools
+  - id: design_by_type
+    type: table
+    title: Which course item types does the course use?
+    queries:
+      main:
+        measures:
+        - dataset.course_item_types.v1:items
+        dimensions:
+        - item_group
+        - item_type_name
+        order_by:
+        - field: items
+          direction: desc
+        limit: 100
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - item_group
+      - item_type_name
+      - items
