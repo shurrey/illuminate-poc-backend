@@ -1,0 +1,407 @@
+id: report.student_summary.v1
+title: Student Summary
+area: learning
+description: 'One student at a glance: courses, engagement and performance compared with peers, and their activity log.'
+filters:
+- id: student
+  label: Student ID / name
+  control: select
+  dimension: dataset.persons.v1:person_id_name
+- id: course
+  label: Course ID / name
+  control: multi_select
+  dimension: dataset.courses.v1:course_id_name
+- id: term
+  label: Course term
+  control: multi_select
+  dimension: dataset.courses.v1:term_name
+- id: dates
+  label: Activity date range
+  control: date_range
+  time_dimension: dataset.activity_log.v1:event_time
+  default: last_30_days
+required_filters:
+- student
+pages:
+- title: Overview
+  visuals:
+  - id: overview_help
+    type: text
+    title: Student overview
+    text: How the chosen student is engaging and performing in their courses. Peer figures are the averages of the other students
+      in the same course. The activity date range (last 30 days by default) narrows the activity log, the access heat map
+      and weekly activity.
+  - id: student_info
+    type: table
+    title: Student information
+    queries:
+      main:
+        measures:
+        - dataset.persons.v1:people
+        dimensions:
+        - dataset.persons.v1:person_institution_id
+        - dataset.persons.v1:person_first_name
+        - dataset.persons.v1:person_last_name
+        - dataset.persons.v1:person_mail
+        limit: 5
+        filters_ignored:
+        - course
+        - term
+        - dates
+    encode:
+      columns:
+      - person_institution_id
+      - person_first_name
+      - person_last_name
+      - person_mail
+    requires_identity: true
+  - id: courses
+    type: table
+    title: Which courses is the student enrolled in?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:hours
+        - dataset.student_enrollments.v1:interactions
+        dimensions:
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - dataset.courses.v1:term_name
+        - dataset.courses.v1:course_ended
+        - recency
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - course_number
+      - course_name
+      - term_name
+      - course_ended
+      - recency
+      - hours
+      - interactions
+    requires_identity: true
+  - id: access_heat
+    type: heatmap
+    title: What's the frequency of the student access in days and hours per week?
+    queries:
+      main:
+        measures:
+        - dataset.course_tool_activity.v1:days
+        dimensions:
+        - day_of_week
+        - hour_group
+        - hour_group_start
+        limit: 100
+        time_dimension: activity_date
+    encode:
+      x: hour_group
+      y: day_of_week
+      value: days
+      x_sort: hour_group_start
+      y_order:
+      - Sun
+      - Mon
+      - Tue
+      - Wed
+      - Thu
+      - Fri
+      - Sat
+    requires_identity: true
+  - id: submission_status
+    type: pie
+    title: What's the submission status of the student for all courses?
+    queries:
+      main:
+        measures:
+        - dataset.student_assignments.v1:on_time
+        - dataset.student_assignments.v1:late
+        - dataset.student_assignments.v1:overdue
+        - dataset.student_assignments.v1:upcoming
+        filters_ignored:
+        - dates
+    encode:
+      label: category
+      value: value
+      donut: true
+    transform:
+      kind: unpivot
+      query: main
+      fields:
+      - field: on_time
+        label: On time
+      - field: late
+        label: Late
+      - field: overdue
+        label: Overdue
+      - field: upcoming
+        label: Upcoming
+    requires_identity: true
+  - id: hours_vs_peers
+    type: bar
+    title: What's the time spent in each course compared to peers?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:avg_hours
+        - dataset.student_enrollments.v1:peers_avg_hours
+        dimensions:
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_name
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      x: course_name
+      y:
+      - avg_hours
+      - peers_avg_hours
+      horizontal: true
+    requires_identity: true
+  - id: weekly_activity
+    type: line
+    title: How much is the student active each week?
+    queries:
+      main:
+        measures:
+        - dataset.activity_log.v1:events
+        dimensions:
+        - event_time__week
+        order_by:
+        - field: event_time__week
+          direction: asc
+        limit: 400
+    encode:
+      x: event_time__week
+      y: events
+    requires_identity: true
+- title: Engagement and Performance
+  visuals:
+  - id: engagement_help
+    type: text
+    title: Student engagement and performance in courses
+    text: Timeliness counts the student's submissions due in each course. Grades are percentages; the per-assessment table
+      shows the student's score on each gradebook item next to the course average.
+  - id: timeliness_by_course
+    type: bar
+    title: How timely does this student complete assessments per course?
+    queries:
+      main:
+        measures:
+        - dataset.student_assignments.v1:on_time
+        - dataset.student_assignments.v1:late
+        - dataset.student_assignments.v1:overdue
+        - dataset.student_assignments.v1:upcoming
+        dimensions:
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_name
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      x: course_name
+      y:
+      - on_time
+      - late
+      - overdue
+      - upcoming
+      stacked: true
+      horizontal: true
+    requires_identity: true
+  - id: grade_vs_peers
+    type: bar
+    title: What's the student's average grade in each course compared to peers?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade.v1:average_grade_percentage
+        - dataset.student_grade.v1:peers_average_grade
+        dimensions:
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_name
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      x: course_name
+      y:
+      - average_grade_percentage
+      - peers_average_grade
+      horizontal: true
+    requires_identity: true
+  - id: access_vs_peers
+    type: bar
+    title: What's the student's access frequency in each course compared to peers?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:avg_access_pct
+        - dataset.student_enrollments.v1:peers_avg_access_pct
+        dimensions:
+        - dataset.courses.v1:course_name
+        order_by:
+        - field: course_name
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      x: course_name
+      y:
+      - avg_access_pct
+      - peers_avg_access_pct
+      horizontal: true
+    requires_identity: true
+  - id: engagement_by_course
+    type: table
+    title: How's the student engagement and performance per course?
+    queries:
+      main:
+        measures:
+        - dataset.student_enrollments.v1:hours
+        - dataset.student_enrollments.v1:interactions
+        - dataset.student_enrollments.v1:peers_avg_interactions
+        - dataset.student_enrollments.v1:content_completion
+        - dataset.student_enrollments.v1:avg_access_pct
+        dimensions:
+        - dataset.courses.v1:term_name
+        - dataset.courses.v1:course_number
+        - dataset.courses.v1:course_name
+        - last_access__day
+        order_by:
+        - field: course_number
+          direction: asc
+        limit: 200
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - term_name
+      - course_number
+      - course_name
+      - last_access__day
+      - hours
+      - interactions
+      - peers_avg_interactions
+      - content_completion
+      - avg_access_pct
+      units:
+        content_completion: ratio
+        avg_access_pct: percent
+    requires_identity: true
+  - id: assessments
+    type: table
+    title: How's the student's performance per assessment?
+    queries:
+      main:
+        measures:
+        - dataset.student_grade_items.v1:score
+        - dataset.student_grade_items.v1:peers_score
+        dimensions:
+        - dataset.courses.v1:course_number
+        - item_name
+        - item_type_name
+        - status
+        - due_time__day
+        - attempted_time__day
+        order_by:
+        - field: course_number
+          direction: asc
+        - field: due_time__day
+          direction: asc
+        limit: 1000
+        filters_ignored:
+        - dates
+    encode:
+      columns:
+      - course_number
+      - item_name
+      - item_type_name
+      - status
+      - due_time__day
+      - attempted_time__day
+      - score
+      - peers_score
+      units:
+        score: percent
+        peers_score: percent
+    requires_identity: true
+- title: Activity Log
+  visuals:
+  - id: log_help
+    type: text
+    title: What is the student activity within courses?
+    text: 'Every recorded event for the student in the last year: logins, course, item and tool access, submissions and more.'
+  - id: events_by_type
+    type: bar
+    title: What's the student's activity by event type?
+    queries:
+      main:
+        measures:
+        - dataset.activity_log.v1:events
+        dimensions:
+        - event_type
+        order_by:
+        - field: events
+          direction: desc
+        limit: 50
+    encode:
+      x: event_type
+      y: events
+      horizontal: true
+    requires_identity: true
+  - id: events_weekly
+    type: line
+    title: What's the student activity over time?
+    queries:
+      main:
+        measures:
+        - dataset.activity_log.v1:events
+        dimensions:
+        - event_time__week
+        order_by:
+        - field: event_time__week
+          direction: asc
+        limit: 400
+    encode:
+      x: event_time__week
+      y: events
+    requires_identity: true
+  - id: activity_log
+    type: table
+    title: What's the student's activity log?
+    queries:
+      main:
+        measures:
+        - dataset.activity_log.v1:events
+        dimensions:
+        - event_time__hour
+        - event_type
+        - item_type
+        - tool
+        - context
+        - dataset.courses.v1:course_id_name
+        order_by:
+        - field: event_time__hour
+          direction: desc
+        limit: 1000
+    encode:
+      columns:
+      - event_time__hour
+      - event_type
+      - course_id_name
+      - item_type
+      - tool
+      - context
+      - events
+    requires_identity: true
