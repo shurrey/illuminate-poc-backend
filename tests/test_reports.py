@@ -801,3 +801,18 @@ def test_student_summary_is_about_one_chosen_student_and_requires_identity():
             contract, ignored = merged_contract(report, v, q, values, CATALOG)
             assert ignored == [], (v.id, q)
             assert ("dataset.persons.v1:person_id_name", ["123 - Jane Doe"]) in [(f.dimension, f.values) for f in contract.filters], (v.id, q)
+
+
+def test_student_summary_reach_is_about_one_chosen_student_and_requires_identity():
+    report = load_reports()["report.student_summary_reach.v1"]
+    assert report.required_filters == ["student"]
+    values = {"student": ["123 - Jane Doe"], "course": ["BIO-101 - Biology"], "dates": {"start": "2026-09-01", "end": "2026-09-30"}}
+    for v in report.visuals():
+        if v.type == "text":
+            continue
+        assert v.requires_identity, v.id
+        for q in v.queries:
+            contract, ignored = merged_contract(report, v, q, values, CATALOG)
+            assert ignored == [], (v.id, q)
+            assert ("dataset.persons.v1:person_id_name", ["123 - Jane Doe"]) in [(f.dimension, f.values) for f in contract.filters], (v.id, q)
+    assert "not available" in report.visual("engagement_score_help").text
