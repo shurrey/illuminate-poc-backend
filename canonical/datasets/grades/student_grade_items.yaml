@@ -1,0 +1,53 @@
+id: dataset.student_grade_items.v1
+display_name: Student grades by gradebook item
+description: >
+  One row per student enrollment and gradebook column in its course (not the final grade, not
+  deleted): the item's name and type, due time, the student's last attempt, their score as a
+  percentage of the possible points, the course's average score on that item, and status: Graded,
+  Submitted (attempted, not yet graded), Overdue (past due, not attempted) or Upcoming.
+grain: one row per student enrollment x gradebook column
+domain: grades
+source: CDM_LMS.GRADEBOOK, CDM_LMS.GRADE
+depends_on: [dataset.student_enrollments.v1, dataset.item_tool_map.v1]
+base_sql: |
+  WITH enrollments AS (
+      SELECT PERSON_COURSE_ID, COURSE_ID, PERSON_ID FROM {{ ref('dataset.student_enrollments.v1') }}
+  ),
+  scored AS (
+      SELECT e.PERSON_COURSE_ID, e.COURSE_ID, e.PERSON_ID, gb.ID AS GRADEBOOK_ID, gb.NAME AS ITEM_NAME,
+             NVL(m.DISPLAY_NAME, NVL(INITCAP(REPLACE(ci.ITEM_TYPE, '_', ' ')), 'Grade Center column')) AS ITEM_TYPE_NAME,
+             gb.DUE_TIME, gr.LAST_ATTEMPTED_TIME AS ATTEMPTED_TIME,
+             IFF(gr.VALID_IND AND gr.SCORE IS NOT NULL AND NVL(gr.POSSIBLE_SCORE, gb.POSSIBLE_SCORE) > 0,
+                 100 * gr.SCORE / NVL(gr.POSSIBLE_SCORE, gb.POSSIBLE_SCORE), NULL) AS SCORE_PCT,
+             gr.ATTEMPTED_TIME AS FIRST_ATTEMPT
+      FROM enrollments e
+      JOIN {{ database }}.CDM_LMS.GRADEBOOK gb ON gb.COURSE_ID = e.COURSE_ID AND gb.ROW_DELETED_TIME IS NULL
+           AND NOT NVL(gb.DELETED_IND, FALSE) AND NOT NVL(gb.FINAL_GRADE_IND, FALSE)
+      LEFT JOIN {{ database }}.CDM_LMS.GRADE gr ON gr.GRADEBOOK_ID = gb.ID AND gr.PERSON_COURSE_ID = e.PERSON_COURSE_ID
+           AND gr.ROW_DELETED_TIME IS NULL
+      LEFT JOIN {{ database }}.CDM_LMS.COURSE_ITEM ci ON ci.ID = gb.COURSE_ITEM_ID
+      LEFT JOIN {{ ref('dataset.item_tool_map.v1') }} m ON m.ITEM_TYPE = ci.ITEM_TYPE
+  )
+  SELECT s.PERSON_COURSE_ID, s.COURSE_ID, s.PERSON_ID, s.GRADEBOOK_ID, s.ITEM_NAME, s.ITEM_TYPE_NAME,
+         s.DUE_TIME, s.ATTEMPTED_TIME, s.SCORE_PCT,
+         AVG(s.SCORE_PCT) OVER (PARTITION BY s.GRADEBOOK_ID) AS PEERS_SCORE_PCT,
+         CASE WHEN s.SCORE_PCT IS NOT NULL THEN 'Graded'
+              WHEN s.ATTEMPTED_TIME IS NOT NULL OR s.FIRST_ATTEMPT IS NOT NULL THEN 'Submitted'
+              WHEN s.DUE_TIME < CURRENT_TIMESTAMP() THEN 'Overdue'
+              ELSE 'Upcoming' END AS STATUS
+  FROM scored s
+entities:
+  - {name: person_course, column: PERSON_COURSE_ID, type: foreign}
+  - {name: course, column: COURSE_ID, type: foreign}
+  - {name: person, column: PERSON_ID, type: foreign}
+dimensions:
+  - {name: item_name, column: ITEM_NAME, type: categorical, synonyms: [assessment, gradebook column]}
+  - {name: item_type_name, column: ITEM_TYPE_NAME, type: categorical}
+  - {name: status, column: STATUS, type: categorical, description: "Graded, Submitted, Overdue or Upcoming"}
+  - {name: due_time, column: DUE_TIME, type: time, grains: [day, week, month]}
+  - {name: attempted_time, column: ATTEMPTED_TIME, type: time, grains: [day, week, month]}
+measures:
+  - {name: items, agg: count, expr: "*", unit: items}
+  - {name: score, agg: avg, expr: SCORE_PCT, unit: percent, description: "The student's score as a percentage of possible points"}
+  - {name: peers_score, agg: avg, expr: PEERS_SCORE_PCT, unit: percent, description: "The course's average score on the item"}
+pii_columns: [PERSON_ID, PERSON_COURSE_ID]

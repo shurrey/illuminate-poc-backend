@@ -597,3 +597,22 @@ def test_student_grades_expose_the_grade_value_band_order_and_statistics():
                        dimensions=["graded_status", "grade_band", "grade_band_order"],
                        filters=[{"dimension": "grade_percentage_value", "op": "gte", "values": [50]}]))
     assert "MAX(GRADE_PERCENTAGE)" in sql and "GRADE_PERCENTAGE >= 50" in sql
+
+
+def test_student_summary_datasets_carry_peer_averages_and_grade_items():
+    from semantic_layer.catalog import load_catalog
+    cat = load_catalog()
+    persons = cat.datasets["dataset.persons.v1"]
+    assert persons.is_pii(persons.dimension("person_id_name").column)
+    se = build_ctes(cat, ["dataset.student_enrollments.v1"], "DB")["DS_STUDENT_ENROLLMENTS_V1"]
+    assert "OVER (PARTITION BY COURSE_ID)" in se
+    sg = build_ctes(cat, ["dataset.student_grade.v1"], "DB")["DS_STUDENT_GRADE_V1"]
+    assert "AVG(sb.GRADE_PERCENTAGE) OVER (PARTITION BY sb.COURSE_ID)" in sg
+    items = build_ctes(cat, ["dataset.student_grade_items.v1"], "DB")["DS_STUDENT_GRADE_ITEMS_V1"]
+    assert "OVER (PARTITION BY s.GRADEBOOK_ID)" in items and "'Overdue'" in items and "'Upcoming'" in items
+    sql = _outer(_real(measures=["dataset.student_grade_items.v1:" + m for m in ("items", "score", "peers_score")],
+                       dimensions=["item_name", "item_type_name", "status", "due_time__day"]))
+    assert "AVG(" in sql
+    for m in ("peers_avg_hours", "peers_avg_access_pct", "peers_avg_interactions"):
+        assert cat.datasets["dataset.student_enrollments.v1"].measure(m) is not None, m
+    assert cat.datasets["dataset.student_grade.v1"].measure("peers_average_grade") is not None
