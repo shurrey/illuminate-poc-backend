@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tenant_admin  # noqa: E402
+from licenses import LICENSES  # noqa: E402
 
 
 def _clients(env: str, user_pool_id: str | None = None, *, need_pool: bool = True):
@@ -37,7 +38,10 @@ def _json_default(o):
 
 def _read_users(path: str) -> list[tuple[str, str]]:
     with open(path, newline="") as f:
-        return [(row["email"].strip(), row["role"].strip()) for row in csv.DictReader(f)]
+        reader = csv.DictReader(f)
+        if [h.strip() for h in reader.fieldnames or []] != ["email", "role"]:
+            raise ValueError(f"{path}: the header must be exactly: email,role")
+        return [((row["email"] or "").strip().lower(), (row["role"] or "").strip()) for row in reader]
 
 
 def _read_connection(path: str) -> dict:
@@ -85,7 +89,7 @@ def _run(args) -> dict | list:
             connection=_read_connection(args.snowflake) if args.snowflake else None,
             copy_connection_from=args.copy_connection_from, **_user_kwargs(args))
     if args.command == "add-users":
-        return tenant_admin.add_users(cognito=cognito, user_pool_id=pool, tenant_id=args.tenant_id, **_user_kwargs(args))
+        return tenant_admin.add_users(dynamodb=dynamodb, env=args.env, cognito=cognito, user_pool_id=pool, tenant_id=args.tenant_id, **_user_kwargs(args))
     return tenant_admin.migrate_current(
         dynamodb=dynamodb, secrets=secrets, cognito=cognito, user_pool_id=pool, env=args.env,
         old_tenant_id=args.old_tenant_id, name=args.name, license=args.license, dry_run=args.dry_run)
@@ -98,13 +102,13 @@ def main(argv=None) -> int:
     migrate = sub.add_parser("migrate-current", help="move today's deployment into the first tenant")
     migrate.add_argument("--old-tenant-id", default="blackboard-dev")
     migrate.add_argument("--name", default="Northbridge University")
-    migrate.add_argument("--license", default="premium", choices=["core", "premium"])
+    migrate.add_argument("--license", default="premium", choices=sorted(LICENSES))
     migrate.add_argument("--user-pool-id")
     migrate.add_argument("--dry-run", action="store_true")
     sub.add_parser("list", help="list registered tenants")
     create = sub.add_parser("create", help="create a tenant with its connection and users")
     create.add_argument("--name", required=True)
-    create.add_argument("--license", required=True, choices=["core", "premium"])
+    create.add_argument("--license", required=True, choices=sorted(LICENSES))
     create.add_argument("--user-pool-id")
     _add_connection_options(create)
     _add_user_options(create)
@@ -117,13 +121,18 @@ def main(argv=None) -> int:
     _add_connection_options(setconn)
     setlic = sub.add_parser("set-license", help="change a tenant's license")
     setlic.add_argument("tenant_id")
-    setlic.add_argument("license", choices=["core", "premium"])
+    setlic.add_argument("license", choices=sorted(LICENSES))
     args = parser.parse_args(argv)
 
     try:
         result = _run(args)
     except tenant_admin.SourceSecretMissing as exc:
         print(f"{exc} Nothing was written.", file=sys.stderr)
+        return 1
+    except tenant_admin.UserPhaseFailed as exc:
+        print(json.dumps({"tenant_id": exc.tenant_id, "users_created": exc.users_created}, indent=2))
+        print(f"The tenant exists but creating its users failed ({exc}). "
+              f"Finish with: tenant.py add-users {exc.tenant_id} --users <csv>", file=sys.stderr)
         return 1
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
