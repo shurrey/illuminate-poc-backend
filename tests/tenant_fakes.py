@@ -3,8 +3,9 @@ import snowflake_client
 import tenancy
 from tenancy import Tenant, TenantNotReady
 
-TENANT_A = Tenant("tenant-a", "Alpha University", "Premium", False)
-TENANT_B = Tenant("tenant-b", "Beta College", "Premium", False)
+TENANT_A = Tenant("tenant-a", "Alpha University", "premium", False)
+TENANT_B = Tenant("tenant-b", "Beta College", "premium", False)
+TENANT_CORE = Tenant("tenant-core", "Core College", "core", False)
 
 
 def install_tenants(monkeypatch, *tenants, with_databases=True, database=None):

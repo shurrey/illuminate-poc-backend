@@ -20,7 +20,7 @@ class FakeTable:
 
 @pytest.fixture
 def table(monkeypatch):
-    fake = FakeTable({"t1": {"tenant_id": "t1", "name": "Acme", "license": "pro", "mcp_enabled": True}})
+    fake = FakeTable({"t1": {"tenant_id": "t1", "name": "Acme", "license": "premium", "mcp_enabled": True}})
     monkeypatch.setattr(tenancy, "_table", fake)
     monkeypatch.setattr(snowflake_client, "tenant_database", lambda t: f"DB_{t.tenant_id}")
     tenancy._cache.clear()
@@ -29,11 +29,11 @@ def table(monkeypatch):
 
 
 def test_get_tenant_returns_row(table):
-    assert tenancy.get_tenant("t1") == Tenant("t1", "Acme", "pro", True)
+    assert tenancy.get_tenant("t1") == Tenant("t1", "Acme", "premium", True)
 
 
 def test_get_tenant_defaults_mcp_enabled_to_false(table):
-    table.rows["t2"] = {"tenant_id": "t2", "name": "Beta", "license": "basic"}
+    table.rows["t2"] = {"tenant_id": "t2", "name": "Beta", "license": "core"}
     assert tenancy.get_tenant("t2").mcp_enabled is False
 
 
@@ -82,3 +82,13 @@ def test_tenant_for_without_snowflake_secret_is_403(table, monkeypatch):
         lambda_handler.tenant_for({"custom:tenant_id": "t1"})
     assert exc.value.status_code == 403
     assert exc.value.detail == NOT_READY
+
+
+@pytest.mark.parametrize("row_license", ["pro", "Premium", "", None, "full"])
+def test_unknown_or_missing_license_is_not_ready(table, row_license):
+    row = {"tenant_id": "t3", "name": "Gamma", "mcp_enabled": True}
+    if row_license is not None:
+        row["license"] = row_license
+    table.rows["t3"] = row
+    with pytest.raises(TenantNotReady):
+        tenancy.get_tenant("t3")
