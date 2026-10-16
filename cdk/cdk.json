@@ -1,10 +1,19 @@
 {
   "app": "npx ts-node bin/illuminate.ts",
   "watch": {
-    "include": ["**"],
-    "exclude": ["node_modules", "dist", "cdk.out", "**/*.d.ts", "**/*.js"]
+    "include": [
+      "**"
+    ],
+    "exclude": [
+      "node_modules",
+      "dist",
+      "cdk.out",
+      "**/*.d.ts",
+      "**/*.js"
+    ]
   },
   "context": {
-    "environment": "dev"
+    "environment": "dev",
+    "initialTenantId": "c2da348c-96e8-4014-9e72-9ba6b4eaac14"
   }
 }
