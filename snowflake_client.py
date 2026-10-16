@@ -6,6 +6,7 @@ illuminate/tenants/{tenant_id}/snowflake and cached per Lambda instance. A missi
 or database means the tenant is not set up (TenantNotReady); there is no shared fallback.
 """
 
+import functools
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from botocore.exceptions import ClientError
 
 from licenses import LEARN_REFUSAL, schema_allowed
 from semantic_layer.compiler import is_bounded_generator
+from semantic_layer.learn import learn_columns, learn_pii
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
 from tenancy import Tenant, TenantNotReady
 
@@ -155,6 +157,126 @@ def _is_cte_reference(table_node) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=1)
+def _cdm_columns() -> dict[tuple[str, str], frozenset[str]]:
+    from semantic_layer.validate import load_snapshot
+
+    (schemas,) = load_snapshot().values()
+    return {(s, t): frozenset(cols) for s, tables in schemas.items() for t, cols in tables.items()}
+
+
+def _base_table(source) -> tuple[str, str] | None:
+    """(SCHEMA, TABLE) of a scope source that is a schema-qualified table, else None."""
+    import sqlglot.expressions as exp
+
+    if not isinstance(source, exp.Table) or not isinstance(source.this, exp.Identifier) or not source.args.get("db"):
+        return None
+    return source.args["db"].name.upper(), _folded(source.this)
+
+
+def _source_has(source, column: str) -> bool:
+    """Whether a scope source is known to expose column: a snapshot table's column or a derived output name."""
+    from sqlglot.optimizer.scope import Scope
+    import sqlglot.expressions as exp
+
+    if isinstance(source, Scope):
+        if not isinstance(source.expression, (exp.Select, exp.SetOperation)):
+            return False
+        names = {n.upper() for n in source.expression.named_selects}
+        return column in names or "*" in names
+    table = _base_table(source)
+    if table is None:
+        return False
+    if table[0] == "LEARN":
+        return column in (learn_columns(table[1]) or ())
+    return column in _cdm_columns().get(table, ())
+
+
+def _is_projection_alias(col, name: str, select) -> bool:
+    """Whether col names an AS alias of select other than the one whose expression contains it."""
+    import sqlglot.expressions as exp
+
+    return any(isinstance(e, exp.Alias) and e.alias.upper() == name and col.find_ancestor(exp.Alias) is not e
+               for e in select.expressions)
+
+
+def _resolve(col, scope) -> list | None:
+    """The sources col may read from, [] for a projection alias, or None when it cannot be resolved.
+
+    Walks out through enclosing scopes so correlated references resolve to the outer query's tables.
+    """
+    import sqlglot.expressions as exp
+
+    name, qualifier = _folded(col.this), col.args.get("table")
+    while scope is not None:
+        selected = {alias.upper(): src for alias, (_, src) in scope.selected_sources.items()}
+        if qualifier is not None:
+            if qualifier.name.upper() in selected:
+                return [selected[qualifier.name.upper()]]
+        else:
+            candidates = [src for src in selected.values() if _source_has(src, name)]
+            if candidates:
+                return candidates
+            if isinstance(scope.expression, exp.Select) and _is_projection_alias(col, name, scope.expression):
+                return []
+            # Snowflake would bind to a column this LEARN table has but the snapshot does not list.
+            learn = [src for src in selected.values() if (_base_table(src) or ("",))[0] == "LEARN"]
+            if learn:
+                return learn
+        scope = scope.parent
+    return None
+
+
+def _learn_pii_columns(stmt, columns) -> set[int]:
+    """ids of the columns, of a statement that reads a LEARN table, that are LEARN PII.
+
+    A column read from a LEARN table is PII when the dictionary flags it or does not list it. Derived
+    (CTE, subquery) outputs were checked where they read their tables. An unresolvable column is PII
+    unless a referenced CDM table lists it and no referenced LEARN table flags it.
+    """
+    import sqlglot.expressions as exp
+    from sqlglot.optimizer.scope import traverse_scope
+
+    tables = [_base_table(t) for t in stmt.find_all(exp.Table)]
+    learn_tables = {t[1] for t in tables if t and t[0] == "LEARN"}
+    if not learn_tables:
+        return set()
+
+    def unresolved_is_pii(name: str) -> bool:
+        if any(name in (learn_columns(t) or ()) and learn_pii(t, name) for t in learn_tables):
+            return True
+        return not any(name in _cdm_columns().get(t, ()) for t in filter(None, tables) if t[0] != "LEARN")
+
+    try:
+        scope_of, scope_of_select = {}, {}
+        for scope in traverse_scope(stmt):
+            scope_of_select[id(scope.expression)] = scope
+            for c in scope.columns:
+                scope_of.setdefault(id(c), scope)
+    except Exception:
+        scope_of, scope_of_select = {}, {}
+
+    flagged = set()
+    for col in columns:
+        name = _folded(col.this) if isinstance(col.this, exp.Identifier) else col.name.upper()
+        # Scopes omit ORDER BY / HAVING references to projection aliases; resolve those in their SELECT.
+        scope = scope_of.get(id(col)) or scope_of_select.get(id(col.find_ancestor(exp.Select)))
+        try:
+            sources = _resolve(col, scope) if scope is not None else None
+        except Exception:
+            flagged.add(id(col))
+            continue
+        if sources is None:
+            if unresolved_is_pii(name):
+                flagged.add(id(col))
+            continue
+        for source in sources:
+            table = _base_table(source)
+            if table and table[0] == "LEARN" and learn_pii(table[1], name):
+                flagged.add(id(col))
+    return flagged
+
+
 def _qualified_functions(stmt):
     """Yield the qualifier identifiers ([database,] schema) of each schema-qualified function call."""
     import sqlglot.expressions as exp
@@ -171,6 +293,26 @@ def _qualified_functions(stmt):
             yield parts
 
 
+POSITIONAL_REFUSAL = "Refer to columns by name; positional ($1) and IDENTIFIER() column references are not allowed."
+
+ALIAS_LIST_REFUSAL = "Column alias lists on tables are not allowed; alias columns in the SELECT list instead."
+
+WHOLE_ROW_REFUSAL = "Refer to columns by name; whole-row references are not allowed."
+
+
+def _whole_row_reference(stmt) -> bool:
+    """Whether an unqualified column shares a name with any table, alias or CTE in the statement.
+
+    Snowflake may resolve such a name to the whole row, so it is refused even when a column has that name.
+    """
+    import sqlglot.expressions as exp
+
+    row_names = {_folded(a.this) for a in stmt.find_all(exp.TableAlias) if isinstance(a.this, exp.Identifier)}
+    row_names |= {_folded(t.this) for t in stmt.find_all(exp.Table) if isinstance(t.this, exp.Identifier)}
+    return any(isinstance(c.this, exp.Identifier) and not c.args.get("table") and _folded(c.this) in row_names
+               for c in stmt.find_all(exp.Column))
+
+
 def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None, compiled: bool = False,
                          allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset()) -> dict:
     """Validate a SQL statement with sqlglot AST checks, then execute it.
@@ -180,7 +322,8 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
     allow_identity lifts the projection check for compiled SQL only (callers whose role may see
-    identity); extra_pii adds dataset-declared PII column names to the check.
+    identity); extra_pii adds dataset-declared PII column names to the check. Freehand SQL over
+    LEARN also treats columns the LEARN dictionary flags or does not list as PII.
 
     Returns:
         {"columns": [...], "rows": [...]} on success
@@ -291,10 +434,30 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         for star in stmt.find_all(exp.Star):
             if not isinstance(star.parent, exp.Count):
                 return {"error": "Star projections are not allowed in freehand SQL; name the columns you need."}
+        # $1 and IDENTIFIER('COL') name columns without a Column node, so the PII checks cannot see them.
+        if any(isinstance(n, exp.Parameter) or (isinstance(n, exp.Anonymous) and n.name.upper() == "IDENTIFIER")
+               for n in stmt.walk()):
+            return {"error": POSITIONAL_REFUSAL}
+        # FROM t AS a (C1) renames t's columns before the name-based PII check sees them. CTE column lists
+        # rename projections checked where they read their tables; sqlglot fills in LATERAL FLATTEN's list.
+        if any(a.columns and not isinstance(a.parent, (exp.CTE, exp.Lateral)) for a in stmt.find_all(exp.TableAlias)):
+            return {"error": ALIAS_LIST_REFUSAL}
+        try:
+            whole_row = _whole_row_reference(stmt)
+        except Exception:
+            logger.exception("Whole-row reference check failed; refusing")
+            whole_row = True
+        if whole_row:
+            return {"error": WHOLE_ROW_REFUSAL}
         scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
+    try:
+        learn_pii_ids = set() if compiled else _learn_pii_columns(stmt, [col for col, _ in scopes])
+    except Exception:
+        logger.exception("LEARN PII resolution failed; treating every column as PII")
+        learn_pii_ids = {id(col) for col, _ in scopes}
     for col_node, scope in scopes:
         col_name = col_node.name.upper().strip('"').strip("'")
-        if col_name in pii_names and not inside_counting_aggregate(col_node, scope):
+        if (col_name in pii_names or id(col_node) in learn_pii_ids) and not inside_counting_aggregate(col_node, scope):
             return {
                 "error": (
                     f"Column '{col_name}' contains personally identifiable information (PII). "
