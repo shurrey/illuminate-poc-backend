@@ -329,8 +329,7 @@ def test_forged_tenant_fields_ignored(world, monkeypatch):
     assert overlay_store.get_overlay(A, MEASURE).expr == "ROUND(GRADE_PERCENTAGE, 0)"
 
 
-# Routes that need the tenant's Snowflake secret. Catalog, report list, conversations and admin
-# overlays do not read it; see test_missing_secret_fails_closed_without_snowflake.
+# Routes that run in the warehouse, and routes that do not; both fail closed without a secret.
 SECRET_ROUTES = [
     ("POST", "/api/v1/semantic/query", {"json": CONTRACT}),
     ("POST", "/api/v1/semantic/compile", {"json": CONTRACT}),
@@ -370,11 +369,12 @@ def test_missing_secret_fails_closed(world, route):
 
 
 @pytest.mark.parametrize("route", NO_SECRET_ROUTES, ids=_route_id)
-@pytest.mark.xfail(strict=True, reason="routes that never read the Snowflake secret do not check it is present")
 def test_missing_secret_fails_closed_without_snowflake(world, route):
     method, path, kw = route
     r = world.client.request(method, path, headers=AS_C, **kw)
     assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
+    assert C not in r.text
+    assert overlay_store.list_overlays(C) == []
 
 
 @pytest.mark.parametrize("route", TENANT_ROUTES, ids=_route_id)

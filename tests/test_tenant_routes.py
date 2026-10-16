@@ -113,14 +113,20 @@ def test_admin_overlay_route_unregistered_tenant_is_403(as_user, monkeypatch):
 
 def test_tenant_not_ready_inside_route_is_403(as_user, monkeypatch):
     monkeypatch.delenv("TEST_SNOWFLAKE_DATABASE", raising=False)
+    calls = []
 
+    # tenant_for's own check passes; the secret is gone by the time the route resolves the database.
     def not_ready(tenant):
-        raise TenantNotReady(tenant.tenant_id)
+        calls.append(tenant)
+        if len(calls) > 1:
+            raise TenantNotReady(tenant.tenant_id)
+        return "DB_A"
 
     monkeypatch.setattr(snowflake_client, "tenant_database", not_ready)
     r = as_user(user_of(TENANT_A)).post("/api/v1/semantic/compile", headers=AUTH, json=CONTRACT)
     assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
     assert TENANT_A.tenant_id not in r.text
+    assert len(calls) == 2
 
 
 class _NoBedrock:

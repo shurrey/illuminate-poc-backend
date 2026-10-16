@@ -2,6 +2,7 @@ import pytest
 from fastapi import HTTPException
 
 import lambda_handler
+import snowflake_client
 import tenancy
 from tenancy import NOT_READY, Tenant, TenantNotReady
 
@@ -21,6 +22,7 @@ class FakeTable:
 def table(monkeypatch):
     fake = FakeTable({"t1": {"tenant_id": "t1", "name": "Acme", "license": "pro", "mcp_enabled": True}})
     monkeypatch.setattr(tenancy, "_table", fake)
+    monkeypatch.setattr(snowflake_client, "tenant_database", lambda t: f"DB_{t.tenant_id}")
     tenancy._cache.clear()
     yield fake
     tenancy._cache.clear()
@@ -67,5 +69,16 @@ def test_tenant_for_without_claim_is_403(table, user):
 def test_tenant_for_unknown_tenant_is_403(table):
     with pytest.raises(HTTPException) as exc:
         lambda_handler.tenant_for({"custom:tenant_id": "ghost"})
+    assert exc.value.status_code == 403
+    assert exc.value.detail == NOT_READY
+
+
+def test_tenant_for_without_snowflake_secret_is_403(table, monkeypatch):
+    def not_ready(tenant):
+        raise TenantNotReady(tenant.tenant_id)
+
+    monkeypatch.setattr(snowflake_client, "tenant_database", not_ready)
+    with pytest.raises(HTTPException) as exc:
+        lambda_handler.tenant_for({"custom:tenant_id": "t1"})
     assert exc.value.status_code == 403
     assert exc.value.detail == NOT_READY
