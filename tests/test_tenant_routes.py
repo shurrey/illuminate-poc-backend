@@ -40,7 +40,6 @@ def test_semantic_query_uses_callers_tenant(as_user, monkeypatch):
 
 
 def test_compiled_sql_uses_tenant_database(as_user, monkeypatch):
-    monkeypatch.delenv("TEST_SNOWFLAKE_DATABASE", raising=False)
     monkeypatch.setattr(snowflake_client, "tenant_database",
                         lambda t: {TENANT_A.tenant_id: "DB_A", TENANT_B.tenant_id: "DB_B"}[t.tenant_id])
     r = as_user(user_of(TENANT_B)).post("/api/v1/semantic/compile", headers=AUTH, json=CONTRACT)
@@ -112,7 +111,6 @@ def test_admin_overlay_route_unregistered_tenant_is_403(as_user, monkeypatch):
 
 
 def test_tenant_not_ready_inside_route_is_403(as_user, monkeypatch):
-    monkeypatch.delenv("TEST_SNOWFLAKE_DATABASE", raising=False)
     calls = []
 
     # tenant_for's own check passes; the secret is gone by the time the route resolves the database.
@@ -144,7 +142,6 @@ def no_bedrock(monkeypatch):
 
 
 def _not_ready_database(monkeypatch):
-    monkeypatch.delenv("TEST_SNOWFLAKE_DATABASE", raising=False)
 
     def not_ready(tenant):
         raise TenantNotReady(tenant.tenant_id)
@@ -192,7 +189,6 @@ def test_chat_tenant_not_ready_mid_request_is_403(as_user, no_bedrock, monkeypat
 
 
 def test_engine_kwargs_prompt_names_tenant_database(as_user, monkeypatch):
-    monkeypatch.delenv("TEST_SNOWFLAKE_DATABASE", raising=False)
     monkeypatch.setattr(snowflake_client, "tenant_database",
                         lambda t: {TENANT_A.tenant_id: "DB_A", TENANT_B.tenant_id: "DB_B"}[t.tenant_id])
     kwargs = lambda_handler._engine_kwargs(TENANT_B)
@@ -291,3 +287,10 @@ def test_conversation_routes_403_when_tenant_not_ready(as_user, monkeypatch, met
     monkeypatch.setattr(tenancy, "get_tenant", lambda tid: (_ for _ in ()).throw(TenantNotReady(tid)))
     r = getattr(as_user(user_of(TENANT_A)), method)(path, headers=AUTH)
     assert r.status_code == 403 and r.json()["detail"] == NOT_READY
+
+
+def test_the_database_comes_from_the_tenant_whatever_the_environment_says(monkeypatch):
+    install_tenants(monkeypatch, TENANT_A, TENANT_B)
+    monkeypatch.setenv("TEST_SNOWFLAKE_DATABASE", "ONE_DB_FOR_ALL")
+    assert lambda_handler._database_for(TENANT_A) == "DB_TENANT_A"
+    assert lambda_handler._database_for(TENANT_B) == "DB_TENANT_B"

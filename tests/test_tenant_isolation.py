@@ -112,7 +112,6 @@ def world(monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.delenv("TEST_SNOWFLAKE_DATABASE", raising=False)
     with mock_aws():
         ddb = boto3.resource("dynamodb", region_name="us-east-1")
         registry = _table(ddb, "tenants-test", ["tenant_id"])

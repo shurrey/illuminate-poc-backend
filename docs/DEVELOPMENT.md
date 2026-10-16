@@ -28,8 +28,8 @@ python -m pytest -k overlay                        # a subset by name
 
 Tests do not call Bedrock, Snowflake or AWS. DynamoDB is provided by `moto` (`mock_aws`); Bedrock is
 replaced by scripted `converse` stubs; Snowflake execution and token validation are monkeypatched;
-the data dictionary is read from the snapshot in `semantic_layer/data/`. Route tests set
-`TEST_SNOWFLAKE_DATABASE` so the database comes from the environment, not a tenant's secret.
+the data dictionary is read from the snapshot in `semantic_layer/data/`. Route tests use
+`install_tenants` (`tests/tenant_fakes.py`), which patches each tenant's database instead of reading its secret.
 
 `cdk/test/check_template.py` asserts properties of the synthesized CloudFormation templates; see its
 docstring for the `cdk synth` command to run first.

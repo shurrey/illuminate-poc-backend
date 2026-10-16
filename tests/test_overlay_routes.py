@@ -19,8 +19,7 @@ def client(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
-    monkeypatch.setenv("TEST_SNOWFLAKE_DATABASE", "TESTDB")
-    install_tenants(monkeypatch, TENANT_A, TENANT_B)
+    install_tenants(monkeypatch, TENANT_A, TENANT_B, database="TESTDB")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         t = boto3.resource("dynamodb", region_name="us-east-1").create_table(

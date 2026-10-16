@@ -1,9 +1,6 @@
 import os
 import sys
 
-# Route tests resolve the database from here rather than a tenant's secret.
-os.environ.setdefault("TEST_SNOWFLAKE_DATABASE", "ILLUMINATE")
-
 import pytest  # noqa: E402
 
 import overlay_store  # noqa: E402
