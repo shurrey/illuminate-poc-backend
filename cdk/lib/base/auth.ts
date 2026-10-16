@@ -119,8 +119,8 @@ export class Auth extends Construct {
         ]),
       });
 
-      // Backfill: ensure the tenant_id attribute is set even on existing users
-      // (the InitialUser resource above no-ops if the user already exists).
+      // onCreate only, with a physical id that does not include the tenant: a CloudFormation Update
+      // makes the handler skip the SDK call and keep the id, so a deploy never re-tenants an existing user.
       const setTenantId = new cr.AwsCustomResource(this, 'InitialUserTenantId', {
         onCreate: {
           service: 'CognitoIdentityServiceProvider',
@@ -131,19 +131,7 @@ export class Auth extends Construct {
             UserAttributes: [{ Name: 'custom:tenant_id', Value: tenantId }],
           },
           physicalResourceId: cr.PhysicalResourceId.of(
-            `initial-user-tenant-${props.initialUserEmail}-${tenantId}`,
-          ),
-        },
-        onUpdate: {
-          service: 'CognitoIdentityServiceProvider',
-          action: 'adminUpdateUserAttributes',
-          parameters: {
-            UserPoolId: this.userPool.userPoolId,
-            Username: props.initialUserEmail,
-            UserAttributes: [{ Name: 'custom:tenant_id', Value: tenantId }],
-          },
-          physicalResourceId: cr.PhysicalResourceId.of(
-            `initial-user-tenant-${props.initialUserEmail}-${tenantId}`,
+            `initial-user-tenant-${props.initialUserEmail}`,
           ),
         },
         policy: cr.AwsCustomResourcePolicy.fromStatements([

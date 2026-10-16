@@ -32,10 +32,11 @@ cp .env.example .env
 | `COGNITO_USER_PASSWORD` | `initialUserPassword` | Initial user's password. The initial user is created, given `custom:tenant_id` and added to `illuminate-admins` only when this is set and a tenant id is set (see below). |
 | `COGNITO_USER_NAME` | `initialUserName` | Initial user's display name |
 
-The seed user's tenant comes from `initialTenantId` in `cdk/cdk.json` context (or the `INITIAL_TENANT_ID`
-environment variable or `.env` entry). It is required for the seed user and has no default. Set it before any base-stack
-deploy: without it the seed-user resources are removed, and adding them back later re-runs the
-password reset.
+The seed user's tenant comes from `initialTenantIds` in `cdk/cdk.json` context, a map keyed by environment
+(`{"dev": "<tenant id>"}`). The `INITIAL_TENANT_ID` environment variable or `.env` entry overrides the map. It is
+required for the seed user and has no default: an environment with no entry and no override gets no seed-user
+resources, and adding them back later re-runs the password reset. The tenant is stamped on the user once, at creation;
+changing the configured tenant later never re-tenants an existing user (use `scripts/tenant.py` to manage tenants).
 
 The environment name comes from `-c environment=<env>` (default `dev`, set in `cdk/cdk.json`) and
 is part of every resource name.
@@ -90,7 +91,8 @@ also deploys base. The base deploy schedules the old secret for deletion; Secret
 a recovery window, during which its name stays reserved. Nothing reads it.
 
 `npm run deploy:api` and `npm run deploy:base` wrap `cdk deploy IlluminateApi-*` and
-`cdk deploy IlluminateBase-*`.
+`cdk deploy IlluminateBase-*`. When upgrading, pass `--exclusively` through npm
+(`npm run deploy:api -- --exclusively`) so the base stack is deployed on its own, as described above.
 
 ### After an API deploy: redeploy the frontend infrastructure
 
@@ -146,13 +148,27 @@ missing):
 scripts/set-snowflake-secret.sh <tenant_id>
 ```
 
-`scripts/tenant.py migrate-current` moves an existing single-tenant deployment into the first tenant,
-and `scripts/tenant.py list` shows the registered tenants (counts only, never secrets). Both use
-`AWS_PROFILE` credentials and take `--env`.
+The Lambda role can only read secrets under `illuminate/tenants/*`. Each Lambda instance re-reads a tenant's
+credentials and connection every 300 seconds, so a changed secret takes effect within about five minutes
+without a deploy.
 
-The Lambda role can only read secrets under `illuminate/tenants/*`. Each Lambda instance caches the
-credentials and connection after first use, so after changing a secret, new values take effect as
-instances are replaced (for example after an API deploy).
+### Managing tenants with `scripts/tenant.py`
+
+All subcommands use `AWS_PROFILE` credentials and take `--env` (default `dev`) before the subcommand.
+
+| Subcommand | Purpose |
+|------------|---------|
+| `migrate-current` | Move an existing single-tenant deployment into the first tenant (`--old-tenant-id`, `--name`, `--license`, `--user-pool-id`, `--dry-run`). |
+| `list` | Show registered tenants (counts only, never secrets). |
+| `create --name N --license L` | Create a tenant with its connection and users (`--snowflake FILE` or `--copy-connection-from TENANT_ID`, `--users FILE`, `--user-pool-id`). |
+| `add-users TENANT_ID --users FILE` | Add users to a tenant. |
+| `set-connection TENANT_ID` | Replace the tenant's Snowflake connection (`--snowflake FILE` or `--copy-connection-from TENANT_ID`). |
+| `set-license TENANT_ID LICENSE` | Change the tenant's license. |
+
+`--users` is a CSV with the header `email,role`; `--snowflake` is a JSON file with `account`, `user`,
+`password`, `database`, `warehouse` and `role`. By default Cognito emails each new user an invitation.
+With `--no-email` the invitation is suppressed and the temporary password is read from the
+`ILLUMINATE_TEMP_PASSWORD` environment variable.
 
 ## IAM
 
