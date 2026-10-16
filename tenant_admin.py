@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 
 from botocore.exceptions import ClientError
 
+from licenses import LICENSES
+from roles import GROUP_ROLES
+
 
 def _scan(table, **kwargs) -> list[dict]:
     items = []
@@ -85,6 +88,7 @@ def _require_a_secret_to_use(dynamodb, secrets, env, old_tenant_id) -> None:
 
 
 def _find_or_create_tenant(dynamodb, env, old_tenant_id, name, license, dry_run) -> tuple[str, int]:
+    _check_license(license)
     table = dynamodb.Table(f"illuminate-tenants-{env}")
     existing = _find_tenant(dynamodb, env, old_tenant_id)
     if existing:
@@ -213,3 +217,133 @@ def migrate_current(*, dynamodb, secrets, cognito, user_pool_id: str, env: str, 
 def list_tenants(*, dynamodb, env: str) -> list[dict]:
     """The registry rows, by name. Secrets are never read."""
     return sorted(_scan(dynamodb.Table(f"illuminate-tenants-{env}")), key=lambda r: r.get("name", ""))
+
+
+REQUIRED_CONNECTION_KEYS = ("account", "user", "password", "database", "warehouse", "role")
+ROLE_GROUPS = {role.capitalize(): group for group, role in GROUP_ROLES.items()} | {"Viewer": None}
+
+
+def _check_license(license: str) -> None:
+    if license not in LICENSES:
+        raise ValueError(f"Unknown license {license!r}; expected one of {sorted(LICENSES)}.")
+
+
+def _check_users(users, send_email: bool, temporary_password: str | None) -> None:
+    bad = sorted({role for _, role in users if role not in ROLE_GROUPS})
+    if bad:
+        raise ValueError(f"Unknown role {bad}; expected one of {sorted(ROLE_GROUPS)}.")
+    if not send_email and not temporary_password:
+        raise ValueError("A temporary password is required when the invitation email is suppressed.")
+
+
+def _secret_id(tenant_id: str) -> str:
+    return f"illuminate/tenants/{tenant_id}/snowflake"
+
+
+def _connection_string(secrets, connection: dict | None, copy_connection_from: str | None) -> str:
+    """The secret value to store: the given connection JSON, or another tenant's secret read server-side."""
+    if (connection is None) == (copy_connection_from is None):
+        raise ValueError("Give exactly one of connection or copy_connection_from.")
+    if connection is not None:
+        missing = [k for k in REQUIRED_CONNECTION_KEYS if not connection.get(k)]
+        if missing:
+            raise ValueError(f"The connection is missing: {', '.join(missing)}.")
+        return json.dumps(connection)
+    try:
+        return secrets.get_secret_value(SecretId=_secret_id(copy_connection_from))["SecretString"]
+    except ClientError as e:
+        if _is_code(e, "ResourceNotFoundException"):
+            raise ValueError(f"Tenant {copy_connection_from} has no Snowflake secret to copy.") from e
+        raise
+
+
+def _put_secret(secrets, tenant_id: str, value: str) -> None:
+    try:
+        secrets.create_secret(Name=_secret_id(tenant_id), SecretString=value)
+    except ClientError as e:
+        if not _is_code(e, "ResourceExistsException"):
+            raise
+        secrets.put_secret_value(SecretId=_secret_id(tenant_id), SecretString=value)
+
+
+def _tenant_row(dynamodb, env: str, tenant_id: str) -> dict:
+    item = dynamodb.Table(f"illuminate-tenants-{env}").get_item(Key={"tenant_id": tenant_id}, ConsistentRead=True).get("Item")
+    if not item:
+        raise ValueError(f"Tenant {tenant_id} does not exist.")
+    return item
+
+
+def _find_user(cognito, user_pool_id: str, email: str) -> dict | None:
+    try:
+        return cognito.admin_get_user(UserPoolId=user_pool_id, Username=email)
+    except ClientError as e:
+        if _is_code(e, "UserNotFoundException"):
+            return None
+        raise
+
+
+def add_users(*, cognito, user_pool_id: str, tenant_id: str, users, send_email: bool = True,
+              temporary_password: str | None = None) -> dict:
+    """Create each (email, role) user in the tenant; returns {users_created, users_refused}.
+
+    An email that exists with another tenant or none is refused and left unchanged.
+    An existing user of this tenant only gains the role's group if missing. Roles are checked before any write.
+    """
+    _check_users(users, send_email, temporary_password)
+    created, refused = [], []
+    for email, role in users:
+        group = ROLE_GROUPS[role]
+        existing = _find_user(cognito, user_pool_id, email)
+        if existing is not None:
+            if _attr({"Attributes": existing["UserAttributes"]}, "custom:tenant_id") != tenant_id:
+                refused.append(email)
+                continue
+        else:
+            kwargs = {"MessageAction": "SUPPRESS", "TemporaryPassword": temporary_password} if not send_email else {}
+            cognito.admin_create_user(
+                UserPoolId=user_pool_id, Username=email, **kwargs,
+                UserAttributes=[{"Name": "email", "Value": email}, {"Name": "email_verified", "Value": "true"},
+                                {"Name": "custom:tenant_id", "Value": tenant_id}])
+            created.append(email)
+        if group:
+            current = cognito.admin_list_groups_for_user(UserPoolId=user_pool_id, Username=email)["Groups"]
+            if group not in {g["GroupName"] for g in current}:
+                cognito.admin_add_user_to_group(UserPoolId=user_pool_id, Username=email, GroupName=group)
+    return {"users_created": created, "users_refused": refused}
+
+
+def create_tenant(*, dynamodb, secrets, cognito, user_pool_id: str, env: str, name: str, license: str,
+                  connection: dict | None = None, copy_connection_from: str | None = None, users=(),
+                  send_email: bool = True, temporary_password: str | None = None) -> dict:
+    """Create a tenant with its Snowflake secret and users; returns {tenant_id, users_created, users_refused}.
+
+    The registry row is written last, after the secret, so a failure never leaves a tenant without a secret.
+    """
+    _check_license(license)
+    _check_users(users, send_email, temporary_password)
+    value = _connection_string(secrets, connection, copy_connection_from)
+    tenant_id = str(uuid.uuid4())
+    _put_secret(secrets, tenant_id, value)
+    now = datetime.now(timezone.utc).isoformat()
+    dynamodb.Table(f"illuminate-tenants-{env}").put_item(Item={
+        "tenant_id": tenant_id, "name": name, "license": license, "mcp_enabled": False,
+        "created_at": now, "updated_at": now})
+    result = add_users(cognito=cognito, user_pool_id=user_pool_id, tenant_id=tenant_id, users=users,
+                       send_email=send_email, temporary_password=temporary_password)
+    return {"tenant_id": tenant_id, **result}
+
+
+def set_connection(*, dynamodb, secrets, env: str, tenant_id: str, connection: dict | None = None,
+                   copy_connection_from: str | None = None) -> None:
+    """Replace the tenant's Snowflake secret. Warm Lambdas pick it up within the credential cache TTL."""
+    _tenant_row(dynamodb, env, tenant_id)
+    _put_secret(secrets, tenant_id, _connection_string(secrets, connection, copy_connection_from))
+
+
+def set_license(*, dynamodb, env: str, tenant_id: str, license: str) -> None:
+    """Change the tenant's license. Warm Lambdas pick it up within the registry cache (60 s)."""
+    _check_license(license)
+    _tenant_row(dynamodb, env, tenant_id)
+    dynamodb.Table(f"illuminate-tenants-{env}").update_item(
+        Key={"tenant_id": tenant_id}, UpdateExpression="SET license = :l, updated_at = :u",
+        ExpressionAttributeValues={":l": license, ":u": datetime.now(timezone.utc).isoformat()})
