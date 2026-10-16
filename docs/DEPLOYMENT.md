@@ -29,14 +29,18 @@ cp .env.example .env
 | `.env` | Context key | Used for |
 |--------|-------------|----------|
 | `COGNITO_USER_EMAIL` | `initialUserEmail` | Initial Cognito user (default `admin@example.com`) |
-| `COGNITO_USER_PASSWORD` | `initialUserPassword` | Initial user's password. The initial user is created, given `custom:tenant_id` and added to `illuminate-admins` only when this is set and a tenant id is set (see below). |
+| `COGNITO_USER_PASSWORD` | `initialUserPassword` | Initial user's password. The initial user is created with `custom:tenant_id` and this password and added to `illuminate-admins` only when this is set and a tenant id is set (see below). |
 | `COGNITO_USER_NAME` | `initialUserName` | Initial user's display name |
 
 The seed user's tenant comes from `initialTenantIds` in `cdk/cdk.json` context, a map keyed by environment
 (`{"dev": "<tenant id>"}`). The `INITIAL_TENANT_ID` environment variable or `.env` entry overrides the map. It is
 required for the seed user and has no default: an environment with no entry and no override gets no seed-user
-resources, and adding them back later re-runs the password reset. The tenant is stamped on the user once, at creation;
-changing the configured tenant later never re-tenants an existing user (use `scripts/tenant.py` to manage tenants).
+resources. The seed resources act only when the stack first creates them, and only on a user they create: the tenant
+and password are set at creation, and the password and admin-group calls name the user that creation returned. No
+deploy changes an existing user's tenant, password or groups. Changing the email, password or tenant on a deployed
+stack does nothing; if the seed resources are created again (for example after an environment's entry is removed
+and re-added) and a user with that email already exists, the deploy fails and rolls back without touching it. Use
+`scripts/tenant.py` to manage tenants and users.
 
 The environment name comes from `-c environment=<env>` (default `dev`, set in `cdk/cdk.json`) and
 is part of every resource name.

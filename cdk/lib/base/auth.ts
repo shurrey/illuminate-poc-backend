@@ -1,3 +1,4 @@
+import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as cr from 'aws-cdk-lib/custom-resources';
@@ -86,7 +87,9 @@ export class Auth extends Construct {
       writeAttributes: new cognito.ClientAttributes().withStandardAttributes({ email: true, fullname: true }),
     });
 
-    // Create initial admin user on first deploy (idempotent — ignores if user exists)
+    // Seed admin user, stamped with its tenant at creation. Every call is onCreate only (an Update runs none) and the
+    // create fails rather than adopt an existing user, so no deploy changes a user this stack did not create.
+    // Later calls use the create's physical id (the created username): a no-op Update keeps it but returns no data.
     if (props.initialUserEmail && props.initialUserPassword && props.initialTenantId) {
       const tenantId = props.initialTenantId;
 
@@ -108,40 +111,17 @@ export class Auth extends Construct {
             MessageAction: 'SUPPRESS',
             TemporaryPassword: props.initialUserPassword,
           },
-          physicalResourceId: cr.PhysicalResourceId.of(`initial-user-${props.initialUserEmail}`),
-          ignoreErrorCodesMatching: 'UsernameExistsException',
+          physicalResourceId: cr.PhysicalResourceId.fromResponse('User.Username'),
+          outputPaths: ['User.Username'],
         },
         policy: cr.AwsCustomResourcePolicy.fromStatements([
           new iam.PolicyStatement({
-            actions: ['cognito-idp:AdminCreateUser', 'cognito-idp:AdminSetUserPassword'],
+            actions: ['cognito-idp:AdminCreateUser'],
             resources: [this.userPool.userPoolArn],
           }),
         ]),
       });
-
-      // onCreate only, with a physical id that does not include the tenant: a CloudFormation Update
-      // makes the handler skip the SDK call and keep the id, so a deploy never re-tenants an existing user.
-      const setTenantId = new cr.AwsCustomResource(this, 'InitialUserTenantId', {
-        onCreate: {
-          service: 'CognitoIdentityServiceProvider',
-          action: 'adminUpdateUserAttributes',
-          parameters: {
-            UserPoolId: this.userPool.userPoolId,
-            Username: props.initialUserEmail,
-            UserAttributes: [{ Name: 'custom:tenant_id', Value: tenantId }],
-          },
-          physicalResourceId: cr.PhysicalResourceId.of(
-            `initial-user-tenant-${props.initialUserEmail}`,
-          ),
-        },
-        policy: cr.AwsCustomResourcePolicy.fromStatements([
-          new iam.PolicyStatement({
-            actions: ['cognito-idp:AdminUpdateUserAttributes'],
-            resources: [this.userPool.userPoolArn],
-          }),
-        ]),
-      });
-      setTenantId.node.addDependency(createUser);
+      const createdUsername = (createUser.node.defaultChild as cdk.CustomResource).ref;
 
       // Set the permanent password (moves user from FORCE_CHANGE_PASSWORD to CONFIRMED)
       const setPassword = new cr.AwsCustomResource(this, 'InitialUserPassword', {
@@ -150,7 +130,7 @@ export class Auth extends Construct {
           action: 'adminSetUserPassword',
           parameters: {
             UserPoolId: this.userPool.userPoolId,
-            Username: props.initialUserEmail,
+            Username: createdUsername,
             Password: props.initialUserPassword,
             Permanent: true,
           },
@@ -164,15 +144,13 @@ export class Auth extends Construct {
         ]),
       });
 
-      setPassword.node.addDependency(createUser);
-
       const addToAdmins = new cr.AwsCustomResource(this, 'InitialUserAdminGroup', {
         onCreate: {
           service: 'CognitoIdentityServiceProvider',
           action: 'adminAddUserToGroup',
           parameters: {
             UserPoolId: this.userPool.userPoolId,
-            Username: props.initialUserEmail,
+            Username: createdUsername,
             GroupName: ADMIN_GROUP_NAME,
           },
           physicalResourceId: cr.PhysicalResourceId.of(`initial-user-admin-${props.initialUserEmail}`),
@@ -185,7 +163,6 @@ export class Auth extends Construct {
           }),
         ]),
       });
-      addToAdmins.node.addDependency(createUser);
       addToAdmins.node.addDependency(adminGroup);
     }
   }
