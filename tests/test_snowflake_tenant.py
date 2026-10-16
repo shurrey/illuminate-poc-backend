@@ -139,3 +139,32 @@ def test_none_tenant_raises_tenant_not_ready(aws):
     with pytest.raises(TenantNotReady):
         snowflake_client.tenant_database(None)
     assert aws.secret_ids == [] and aws.connects == []
+
+
+def test_validate_and_execute_propagates_none_tenant(aws):
+    with pytest.raises(TenantNotReady):
+        snowflake_client.validate_and_execute("SELECT 1 FROM CDM_LMS.T", tenant=None)
+    assert aws.secret_ids == [] and aws.connects == []
+
+
+def test_validate_and_execute_propagates_missing_secret(aws):
+    del aws.secrets["illuminate/tenants/T1/snowflake"]
+    with pytest.raises(TenantNotReady):
+        snowflake_client.validate_and_execute("SELECT 1 FROM CDM_LMS.T", tenant=T1)
+    assert aws.connects == []
+
+
+def test_show_branch_propagates_tenant_not_ready(monkeypatch):
+    def not_ready(*a, **k):
+        raise TenantNotReady("T1")
+
+    monkeypatch.setattr(snowflake_client, "query_sql", not_ready)
+    with pytest.raises(TenantNotReady):
+        snowflake_client.validate_and_execute("SHOW TABLES", tenant=None)
+
+
+def test_secret_without_database_raises_before_connecting(aws):
+    aws.secrets["illuminate/tenants/T1/snowflake"].pop("database")
+    with pytest.raises(TenantNotReady):
+        snowflake_client.get_connection(T1)
+    assert aws.connects == []

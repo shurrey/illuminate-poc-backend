@@ -65,11 +65,12 @@ def get_connection(tenant: Tenant | None):
         import snowflake.connector
 
         creds = _load_credentials(tenant)
+        tenant_database(tenant)
         conn = snowflake.connector.connect(
             account=creds.get("account", ""),
             user=creds.get("user", creds.get("username", "")),
             password=creds.get("password", ""),
-            database=creds.get("database", ""),
+            database=creds["database"],
             warehouse=creds.get("warehouse", ""),
             role=creds.get("role", ""),
             network_timeout=30,
@@ -143,6 +144,8 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
                 return {"error": f"Statement contains disallowed keyword: {kw}"}
         try:
             return query_sql(stripped, params, tenant=tenant)
+        except TenantNotReady:
+            raise
         except Exception as exc:
             return {"error": str(exc)}
 
@@ -256,6 +259,8 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     # Validation passed — execute
     try:
         return query_sql(stripped, params, tenant=tenant)
+    except TenantNotReady:
+        raise
     except Exception as exc:
         logger.error("Snowflake execution error: %s", exc)
         # warehouse_error separates Snowflake failures (internal detail) from guard rejections.
