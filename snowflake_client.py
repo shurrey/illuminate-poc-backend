@@ -127,6 +127,20 @@ def _in_filter(node) -> bool:
     return False
 
 
+def _is_cte_reference(table_node) -> bool:
+    """True when an unqualified table names a CTE defined in an enclosing WITH."""
+    import sqlglot.expressions as exp
+
+    name = table_node.name.upper()
+    node = table_node.parent
+    while node is not None:
+        with_ = node.args.get("with") or node.args.get("with_")
+        if with_ is not None and any(cte.alias.upper() == name for cte in with_.expressions):
+            return True
+        node = node.parent
+    return False
+
+
 def _qualified_functions(stmt):
     """Yield the qualifier identifiers ([database,] schema) of each schema-qualified function call."""
     import sqlglot.expressions as exp
@@ -227,6 +241,13 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         db_part = table_node.args.get("db")
         if db_part and db_part.name.upper() == "INFORMATION_SCHEMA" and table_node.name.upper() == "DATABASES":
             return {"error": "INFORMATION_SCHEMA.DATABASES is not accessible."}
+
+    # Without a schema Snowflake resolves the table in the session's default schema, which may be LEARN.
+    for table_node in stmt.find_all(exp.Table):
+        if (isinstance(table_node.this, exp.Identifier) and not table_node.args.get("db")
+                and not _is_cte_reference(table_node)):
+            name = table_node.name
+            return {"error": f"Name the schema for table {name.upper()} (for example CDM_LMS.{name.upper()})."}
 
     schemas = [t.args.get("db") for t in stmt.find_all(exp.Table)] + [parts[-1] for parts in qualified_functions]
     for schema_part in filter(None, schemas):

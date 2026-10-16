@@ -291,6 +291,7 @@ def test_function_in_own_database_allowed(monkeypatch, executed):
     from tests.tenant_fakes import install_tenants
     install_tenants(monkeypatch, TENANT_A)
     assert "error" not in _validate("SELECT DB_TENANT_A.CDM_LMS.F(1) FROM CDM_LMS.COURSE")
+    assert len(executed) == 1
 
 
 def test_function_in_disallowed_schema_refused(executed):
@@ -299,16 +300,49 @@ def test_function_in_disallowed_schema_refused(executed):
 
 
 @pytest.mark.parametrize("sql", [
-    "SELECT * FROM INFORMATION_SCHEMA.DATABASES",
-    "SELECT * FROM DB_TENANT_A.INFORMATION_SCHEMA.DATABASES",
-    "SELECT * FROM information_schema.databases",
+    "SELECT DATABASE_NAME FROM INFORMATION_SCHEMA.DATABASES",
+    "SELECT DATABASE_NAME FROM DB_TENANT_A.INFORMATION_SCHEMA.DATABASES",
+    "SELECT database_name FROM information_schema.databases",
 ])
 def test_information_schema_databases_refused(monkeypatch, executed, sql):
     from tests.tenant_fakes import install_tenants
     install_tenants(monkeypatch, TENANT_A)
-    assert "error" in _validate(sql)
+    assert _validate(sql) == {"error": "INFORMATION_SCHEMA.DATABASES is not accessible."}
     assert executed == []
 
 
 def test_information_schema_tables_still_allowed(executed):
     assert "error" not in _validate("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT ID FROM USERS",
+    "SELECT ID FROM DB_CORE_COLLEGE..USERS",
+    "SELECT ID FROM CDM_LMS.COURSE WHERE ID IN (SELECT ID FROM USERS)",
+    "WITH a AS (SELECT 1 AS ID FROM CDM_LMS.COURSE) SELECT ID FROM a UNION ALL SELECT ID FROM USERS",
+    "SELECT ID FROM (WITH USERS AS (SELECT 1 AS ID FROM CDM_LMS.COURSE) SELECT ID FROM USERS) UNION ALL SELECT ID FROM USERS",
+])
+def test_unqualified_table_is_refused_for_core_and_premium(monkeypatch, executed, sql):
+    from tests.tenant_fakes import install_tenants
+    install_tenants(monkeypatch, CORE, TENANT_A, database="DB_CORE_COLLEGE")
+    for tenant in (CORE, TENANT_A):
+        result = _validate_as(tenant, sql)
+        assert "Name the schema for table" in result["error"]
+    assert executed == []
+
+
+def test_unqualified_table_message_names_the_table(executed):
+    assert _validate("SELECT ID FROM USERS")["error"] == "Name the schema for table USERS (for example CDM_LMS.USERS)."
+
+
+@pytest.mark.parametrize("sql", [
+    "WITH a AS (SELECT ID FROM CDM_LMS.COURSE) SELECT ID FROM a",
+    "WITH a AS (SELECT ID FROM CDM_LMS.COURSE) SELECT ID FROM CDM_LMS.COURSE WHERE ID IN (SELECT ID FROM a)",
+    "WITH a AS (SELECT ID FROM CDM_LMS.COURSE), b AS (SELECT ID FROM a) SELECT ID FROM b",
+    "SELECT ID FROM (WITH a AS (SELECT ID FROM CDM_LMS.COURSE) SELECT ID FROM a) x",
+    "WITH RECURSIVE a AS (SELECT 1 AS ID UNION ALL SELECT ID + 1 FROM a WHERE ID < 5) SELECT ID FROM a",
+    "SELECT SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 5))",
+])
+def test_cte_names_and_generator_are_allowed_unqualified(executed, sql):
+    assert "error" not in _validate(sql)
+    assert len(executed) == 1
