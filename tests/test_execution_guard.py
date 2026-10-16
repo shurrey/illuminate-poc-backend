@@ -307,12 +307,35 @@ def test_function_in_disallowed_schema_refused(executed):
 def test_information_schema_databases_refused(monkeypatch, executed, sql):
     from tests.tenant_fakes import install_tenants
     install_tenants(monkeypatch, TENANT_A)
-    assert _validate(sql) == {"error": "INFORMATION_SCHEMA.DATABASES is not accessible."}
+    assert _validate(sql)["error"].startswith("INFORMATION_SCHEMA.DATABASES is not accessible.")
     assert executed == []
 
 
-def test_information_schema_tables_still_allowed(executed):
-    assert "error" not in _validate("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES")
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.ENABLED_ROLES",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.APPLICABLE_ROLES",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.OBJECT_PRIVILEGES",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.LOAD_HISTORY",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.FUNCTIONS",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STAGES",
+    "SELECT COUNT(*) FROM information_schema.usage_privileges",
+    "SELECT COUNT(*) FROM DB_TENANT_A.INFORMATION_SCHEMA.TABLE_PRIVILEGES",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE WHERE NAME IN (SELECT GRANTEE FROM INFORMATION_SCHEMA.OBJECT_PRIVILEGES)",
+    'SELECT COUNT(*) FROM INFORMATION_SCHEMA."tables"',
+])
+def test_information_schema_views_outside_the_allow_list_are_refused(monkeypatch, executed, sql):
+    from tests.tenant_fakes import install_tenants
+    install_tenants(monkeypatch, TENANT_A)
+    assert "is not accessible" in _validate(sql)["error"], sql
+    assert executed == []
+
+
+@pytest.mark.parametrize("view", ["TABLES", "COLUMNS", "VIEWS", "SCHEMATA", "TABLE_CONSTRAINTS", "tables"])
+def test_information_schema_allow_listed_views_run(monkeypatch, executed, view):
+    from tests.tenant_fakes import install_tenants
+    install_tenants(monkeypatch, TENANT_A)
+    assert "error" not in _validate(f"SELECT COUNT(*) FROM INFORMATION_SCHEMA.{view}")
+    assert "error" not in _validate(f"SELECT COUNT(*) FROM DB_TENANT_A.INFORMATION_SCHEMA.{view}")
 
 
 @pytest.mark.parametrize("sql", [

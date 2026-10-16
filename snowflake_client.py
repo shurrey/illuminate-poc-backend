@@ -308,6 +308,8 @@ def _qualified_functions(stmt):
             yield parts
 
 
+_INFORMATION_SCHEMA_VIEWS = frozenset({"TABLES", "COLUMNS", "VIEWS", "SCHEMATA", "TABLE_CONSTRAINTS"})
+
 TABLE_FUNCTION_REFUSAL = ("This table function is not allowed. Use FLATTEN, SPLIT_TO_TABLE, STRTOK_SPLIT_TO_TABLE,"
                           " GENERATOR with a literal ROWCOUNT, or a LATERAL subquery.")
 
@@ -380,7 +382,9 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
     Allowed statement types: SELECT, WITH (CTE), UNION.
-    Blocked: DML/DDL in any subquery, references outside CDM_*, INFORMATION_SCHEMA and (Premium only) LEARN, INFORMATION_SCHEMA.DATABASES, tables in another database, LIMIT > 1000, and
+    Blocked: DML/DDL in any subquery, references outside CDM_*, INFORMATION_SCHEMA and (Premium only) LEARN,
+    INFORMATION_SCHEMA views other than TABLES, COLUMNS, VIEWS, SCHEMATA and TABLE_CONSTRAINTS, table
+    functions outside the allow-list, query-history and system functions, tables in another database, LIMIT > 1000, and
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
     allow_identity lifts the projection check for compiled SQL only (callers whose role may see
@@ -459,11 +463,13 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         if catalog.name.upper() != own_database:
             return {"error": f"Database '{catalog.name}' is not the tenant's database. Only the tenant's own database is accessible."}
 
-    # INFORMATION_SCHEMA.DATABASES lists every database the role can see.
+    # Other views list databases, roles, grants, stages and load history beyond the tenant's tables.
     for table_node in stmt.find_all(exp.Table):
         db_part = table_node.args.get("db")
-        if db_part and db_part.name.upper() == "INFORMATION_SCHEMA" and table_node.name.upper() == "DATABASES":
-            return {"error": "INFORMATION_SCHEMA.DATABASES is not accessible."}
+        if (db_part and db_part.name.upper() == "INFORMATION_SCHEMA" and isinstance(table_node.this, exp.Identifier)
+                and _folded(table_node.this) not in _INFORMATION_SCHEMA_VIEWS):
+            return {"error": f"INFORMATION_SCHEMA.{table_node.name.upper()} is not accessible. "
+                             "Only TABLES, COLUMNS, VIEWS, SCHEMATA and TABLE_CONSTRAINTS are."}
 
     # Without a schema Snowflake resolves the table in the session's default schema, which may be LEARN.
     for table_node in stmt.find_all(exp.Table):
