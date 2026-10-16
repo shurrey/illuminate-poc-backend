@@ -52,6 +52,15 @@ def test_legacy_items_without_an_owner_are_not_readable(table):
     assert conversation_store.load_history("old", "alice") == []
 
 
+def test_an_item_with_no_owner_cannot_be_written_by_anyone(table):
+    table.put_item(Item={"context_id": "old", "messages": "[]"})
+    conversation_store.save_turn("old", "alice", "mine now", "ok")
+    conversation_store.save_turn("old", "bob", "no, mine", "ok")
+    assert "owner_sub" not in table.get_item(Key={"context_id": "old"})["Item"]
+    assert table.get_item(Key={"context_id": "old"})["Item"]["messages"] == "[]"
+    assert conversation_store.load_history("old", "alice") == conversation_store.load_history("old", "bob") == []
+
+
 OWNER_ALICE = f"{TENANT_A.tenant_id}#alice"
 OWNER_BOB = f"{TENANT_A.tenant_id}#bob"
 
