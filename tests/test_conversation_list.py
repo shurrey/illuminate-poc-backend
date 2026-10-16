@@ -5,6 +5,7 @@ from moto import mock_aws
 
 import conversation_store
 import lambda_handler
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 
@@ -59,8 +60,9 @@ def test_the_title_is_the_first_question_and_survives_later_turns(table, clock):
 
 
 def test_conversations_route_lists_the_callers_conversations(table, monkeypatch):
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "alice"} if a else None)
-    conversation_store.save_turn("c1", "alice", "How many courses?", "5,183")
+    install_tenants(monkeypatch, TENANT_A)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A, sub="alice") if a else None)
+    conversation_store.save_turn("c1", f"{TENANT_A.tenant_id}#alice", "How many courses?", "5,183")
     client = TestClient(lambda_handler.app)
     assert client.get("/api/conversations").status_code == 401
     body = client.get("/api/conversations", headers=AUTH).json()

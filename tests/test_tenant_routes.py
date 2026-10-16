@@ -1,6 +1,10 @@
+import boto3
 import pytest
 from fastapi.testclient import TestClient
 
+from moto import mock_aws
+
+import conversation_store
 import lambda_handler
 import overlay_store
 import snowflake_client
@@ -204,3 +208,80 @@ def test_chat_engine_import_reads_no_secret(monkeypatch):
     monkeypatch.setattr(boto3, "client", client)
     monkeypatch.delitem(sys.modules, "chat_engine", raising=False)
     importlib.import_module("chat_engine")
+
+
+@pytest.fixture
+def conversations(monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    with mock_aws():
+        t = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="conversations-test",
+            KeySchema=[{"AttributeName": "context_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "context_id", "AttributeType": "S"},
+                                  {"AttributeName": "owner_sub", "AttributeType": "S"},
+                                  {"AttributeName": "updated_at", "AttributeType": "N"}],
+            GlobalSecondaryIndexes=[{
+                "IndexName": conversation_store.OWNER_INDEX,
+                "KeySchema": [{"AttributeName": "owner_sub", "KeyType": "HASH"},
+                              {"AttributeName": "updated_at", "KeyType": "RANGE"}],
+                "Projection": {"ProjectionType": "INCLUDE", "NonKeyAttributes": ["title"]},
+            }],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setattr(conversation_store, "_table", t)
+        yield t
+
+
+def _owner_a(sub="u1"):
+    return lambda_handler._owner(user_of(TENANT_A, sub=sub), TENANT_A)
+
+
+def test_same_sub_other_tenant_cannot_read_conversation(as_user, conversations):
+    conversation_store.save_turn("c1", _owner_a(), "hi", "hello")
+    assert as_user(user_of(TENANT_A)).get("/api/conversations/c1", headers=AUTH).status_code == 200
+    assert as_user(user_of(TENANT_B)).get("/api/conversations/c1", headers=AUTH).status_code == 404
+    assert as_user(user_of(TENANT_B)).delete("/api/conversations/c1", headers=AUTH).status_code == 404
+    assert conversation_store.load_history("c1", _owner_a()) != []
+
+
+def test_same_sub_other_tenant_gets_new_context_id(as_user, conversations, monkeypatch):
+    import chat_engine
+    monkeypatch.setattr(lambda_handler, "_engine_kwargs", lambda tenant: {})
+    monkeypatch.setattr(chat_engine, "send_message", lambda *a, **k: ("answer", [], []))
+    conversation_store.save_turn("c1", _owner_a(), "hi", "hello")
+    r = as_user(user_of(TENANT_B)).post("/api/chat", headers=AUTH, json={"message": "mine", "context_id": "c1"})
+    assert r.status_code == 200
+    assert r.json()["context_id"] != "c1"
+    assert [m["content"] for m in conversation_store.load_history("c1", _owner_a())] == ["hi", "hello"]
+
+
+def test_conversation_list_is_per_tenant(as_user, conversations):
+    conversation_store.save_turn("c1", _owner_a(), "hi", "hello")
+    listed = lambda u: [c["context_id"] for c in as_user(u).get("/api/conversations", headers=AUTH).json()["conversations"]]
+    assert listed(user_of(TENANT_A)) == ["c1"]
+    assert listed(user_of(TENANT_B)) == []
+
+
+def test_legacy_owner_without_tenant_is_unreadable(as_user, conversations):
+    conversation_store.save_turn("old", "u1", "hi", "hello")
+    assert as_user(user_of(TENANT_A)).get("/api/conversations/old", headers=AUTH).status_code == 404
+    assert as_user(user_of(TENANT_A)).get("/api/conversations", headers=AUTH).json() == {"conversations": []}
+
+
+def test_cancel_from_other_tenant_is_404(as_user, monkeypatch):
+    monkeypatch.setattr(lambda_handler, "_request_owners", {"r1": _owner_a()})
+    monkeypatch.setattr(lambda_handler, "_cancelled_requests", set())
+    assert as_user(user_of(TENANT_B)).post("/api/chat/cancel/r1", headers=AUTH).status_code == 404
+    assert as_user(user_of(TENANT_A)).post("/api/chat/cancel/r1", headers=AUTH).status_code == 200
+
+
+@pytest.mark.parametrize("method,path", [("get", "/api/conversations"), ("get", "/api/conversations/c1"),
+                                         ("delete", "/api/conversations/c1"), ("post", "/api/chat/cancel/r1")])
+def test_conversation_routes_403_when_tenant_not_ready(as_user, monkeypatch, method, path):
+    import tenancy
+    monkeypatch.setattr(tenancy, "get_tenant", lambda tid: (_ for _ in ()).throw(TenantNotReady(tid)))
+    r = getattr(as_user(user_of(TENANT_A)), method)(path, headers=AUTH)
+    assert r.status_code == 403 and r.json()["detail"] == NOT_READY

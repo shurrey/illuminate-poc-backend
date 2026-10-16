@@ -245,6 +245,11 @@ class HealthResponse(BaseModel):
 # =============================================================================
 
 
+def _owner(user: dict, tenant: Tenant) -> str:
+    """Conversation owner key. Tenant-qualified so the same sub in two tenants never shares history."""
+    return f"{tenant.tenant_id}#{user['sub']}"
+
+
 def _conversation_id(requested: Optional[str], owner: str) -> str:
     """The caller's conversation id: theirs if they own it or it is unused, otherwise a new one."""
     from conversation_store import exists, owns
@@ -449,7 +454,7 @@ async def chat(
     try:
         result = await send_message(
             message_text=message_text,
-            owner=user["sub"],
+            owner=_owner(user, tenant),
             context_id=context_id,
             engine_kwargs=engine_kwargs,
         )
@@ -496,14 +501,14 @@ async def chat_stream(
     engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant)
 
     if request_id:
-        _request_owners[request_id] = user["sub"]
+        _request_owners[request_id] = _owner(user, tenant)
 
     async def event_generator():
         """Relay SSE events from chat_engine to the frontend."""
         try:
             async for event in send_message_streaming(
                 message_text=message_text,
-                owner=user["sub"],
+                owner=_owner(user, tenant),
                 context_id=context_id,
                 engine_kwargs=engine_kwargs,
             ):
@@ -556,7 +561,7 @@ async def cancel_chat(
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    if _request_owners.get(request_id) != user["sub"]:
+    if _request_owners.get(request_id) != _owner(user, tenant_for(user)):
         raise HTTPException(status_code=404, detail="No such request in progress")
 
     logger.info(f"Cancelling request: {request_id}")
@@ -572,8 +577,9 @@ async def list_conversations(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     import asyncio
     from conversation_store import list_conversations as list_for
+    owner = _owner(user, tenant_for(user))
     loop = asyncio.get_running_loop()
-    return {"conversations": await loop.run_in_executor(None, list_for, user["sub"])}
+    return {"conversations": await loop.run_in_executor(None, list_for, owner)}
 
 
 @app.get("/api/conversations/{context_id}")
@@ -588,9 +594,10 @@ async def get_conversation(
 
     logger.info(f"Conversation history requested for context: {context_id}")
     from conversation_store import load_history, owns
-    if not owns(context_id, user["sub"]):
+    owner = _owner(user, tenant_for(user))
+    if not owns(context_id, owner):
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return {"messages": load_history(context_id, user["sub"])}
+    return {"messages": load_history(context_id, owner)}
 
 
 @app.delete("/api/conversations/{context_id}")
@@ -605,7 +612,7 @@ async def clear_conversation(
 
     logger.info(f"Clear conversation requested for context: {context_id}")
     from conversation_store import clear_history
-    if not clear_history(context_id, user["sub"]):
+    if not clear_history(context_id, _owner(user, tenant_for(user))):
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"success": True}
 
