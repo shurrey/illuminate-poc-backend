@@ -112,7 +112,6 @@ def world(monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.delenv("TEST_SNOWFLAKE_DATABASE", raising=False)
     with mock_aws():
         ddb = boto3.resource("dynamodb", region_name="us-east-1")
         registry = _table(ddb, "tenants-test", ["tenant_id"])
@@ -248,6 +247,16 @@ def test_preview_never_crosses(world):
     r = c.get(PREVIEW, headers=AS_B)
     assert r.status_code == 200 and r.json()["rows"] == [{"TENANT_MARK": MARK_B, "DATABASE": DB_B}]
     _clean(r.text)
+
+
+@pytest.mark.parametrize("table", [f"{DB_A}.CDM_LMS.COURSE", f"{DB_A}.INFORMATION_SCHEMA.DATABASES"])
+def test_raw_sql_naming_another_tenants_database_is_refused_before_any_connection(world, table):
+    tenant_b = tenancy.get_tenant(B)
+    result = snowflake_client.validate_and_execute(f"SELECT COUNT(*) FROM {table}", tenant=tenant_b)
+    assert "not the tenant's database" in result["error"] and "warehouse_error" not in result
+    assert world.connects == [] and world.log == []
+    assert snowflake_client.validate_and_execute(f"SELECT COUNT(*) FROM {DB_B}.CDM_LMS.COURSE", tenant=tenant_b).get("rows")
+    assert world.connects == [MARK_B]
 
 
 def test_conversations_never_cross(world):

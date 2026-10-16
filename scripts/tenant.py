@@ -48,9 +48,13 @@ def main(argv=None) -> int:
         result = tenant_admin.list_tenants(dynamodb=dynamodb, env=args.env)
     else:
         dynamodb, secrets, cognito, pool = _clients(args.env, args.user_pool_id)
-        result = tenant_admin.migrate_current(
-            dynamodb=dynamodb, secrets=secrets, cognito=cognito, user_pool_id=pool, env=args.env,
-            old_tenant_id=args.old_tenant_id, name=args.name, license=args.license, dry_run=args.dry_run)
+        try:
+            result = tenant_admin.migrate_current(
+                dynamodb=dynamodb, secrets=secrets, cognito=cognito, user_pool_id=pool, env=args.env,
+                old_tenant_id=args.old_tenant_id, name=args.name, license=args.license, dry_run=args.dry_run)
+        except tenant_admin.SourceSecretMissing as exc:
+            print(f"{exc} Nothing was written.", file=sys.stderr)
+            return 1
     print(json.dumps(result, indent=2, default=_json_default))
     return 0
 

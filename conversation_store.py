@@ -78,12 +78,10 @@ def load_history(context_id: str, owner: str) -> list[dict]:
 
 def save_turn(context_id: str, owner: str, user_message: str, assistant_message: str,
               queries: Optional[list[dict]] = None):
-    """Append a turn; never writes over a conversation that belongs to someone else.
+    """Append a turn to a new conversation or one the owner already has; never writes over anyone else's.
 
     `queries` (title, query contract or SQL, governed) are kept on the assistant message so
-    follow-up questions can build on them.
-
-    Items without an owner predate ownership tracking; the first writer claims them.
+    follow-up questions can build on them. An existing item with no owner is never written.
     """
     if not context_id:
         return
@@ -107,7 +105,7 @@ def save_turn(context_id: str, owner: str, user_message: str, assistant_message:
                 "updated_at": int(time.time()),
                 "ttl": int(time.time()) + _TTL_SECONDS,
             },
-            ConditionExpression=Attr("owner_sub").not_exists() | Attr("owner_sub").eq(owner),
+            ConditionExpression=Attr("context_id").not_exists() | Attr("owner_sub").eq(owner),
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":

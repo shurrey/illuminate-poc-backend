@@ -48,8 +48,7 @@ def test_the_compiler_selects_identity_only_when_allowed():
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("TEST_SNOWFLAKE_DATABASE", "TESTDB")
-    install_tenants(monkeypatch, TENANT_A)
+    install_tenants(monkeypatch, TENANT_A, database="TESTDB")
     monkeypatch.setattr(snowflake_client, "query_sql",
                         lambda sql, params=None, **k: {"columns": ["PERSON_EMAIL", "STUDENTS"], "rows": []})
     return TestClient(lambda_handler.app)

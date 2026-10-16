@@ -25,8 +25,7 @@ def ran(monkeypatch):
         sqls.append(sql)
         return {"columns": ["STUDENTS"], "rows": [{"STUDENTS": 7}]}
 
-    monkeypatch.setenv("TEST_SNOWFLAKE_DATABASE", "TESTDB")
-    install_tenants(monkeypatch, TENANT_A)
+    install_tenants(monkeypatch, TENANT_A, database="TESTDB")
     monkeypatch.setattr(snowflake_client, "query_sql", fake)
     monkeypatch.setattr(lambda_handler, "_reports", lambda: REPORTS)
     monkeypatch.setattr(lambda_handler, "_current_terms", lambda tenant: TERMS)

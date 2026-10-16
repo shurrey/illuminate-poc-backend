@@ -7,8 +7,9 @@ TENANT_A = Tenant("tenant-a", "Alpha University", "Premium", False)
 TENANT_B = Tenant("tenant-b", "Beta College", "Premium", False)
 
 
-def install_tenants(monkeypatch, *tenants, with_databases=True):
-    """Make `tenancy.get_tenant` resolve only the given tenants, each with database DB_<tenant_id>.
+def install_tenants(monkeypatch, *tenants, with_databases=True, database=None):
+    """Make `tenancy.get_tenant` resolve only the given tenants, each with database DB_<TENANT_ID>
+    (hyphens as underscores), or `database` for every tenant.
 
     with_databases=False leaves `snowflake_client.tenant_database` real, for tests of the secret path.
     """
@@ -22,7 +23,7 @@ def install_tenants(monkeypatch, *tenants, with_databases=True):
     def fake_tenant_database(tenant):
         if tenant is None or tenant.tenant_id not in by_id:
             raise TenantNotReady(tenant.tenant_id if tenant else "no tenant")
-        return f"DB_{tenant.tenant_id}"
+        return database or "DB_" + tenant.tenant_id.replace("-", "_").upper()
 
     monkeypatch.setattr(tenancy, "get_tenant", fake_get_tenant)
     if with_databases:

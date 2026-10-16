@@ -26,8 +26,7 @@ def executed(monkeypatch):
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("TEST_SNOWFLAKE_DATABASE", "TESTDB")
-    install_tenants(monkeypatch, TENANT_A)
+    install_tenants(monkeypatch, TENANT_A, database="TESTDB")
     monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A))
     return TestClient(lambda_handler.app)
 

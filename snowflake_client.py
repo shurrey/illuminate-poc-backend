@@ -9,6 +9,7 @@ or database means the tenant is not set up (TenantNotReady); there is no shared 
 import json
 import logging
 import os
+import time
 
 import boto3
 from botocore.exceptions import ClientError
@@ -19,8 +20,10 @@ from tenancy import Tenant, TenantNotReady
 
 logger = logging.getLogger("API-PROXY")
 
+CREDENTIALS_TTL_SECONDS = 300
+
 _connections: dict = {}
-_credentials: dict[str, dict] = {}
+_credentials: dict[str, tuple[float, dict]] = {}  # tenant_id -> (monotonic time read, secret)
 
 
 def _require(tenant: Tenant | None) -> Tenant:
@@ -30,22 +33,30 @@ def _require(tenant: Tenant | None) -> Tenant:
 
 
 def _load_credentials(tenant: Tenant) -> dict:
-    """The tenant's Snowflake secret (cached). Raises TenantNotReady if the secret does not exist."""
-    cached = _credentials.get(tenant.tenant_id)
-    if cached:
-        return cached
+    """The tenant's Snowflake secret, re-read every CREDENTIALS_TTL_SECONDS.
 
-    secret_id = f"illuminate/tenants/{tenant.tenant_id}/snowflake"
+    A changed secret drops the tenant's connection so the next query logs in with the new one;
+    a deleted secret drops it too and raises TenantNotReady.
+    """
+    tenant_id = tenant.tenant_id
+    cached = _credentials.get(tenant_id)
+    if cached and time.monotonic() - cached[0] < CREDENTIALS_TTL_SECONDS:
+        return cached[1]
+
+    secret_id = f"illuminate/tenants/{tenant_id}/snowflake"
     client = boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION", "us-east-1"))
     try:
         response = client.get_secret_value(SecretId=secret_id)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-            raise TenantNotReady(tenant.tenant_id) from exc
+            invalidate(tenant_id)
+            raise TenantNotReady(tenant_id) from exc
         raise
     creds = json.loads(response["SecretString"])
-    _credentials[tenant.tenant_id] = creds
-    logger.info("Loaded Snowflake credentials for tenant %s", tenant.tenant_id)
+    if cached and cached[1] != creds:
+        _drop_connection(tenant_id)
+        logger.info("Snowflake credentials changed for tenant %s", tenant_id)
+    _credentials[tenant_id] = (time.monotonic(), creds)
     return creds
 
 
@@ -60,11 +71,11 @@ def tenant_database(tenant: Tenant | None) -> str:
 def get_connection(tenant: Tenant | None):
     """Get or create the tenant's Snowflake connection (lazy, reused across requests)."""
     tenant = _require(tenant)
+    creds = _load_credentials(tenant)  # first, so a changed or deleted secret drops the cached connection
     conn = _connections.get(tenant.tenant_id)
     if conn is None or conn.is_closed():
         import snowflake.connector
 
-        creds = _load_credentials(tenant)
         tenant_database(tenant)
         conn = snowflake.connector.connect(
             account=creds.get("account", ""),
@@ -120,7 +131,7 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
     Allowed statement types: SELECT, WITH (CTE), SHOW, DESCRIBE.
-    Blocked: DML/DDL in any subquery, non-CDM/INFORMATION_SCHEMA references, LIMIT > 1000, and
+    Blocked: DML/DDL in any subquery, non-CDM/INFORMATION_SCHEMA references, tables in another database, LIMIT > 1000, and
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
     allow_identity lifts the projection check for compiled SQL only (callers whose role may see
@@ -197,6 +208,17 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         if not isinstance(table_node.this, exp.Identifier) and not is_bounded_generator(table_node):
             return {"error": "Only the GENERATOR table function, with a literal ROWCOUNT, is allowed."
                              " Other table functions are not permitted."}
+
+    # A database-qualified table must name the tenant's own database, for CDM_* and INFORMATION_SCHEMA alike.
+    own_database = None
+    for table_node in stmt.find_all(exp.Table):
+        catalog = table_node.args.get("catalog")
+        if not catalog:
+            continue
+        if own_database is None:
+            own_database = tenant_database(tenant).upper()
+        if catalog.name.upper() != own_database:
+            return {"error": f"Database '{catalog.name}' is not the tenant's database. Only the tenant's own database is accessible."}
 
     # Schema whitelist — only CDM_* schemas and INFORMATION_SCHEMA
     for table_node in stmt.find_all(exp.Table):

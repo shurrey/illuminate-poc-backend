@@ -52,13 +52,43 @@ def _is_code(exc: ClientError, *codes: str) -> bool:
     return exc.response["Error"]["Code"] in codes
 
 
-def _find_or_create_tenant(dynamodb, env, old_tenant_id, name, license, dry_run) -> tuple[str, int]:
-    table = dynamodb.Table(f"illuminate-tenants-{env}")
+class SourceSecretMissing(Exception):
+    """The deployment's original Snowflake secret is gone and the tenant has no secret of its own."""
+
+
+def _secret_exists(secrets, secret_id: str) -> bool:
+    try:
+        secrets.describe_secret(SecretId=secret_id)
+        return True
+    except ClientError as e:
+        if _is_code(e, "ResourceNotFoundException"):
+            return False
+        raise
+
+
+def _find_tenant(dynamodb, env, old_tenant_id) -> str | None:
     from boto3.dynamodb.conditions import Attr
 
-    found = _scan(table, FilterExpression=Attr("migrated_from").eq(old_tenant_id), ConsistentRead=True)
-    if found:
-        return found[0]["tenant_id"], 0
+    found = _scan(dynamodb.Table(f"illuminate-tenants-{env}"),
+                  FilterExpression=Attr("migrated_from").eq(old_tenant_id), ConsistentRead=True)
+    return found[0]["tenant_id"] if found else None
+
+
+def _require_a_secret_to_use(dynamodb, secrets, env, old_tenant_id) -> None:
+    """Raise SourceSecretMissing unless the tenant's own secret or the source secret exists, before anything is written."""
+    existing = _find_tenant(dynamodb, env, old_tenant_id)
+    if existing and _secret_exists(secrets, f"illuminate/tenants/{existing}/snowflake"):
+        return
+    source = f"illuminate/{env}/snowflake"
+    if not _secret_exists(secrets, source):
+        raise SourceSecretMissing(f"The source secret {source} does not exist and the tenant has no secret of its own.")
+
+
+def _find_or_create_tenant(dynamodb, env, old_tenant_id, name, license, dry_run) -> tuple[str, int]:
+    table = dynamodb.Table(f"illuminate-tenants-{env}")
+    existing = _find_tenant(dynamodb, env, old_tenant_id)
+    if existing:
+        return existing, 0
     tenant_id = str(uuid.uuid4())
     if not dry_run:
         now = datetime.now(timezone.utc).isoformat()
@@ -163,7 +193,9 @@ def migrate_current(*, dynamodb, secrets, cognito, user_pool_id: str, env: str, 
     """Move the original single-tenant deployment into a registry tenant; returns counts of what changed.
 
     dynamodb is a boto3 resource; secrets and cognito are clients. dry_run reports the counts and writes nothing.
+    Raises SourceSecretMissing, having written nothing, when there is no secret to give the tenant.
     """
+    _require_a_secret_to_use(dynamodb, secrets, env, old_tenant_id)
     tenant_id, created = _find_or_create_tenant(dynamodb, env, old_tenant_id, name, license, dry_run)
     secret_copied = _copy_secret(secrets, env, tenant_id, dry_run)
     users = _list_users(cognito, user_pool_id)

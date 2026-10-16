@@ -233,3 +233,46 @@ def test_cli_never_prints_secret_values(aws, monkeypatch, capsys):
     out = capsys.readouterr()
     assert PASSWORD not in out.out + out.err
     assert tid in out.out
+
+
+def _delete_source_secret(aws):
+    aws.secrets.delete_secret(SecretId=f"illuminate/{ENV}/snowflake", ForceDeleteWithoutRecovery=True)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_migrate_without_a_source_secret_writes_nothing(aws, dry_run):
+    seeded(aws)
+    _delete_source_secret(aws)
+    with pytest.raises(tenant_admin.SourceSecretMissing, match=f"illuminate/{ENV}/snowflake"):
+        aws.migrate(dry_run=dry_run)
+    assert aws.table("tenants").scan()["Items"] == []
+    assert aws.secrets.list_secrets()["SecretList"] == []
+    assert aws.user_tenant("a@x.edu") == OLD
+    assert aws.keys("overlays", OLD) != []
+
+
+def test_a_tenant_row_with_no_secret_and_no_source_is_reported_not_finished(aws):
+    seeded(aws)
+    tid = aws.migrate()["tenant_id"]
+    aws.secrets.delete_secret(SecretId=f"illuminate/tenants/{tid}/snowflake", ForceDeleteWithoutRecovery=True)
+    _delete_source_secret(aws)
+    with pytest.raises(tenant_admin.SourceSecretMissing):
+        aws.migrate()
+
+
+def test_migrate_resumes_from_the_tenants_own_secret_once_the_source_is_gone(aws):
+    seeded(aws)
+    tid = aws.migrate()["tenant_id"]
+    _delete_source_secret(aws)
+    result = aws.migrate()
+    assert (result["tenant_id"], result["created"], result["secret_copied"]) == (tid, 0, 0)
+
+
+def test_cli_exits_with_a_clear_message_when_the_source_secret_is_missing(aws, monkeypatch, capsys):
+    seeded(aws)
+    _delete_source_secret(aws)
+    monkeypatch.setattr(tenant_cli, "_clients", lambda env, *a, **k: (aws.dynamodb, aws.secrets, aws.cognito, aws.pool))
+    assert tenant_cli.main(["migrate-current"]) == 1
+    out = capsys.readouterr()
+    assert f"illuminate/{ENV}/snowflake" in out.err and "Nothing was written" in out.err
+    assert aws.table("tenants").scan()["Items"] == []

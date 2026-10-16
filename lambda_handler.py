@@ -735,13 +735,7 @@ async def dictionary_preview(
 
 
 def _database_for(tenant: Tenant) -> str:
-    """Snowflake database the semantic layer's {{ database }} placeholder resolves to for the tenant.
-
-    TEST_SNOWFLAKE_DATABASE overrides the tenant's secret; tests only.
-    """
-    override = os.environ.get("TEST_SNOWFLAKE_DATABASE")
-    if override:
-        return override
+    """Snowflake database the semantic layer's {{ database }} placeholder resolves to for the tenant."""
     import snowflake_client
     return snowflake_client.tenant_database(tenant)
 

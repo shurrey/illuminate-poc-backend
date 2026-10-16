@@ -1,6 +1,7 @@
 import pytest
 
 import snowflake_client
+from tenancy import TenantNotReady
 from tests.tenant_fakes import TENANT_A
 
 
@@ -185,3 +186,47 @@ def test_declared_dataset_pii_is_guarded_for_callers_without_identity(monkeypatc
     sql = "WITH DS AS (SELECT CREATOR_NAME FROM CDM_LMS.PERSON) SELECT CREATOR_NAME AS creator_name FROM DS"
     assert "error" in _validate(sql, compiled=True, extra_pii={"CREATOR_NAME"})
     assert "error" not in _validate(sql, compiled=True, extra_pii={"CREATOR_NAME"}, allow_identity=True)
+
+
+@pytest.fixture
+def own_database(monkeypatch):
+    monkeypatch.setattr(snowflake_client, "tenant_database", lambda tenant: "MY_DB")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) FROM OTHER_DB.CDM_LMS.COURSE",
+    "SELECT COUNT(*) FROM other_db.cdm_lms.course",
+    'SELECT COUNT(*) FROM "OTHER_DB".CDM_LMS.COURSE',
+    "SELECT COUNT(*) FROM OTHER_DB.INFORMATION_SCHEMA.TABLES",
+    "SELECT TABLE_NAME FROM OTHER_DB.INFORMATION_SCHEMA.DATABASES",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE c JOIN OTHER_DB.CDM_LMS.TERM t ON c.ID = t.ID",
+    "WITH x AS (SELECT COUNT(*) AS n FROM OTHER_DB.CDM_LMS.COURSE) SELECT n FROM x",
+    "SELECT COUNT(*) FROM MY_DB.CDM_LMS.COURSE WHERE ID IN (SELECT ID FROM OTHER_DB.CDM_LMS.TERM)",
+])
+def test_a_table_in_another_database_is_a_guard_error(sql, executed, own_database):
+    result = _validate(sql)
+    assert "not the tenant's database" in result["error"], sql
+    assert "warehouse_error" not in result
+    assert executed == []
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) FROM MY_DB.CDM_LMS.COURSE",
+    "SELECT COUNT(*) FROM my_db.cdm_lms.course",
+    'SELECT COUNT(*) FROM "MY_DB".CDM_LMS.COURSE',
+    "SELECT TABLE_NAME FROM MY_DB.INFORMATION_SCHEMA.TABLES",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE",
+])
+def test_the_tenants_own_database_is_allowed(sql, executed, own_database):
+    assert "error" not in _validate(sql), sql
+    assert len(executed) == 1
+
+
+def test_a_database_qualified_table_for_a_tenant_that_is_not_set_up_fails_closed(executed, monkeypatch):
+    def not_ready(tenant):
+        raise TenantNotReady(tenant.tenant_id)
+
+    monkeypatch.setattr(snowflake_client, "tenant_database", not_ready)
+    with pytest.raises(TenantNotReady):
+        _validate("SELECT COUNT(*) FROM MY_DB.CDM_LMS.COURSE")
+    assert executed == []
