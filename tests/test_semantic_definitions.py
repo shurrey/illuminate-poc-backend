@@ -6,6 +6,7 @@ from semantic_layer.catalog import load_catalog
 from semantic_layer.compiler import compile_query
 from semantic_layer.contract import QueryContract
 from semantic_layer.validate import load_pii_columns, load_snapshot, validate_dataset, validate_metric
+from tests.tenant_fakes import TENANT_A
 
 CATALOG = load_catalog()
 SNAPSHOT = load_snapshot()
@@ -42,7 +43,7 @@ def test_compiled_metric_passes_the_execution_guard(metric, monkeypatch):
 
     monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
     compiled = compile_query(QueryContract(metrics=[metric.id]), CATALOG, "DB")
-    assert snowflake_client.validate_and_execute(compiled.sql, compiled=True) == {"columns": [], "rows": []}
+    assert snowflake_client.validate_and_execute(compiled.sql, compiled=True, tenant=TENANT_A) == {"columns": [], "rows": []}
 
 
 @pytest.mark.parametrize("metric_id", ["metric.courses.v1", "metric.classic_courses.v1", "metric.ultra_courses.v1"])

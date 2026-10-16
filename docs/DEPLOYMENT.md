@@ -109,7 +109,6 @@ Set on the Lambda by `cdk/lib/api/lambda-proxy.ts`:
 | `ALLOWED_ORIGINS` | See above | CORS |
 | `CONVERSATION_TABLE` | `illuminate-conversations-<env>` | `conversation_store.py` |
 | `OVERLAY_TABLE` | `illuminate-overlays-<env>` | `overlay_store.py` |
-| `SNOWFLAKE_SECRET_NAME` | `illuminate/<env>/snowflake` | `snowflake_client.py`, `chat_engine.py` |
 | `BEDROCK_MODEL_ID` | `us.anthropic.claude-sonnet-4-6` | `chat_engine.py` |
 | `API_DOCS` | `off` | Disables `/docs`, `/redoc`, `/openapi.json` |
 | `LOG_LEVEL` | `INFO` (`WARN` in `prod`) | Logging |
@@ -120,7 +119,6 @@ Read by the application with defaults, not set by CDK:
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `AWS_REGION` | `us-east-1` (Lambda sets it) | Cognito, Bedrock, DynamoDB, Secrets Manager region |
-| `SNOWFLAKE_DATABASE` | The secret's `database` | Database for `{{ database }}` and the chat prompt |
 | `CONVERSATION_TTL` | `2592000` (30 days) | Conversation expiry, seconds after last update |
 | `CONVERSATION_MAX_MESSAGES` | `50` | Messages kept per conversation |
 | `DATA_DICTIONARY_URL` | `https://us.data.api.blackboard.com/api/v1/data/dictionary` | Dictionary used by the `describe_cdm_table` chat tool (the `/api/v1/dictionary/*` routes use a fixed URL) |

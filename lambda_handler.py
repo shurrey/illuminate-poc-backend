@@ -8,6 +8,7 @@ Request flow:
     Frontend -> Lambda Function URL (RESPONSE_STREAM) -> LWA -> uvicorn/FastAPI
         -> chat_engine (Bedrock Converse) -> Snowflake / MCP tools
 """
+import asyncio
 import os
 import json
 import math
@@ -83,7 +84,6 @@ USER_POOL_ID = os.environ.get("USER_POOL_ID", "")
 USER_POOL_CLIENT_ID = os.environ.get("USER_POOL_CLIENT_ID", "")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
-SNOWFLAKE_SECRET_NAME = os.environ.get("SNOWFLAKE_SECRET_NAME", "illuminate/dev/snowflake")
 
 # Data dictionary proxy
 DATA_DICTIONARY_BASE_URL = "https://us.data.api.blackboard.com/api/v1/data/dictionary"
@@ -287,19 +287,14 @@ def _with_queries(text: str, queries: list[dict]) -> str:
     return f"<previous_queries>{json.dumps(queries)}</previous_queries>\n\n{text}"
 
 
-def _engine_kwargs(user: Optional[dict]) -> dict:
-    """Tools and a system prompt over the caller's overlaid catalog, when their tenant has overlays."""
-    if not _tenant_id_from_user(user):
-        return {}
-    tenant = tenant_for(user)
-    catalog, overlays = _catalog_for(tenant)
-    if not overlays:
-        return {}
+def _engine_kwargs(tenant: Tenant) -> dict:
+    """The chat engine's tools and system prompt over the tenant's overlaid catalog and database."""
     from semantic_layer.chat_tools import ChatTools
     from semantic_layer.prompt import build_system_prompt
 
+    catalog, overlays = _catalog_for(tenant)
     database = _database_for(tenant)
-    return {"tools": ChatTools(catalog, database, overlays=overlays),
+    return {"tools": ChatTools(catalog, database, tenant=tenant, overlays=overlays),
             "system_prompt": build_system_prompt(catalog, database)}
 
 
@@ -307,20 +302,19 @@ async def send_message(
     message_text: str,
     owner: str,
     context_id: Optional[str] = None,
-    user: Optional[dict] = None,
+    *,
+    engine_kwargs: dict,
 ) -> dict:
-    """Send a message via chat_engine (non-streaming)."""
-    import asyncio
+    """Send a message via chat_engine (non-streaming). engine_kwargs: from `_engine_kwargs`."""
     from chat_engine import send_message as engine_send
     from conversation_store import load_history, save_turn
 
     context_id = _conversation_id(context_id, owner)
     bedrock_history, model_text = _model_turns(load_history(context_id, owner), message_text)
-    kwargs = _engine_kwargs(user)
 
     loop = asyncio.get_event_loop()
     response_text, _, artifacts = await loop.run_in_executor(
-        None, lambda: engine_send(model_text, bedrock_history, **kwargs)
+        None, lambda: engine_send(model_text, bedrock_history, **engine_kwargs)
     )
     response_text = _scrub_pii(response_text)
 
@@ -333,10 +327,10 @@ async def send_message_streaming(
     message_text: str,
     owner: str,
     context_id: Optional[str] = None,
-    user: Optional[dict] = None,
+    *,
+    engine_kwargs: dict,
 ):
-    """Stream a response via chat_engine, yielding frontend events."""
-    import asyncio
+    """Stream a response via chat_engine, yielding frontend events. engine_kwargs: from `_engine_kwargs`."""
     from chat_engine import send_message_streaming as engine_stream
     from conversation_store import load_history, save_turn
 
@@ -347,7 +341,6 @@ async def send_message_streaming(
     context_id = await loop.run_in_executor(None, _conversation_id, context_id, owner)
     history = await loop.run_in_executor(None, load_history, context_id, owner)
     bedrock_history, model_text = _model_turns(history, message_text)
-    engine_kwargs = await loop.run_in_executor(None, _engine_kwargs, user)
 
     full_text, artifacts = "", []
     try:
@@ -373,6 +366,8 @@ async def send_message_streaming(
             },
         }
 
+    except TenantNotReady:
+        yield {"type": "error", "message": NOT_READY}
     except Exception as e:
         logger.error(f"Chat engine error: {e}")
         yield {"type": "error", "message": str(e)}
@@ -448,12 +443,15 @@ async def chat(
 
     logger.info(f"Chat request: message='{message_text[:100]}...', context_id={context_id}")
 
+    tenant = tenant_for(user)
+    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant)
+
     try:
         result = await send_message(
             message_text=message_text,
             owner=user["sub"],
             context_id=context_id,
-            user=user,
+            engine_kwargs=engine_kwargs,
         )
 
         return ChatResponse(
@@ -462,6 +460,8 @@ async def chat(
             context_id=result.get("contextId", context_id),
         )
 
+    except (HTTPException, TenantNotReady):
+        raise
     except Exception as e:
         logger.error(f"Chat engine error: {e}")
         raise HTTPException(status_code=502, detail=str(e))
@@ -492,6 +492,9 @@ async def chat_stream(
         f"context_id={context_id}, request_id={request_id}"
     )
 
+    tenant = tenant_for(user)
+    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant)
+
     if request_id:
         _request_owners[request_id] = user["sub"]
 
@@ -502,7 +505,7 @@ async def chat_stream(
                 message_text=message_text,
                 owner=user["sub"],
                 context_id=context_id,
-                user=user,
+                engine_kwargs=engine_kwargs,
             ):
                 # Check if request was cancelled
                 if request_id and request_id in _cancelled_requests:
@@ -519,6 +522,8 @@ async def chat_stream(
                 event_data = json.dumps(_json_safe(event))
                 yield f"data: {event_data}\n\n"
 
+        except TenantNotReady:
+            yield f"data: {json.dumps({'type': 'error', 'message': NOT_READY})}\n\n"
         except Exception as e:
             logger.error(f"Error in streaming relay: {e}")
             error_event = json.dumps({

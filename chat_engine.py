@@ -1,7 +1,7 @@
 """
 chat_engine.py — Bedrock Converse tool loop over the semantic layer.
 
-The system prompt is built from the semantic catalog; the model answers through the
+The caller supplies the tenant's tools and system prompt; the model answers through the
 semantic tools (search_catalog, query_semantic) and falls back to labelled freehand SQL.
 Tool artifacts are collected for the client alongside the model's text.
 """
@@ -10,13 +10,10 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
 
 import boto3
 
-from semantic_layer.catalog import default_catalog
 from semantic_layer.chat_tools import ChatTools
-from semantic_layer.prompt import build_system_prompt
 
 logger = logging.getLogger("API-PROXY")
 
@@ -24,31 +21,6 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 
 _bedrock = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-
-
-def _resolve_database() -> str:
-    """SNOWFLAKE_DATABASE if set, else the Snowflake secret's database.
-
-    Raises rather than guessing: this runs at import, and a failed import is retried on the next
-    request, so the process recovers once the secret is set.
-    """
-    db = os.environ.get("SNOWFLAKE_DATABASE", "")
-    if db:
-        return db
-    secret_name = os.environ.get("SNOWFLAKE_SECRET_NAME", "illuminate/dev/snowflake")
-    sm = boto3.client("secretsmanager", region_name=AWS_REGION)
-    try:
-        db = json.loads(sm.get_secret_value(SecretId=secret_name)["SecretString"]).get("database", "")
-    except (ValueError, AttributeError):
-        db = ""
-    if not db:
-        raise RuntimeError(f"Snowflake secret {secret_name} has no database; run scripts/set-snowflake-secret.sh")
-    return db
-
-
-_database = _resolve_database()
-SYSTEM_PROMPT = build_system_prompt(default_catalog(), _database)
-_tools = ChatTools(default_catalog(), _database)
 
 _MAX_ROUNDS = 6
 _INFERENCE_CONFIG = {"temperature": 0.0, "maxTokens": 4096}
@@ -60,13 +32,13 @@ _STATUS = {
 }
 
 
-def _converse(messages: list, system_prompt: Optional[str] = None) -> dict:
+def _converse(messages: list, tools: ChatTools, system_prompt: str) -> dict:
     # cachePoints after the system prompt and tools let Bedrock reuse them across rounds and requests.
     return _bedrock.converse(
         modelId=MODEL_ID,
-        system=[{"text": system_prompt or SYSTEM_PROMPT}, {"cachePoint": {"type": "default"}}],
+        system=[{"text": system_prompt}, {"cachePoint": {"type": "default"}}],
         messages=messages,
-        toolConfig={"tools": [{"toolSpec": t} for t in _tools.specs] + [{"cachePoint": {"type": "default"}}]},
+        toolConfig={"tools": [{"toolSpec": t} for t in tools.specs] + [{"cachePoint": {"type": "default"}}]},
         inferenceConfig=_INFERENCE_CONFIG,
     )
 
@@ -105,15 +77,14 @@ def _run_tool(tool_use: dict, artifacts: list, called: list, tools: ChatTools) -
     }}
 
 
-def send_message(user_message: str, history: list, tools: Optional[ChatTools] = None,
-                 system_prompt: Optional[str] = None) -> tuple[str, list, list]:
-    """Returns (response_text, updated_messages, artifacts). tools, system_prompt: e.g. for a tenant's overlaid catalog."""
-    tools = tools or _tools
+def send_message(user_message: str, history: list, *, tools: ChatTools,
+                 system_prompt: str) -> tuple[str, list, list]:
+    """Returns (response_text, updated_messages, artifacts)."""
     messages = list(history) + [{"role": "user", "content": [{"text": user_message}]}]
     artifacts: list = []
     called: list = []
     for _ in range(_MAX_ROUNDS):
-        response = _converse(messages, system_prompt)
+        response = _converse(messages, tools, system_prompt)
         output = response["output"]["message"]
         messages.append(output)
         uses = _tool_uses(output)
@@ -123,16 +94,14 @@ def send_message(user_message: str, history: list, tools: Optional[ChatTools] = 
     return "I was unable to complete the request.", messages, artifacts
 
 
-async def send_message_streaming(user_message: str, history: list, tools: Optional[ChatTools] = None,
-                                 system_prompt: Optional[str] = None):
+async def send_message_streaming(user_message: str, history: list, *, tools: ChatTools, system_prompt: str):
     """Yields {"type": "status", "message"} events, then {"type": "raw_complete", "text", "messages", "artifacts"}."""
-    tools = tools or _tools
     loop = asyncio.get_running_loop()
     messages = list(history) + [{"role": "user", "content": [{"text": user_message}]}]
     artifacts: list = []
     called: list = []
     for _ in range(_MAX_ROUNDS):
-        response = await loop.run_in_executor(None, _converse, messages, system_prompt)
+        response = await loop.run_in_executor(None, _converse, messages, tools, system_prompt)
         output = response["output"]["message"]
         messages.append(output)
         uses = _tool_uses(output)

@@ -88,7 +88,7 @@ def invalidate(tenant_id: str):
     logger.info("Snowflake connection and credentials invalidated for tenant %s", tenant_id)
 
 
-def query_preview(schema: str, table: str, limit: int = 20, *, tenant: Tenant | None = None) -> dict:
+def query_preview(schema: str, table: str, limit: int = 20, *, tenant: Tenant | None) -> dict:
     """Execute SELECT * FROM schema.table LIMIT n and return columns + rows.
 
     The database is set on the connection from the tenant's credentials,
@@ -115,7 +115,7 @@ def _in_filter(node) -> bool:
     return False
 
 
-def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None = None, compiled: bool = False,
+def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None, compiled: bool = False,
                          allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset()) -> dict:
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
@@ -270,7 +270,7 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
 MAX_ROWS = 1000
 
 
-def query_sql(sql: str, params: dict | None = None, *, tenant: Tenant | None = None) -> dict:
+def query_sql(sql: str, params: dict | None = None, *, tenant: Tenant | None) -> dict:
     """Execute a read-only SQL statement and return columns + rows.
 
     Only SELECT and WITH statements are allowed. Supports Snowflake bind

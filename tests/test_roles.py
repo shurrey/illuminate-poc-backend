@@ -84,6 +84,6 @@ def test_the_catalog_marks_identity_selectable_by_role():
 
 
 def test_chat_never_selects_identity():
-    tools = ChatTools(load_catalog(), "DB", execute=lambda *a, **k: {"columns": [], "rows": []})
+    tools = ChatTools(load_catalog(), "DB", tenant=TENANT_A, execute=lambda *a, **k: {"columns": [], "rows": []})
     out = tools.dispatch("query_semantic", NAMED)
     assert "personally identifiable" in json.dumps(out.content)

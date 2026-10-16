@@ -7,6 +7,7 @@ from moto import mock_aws
 
 import conversation_store
 import lambda_handler
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 SQL_ARTIFACT = {"id": "s1", "type": "sql", "title": "Courses by term", "data": "SELECT 1",
@@ -36,7 +37,7 @@ def engine(monkeypatch):
     import chat_engine
     seen = []
 
-    async def fake_stream(message, history):
+    async def fake_stream(message, history, **kw):
         seen.append((message, history))
         yield {"type": "raw_complete", "text": f"answer {len(seen)}", "messages": [], "artifacts": [SQL_ARTIFACT]}
 
@@ -46,7 +47,8 @@ def engine(monkeypatch):
 
 @pytest.fixture
 def client(table, monkeypatch):
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "bob"} if a else None)
+    install_tenants(monkeypatch, TENANT_A)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A, sub="bob") if a else None)
     return TestClient(lambda_handler.app)
 
 

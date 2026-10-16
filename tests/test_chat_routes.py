@@ -17,7 +17,8 @@ ARTIFACT = {"id": "a1", "type": "table", "title": "t",
 @pytest.fixture
 def client(monkeypatch):
     import conversation_store
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "u1"} if a else None)
+    install_tenants(monkeypatch, TENANT_A)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A) if a else None)
     monkeypatch.setattr(conversation_store, "load_history", lambda cid, owner: [])
     monkeypatch.setattr(conversation_store, "save_turn", lambda *a, **k: None)
     return TestClient(lambda_handler.app)
@@ -30,7 +31,7 @@ def _events(body: str) -> list[dict]:
 def test_stream_completes_with_tool_artifacts_serialised_as_json(client, monkeypatch):
     import chat_engine
 
-    async def fake_stream(message, history):
+    async def fake_stream(message, history, **kw):
         yield {"type": "status", "message": "Running a governed query..."}
         yield {"type": "raw_complete", "text": "Answer for jane@example.edu", "messages": [], "artifacts": [ARTIFACT]}
 
@@ -45,7 +46,7 @@ def test_stream_completes_with_tool_artifacts_serialised_as_json(client, monkeyp
 def test_non_streaming_chat_returns_tool_artifacts(client, monkeypatch):
     import chat_engine
 
-    monkeypatch.setattr(chat_engine, "send_message", lambda message, history: ("Three.", [], [ARTIFACT]))
+    monkeypatch.setattr(chat_engine, "send_message", lambda message, history, **kw: ("Three.", [], [ARTIFACT]))
     r = client.post("/api/chat", headers=AUTH, json={"message": "q"})
     assert r.status_code == 200
     assert r.json()["artifacts"][0]["id"] == "a1"
@@ -58,11 +59,11 @@ def test_binary_and_nan_values_in_artifacts_do_not_break_either_chat_path(client
 
     artifact = {**ARTIFACT, "data": {"columns": ["B", "F"], "rows": [{"B": b"\xff", "F": float("nan")}]}}
 
-    async def fake_stream(message, history):
+    async def fake_stream(message, history, **kw):
         yield {"type": "raw_complete", "text": "Done.", "messages": [], "artifacts": [artifact]}
 
     monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
-    monkeypatch.setattr(chat_engine, "send_message", lambda message, history: ("Done.", [], [artifact]))
+    monkeypatch.setattr(chat_engine, "send_message", lambda message, history, **kw: ("Done.", [], [artifact]))
     r = client.post(path, headers=AUTH, json={"message": "q"})
     assert r.status_code == 200
     body = r.json() if path == "/api/chat" else _events(r.text)[-1]["data"]

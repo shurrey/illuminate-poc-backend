@@ -2,13 +2,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 import lambda_handler
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "bob"} if a else None)
+    install_tenants(monkeypatch, TENANT_A)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A, sub="bob") if a else None)
     monkeypatch.setattr(lambda_handler, "_request_owners", {})
     monkeypatch.setattr(lambda_handler, "_cancelled_requests", set())
     return TestClient(lambda_handler.app)
@@ -40,7 +42,7 @@ def test_owner_can_cancel(client):
 def test_streaming_registers_and_releases_the_request_owner(client, monkeypatch):
     seen = []
 
-    async def fake_stream(message_text, owner, context_id=None, user=None):
+    async def fake_stream(message_text, owner, context_id=None, **kw):
         seen.append(dict(lambda_handler._request_owners))
         yield {"type": "status", "message": "working"}
 

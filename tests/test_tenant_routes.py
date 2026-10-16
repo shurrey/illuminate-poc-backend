@@ -117,3 +117,90 @@ def test_tenant_not_ready_inside_route_is_403(as_user, monkeypatch):
     r = as_user(user_of(TENANT_A)).post("/api/v1/semantic/compile", headers=AUTH, json=CONTRACT)
     assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
     assert TENANT_A.tenant_id not in r.text
+
+
+class _NoBedrock:
+    def converse(self, **kwargs):
+        pytest.fail("reached Bedrock")
+
+
+@pytest.fixture
+def no_bedrock(monkeypatch):
+    import chat_engine
+    import conversation_store
+    monkeypatch.setattr(chat_engine, "_bedrock", _NoBedrock())
+    monkeypatch.setattr(conversation_store, "load_history", lambda cid, owner: [])
+    monkeypatch.setattr(conversation_store, "save_turn", lambda *a, **k: None)
+
+
+def _not_ready_database(monkeypatch):
+    monkeypatch.delenv("TEST_SNOWFLAKE_DATABASE", raising=False)
+
+    def not_ready(tenant):
+        raise TenantNotReady(tenant.tenant_id)
+
+    monkeypatch.setattr(snowflake_client, "tenant_database", not_ready)
+
+
+@pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+def test_chat_unknown_tenant_403_before_bedrock(as_user, no_bedrock, path):
+    ghost = {"sub": "u1", "custom:tenant_id": "ghost"}
+    r = as_user(ghost).post(path, headers=AUTH, json={"message": "q"})
+    assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
+    assert "ghost" not in r.text
+
+
+@pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
+def test_chat_tenant_without_snowflake_secret_403_before_bedrock(as_user, no_bedrock, monkeypatch, path):
+    _not_ready_database(monkeypatch)
+    r = as_user(user_of(TENANT_A)).post(path, headers=AUTH, json={"message": "q"})
+    assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
+    assert TENANT_A.tenant_id not in r.text
+
+
+def test_chat_stream_tenant_not_ready_mid_stream_is_a_generic_error_event(as_user, no_bedrock, monkeypatch):
+    import chat_engine
+
+    async def not_ready(message, history, **kw):
+        raise TenantNotReady(TENANT_A.tenant_id)
+        yield
+
+    monkeypatch.setattr(chat_engine, "send_message_streaming", not_ready)
+    r = as_user(user_of(TENANT_A)).post("/api/chat/stream", headers=AUTH, json={"message": "q"})
+    assert NOT_READY in r.text and TENANT_A.tenant_id not in r.text
+
+
+def test_chat_tenant_not_ready_mid_request_is_403(as_user, no_bedrock, monkeypatch):
+    import chat_engine
+
+    def not_ready(message, history, **kw):
+        raise TenantNotReady(TENANT_A.tenant_id)
+
+    monkeypatch.setattr(chat_engine, "send_message", not_ready)
+    r = as_user(user_of(TENANT_A)).post("/api/chat", headers=AUTH, json={"message": "q"})
+    assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
+
+
+def test_engine_kwargs_prompt_names_tenant_database(as_user, monkeypatch):
+    monkeypatch.delenv("TEST_SNOWFLAKE_DATABASE", raising=False)
+    monkeypatch.setattr(snowflake_client, "tenant_database",
+                        lambda t: {TENANT_A.tenant_id: "DB_A", TENANT_B.tenant_id: "DB_B"}[t.tenant_id])
+    kwargs = lambda_handler._engine_kwargs(TENANT_B)
+    assert "DB_B" in kwargs["system_prompt"] and "DB_A" not in kwargs["system_prompt"]
+    assert kwargs["tools"].database == "DB_B" and kwargs["tools"].tenant == TENANT_B
+
+
+def test_chat_engine_import_reads_no_secret(monkeypatch):
+    import importlib
+    import sys
+    import boto3
+    from unittest.mock import MagicMock
+
+    def client(service, *a, **k):
+        if service == "secretsmanager":
+            raise AssertionError("chat_engine read a secret at import")
+        return MagicMock()
+
+    monkeypatch.setattr(boto3, "client", client)
+    monkeypatch.delitem(sys.modules, "chat_engine", raising=False)
+    importlib.import_module("chat_engine")
