@@ -29,7 +29,17 @@ def test_columns_come_from_definitions_with_pii_flags(monkeypatch):
         {"name": "EMAIL", "type": "TEXT", "pii": True, "description": "Email"},
         {"name": "ID", "type": "NUMBER", "pii": False, "description": ""},
     ]
-    assert dictionary.describe_table("LEARN", "USERS") is None
+    assert dictionary.describe_table("CDM_LMS", "NO_SUCH_TABLE") is None
+
+
+def test_learn_comes_from_the_snapshot_without_the_network(monkeypatch):
+    def down(url, timeout):
+        raise AssertionError("LEARN must not touch the network")
+
+    monkeypatch.setattr(dictionary.urllib.request, "urlopen", down)
+    cols = {c["name"]: c for c in dictionary.describe_table("learn", "users")}
+    assert cols["B_FAX"]["pii"] is True and cols["B_FAX"]["description"] == ""
+    assert dictionary.describe_table("LEARN", "NO_SUCH_TABLE") is None
 
 
 def test_unreachable_dictionary_returns_none(monkeypatch):

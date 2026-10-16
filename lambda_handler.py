@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from semantic_layer.contract import QueryContract
 import tenancy
+from licenses import PREVIEW_REFUSAL, allows_learn
 from tenancy import NOT_READY, Tenant, TenantNotReady
 
 # JWT validation
@@ -305,7 +306,7 @@ def _engine_kwargs(tenant: Tenant) -> dict:
     catalog, overlays = _catalog_for(tenant)
     database = _database_for(tenant)
     return {"tools": ChatTools(catalog, database, tenant=tenant, overlays=overlays),
-            "system_prompt": build_system_prompt(catalog, database)}
+            "system_prompt": build_system_prompt(catalog, database, learn=allows_learn(tenant))}
 
 
 async def send_message(
@@ -692,7 +693,7 @@ async def dictionary_preview(
     """Preview sample rows from a CDM table (administrators only).
 
     Returns { columns: string[], rows: Record<string, unknown>[] }.
-    Schema must start with CDM_, limit capped at 100.
+    Schema must start with CDM_ or be LEARN (Premium), limit capped at 100.
     """
     user = _get_user_from_token(authorization)
     if not user:
@@ -705,9 +706,11 @@ async def dictionary_preview(
     if not _SAFE_IDENTIFIER.match(schema) or not _SAFE_IDENTIFIER.match(table):
         raise HTTPException(status_code=400, detail="Invalid identifier: only alphanumeric and underscore allowed")
 
-    # Whitelist schemas to CDM_* only
-    if not schema.upper().startswith("CDM_"):
-        raise HTTPException(status_code=400, detail="Schema must start with CDM_")
+    if schema.upper() == "LEARN":
+        if not allows_learn(tenant):
+            raise HTTPException(status_code=403, detail=PREVIEW_REFUSAL)
+    elif not schema.upper().startswith("CDM_"):
+        raise HTTPException(status_code=400, detail="Schema must start with CDM_ or be LEARN")
 
     # Cap limit
     limit = min(max(1, limit), 100)

@@ -13,6 +13,7 @@ from typing import Callable, Iterable, Optional
 
 from pydantic import ValidationError
 
+from licenses import LEARN_REFUSAL, allows_learn
 from tenancy import Tenant
 
 from .compiler import CompileError, compile_query, named_result
@@ -116,6 +117,24 @@ SPECS = [
 ]
 
 
+_LEARN_SPEC_TEXT = {
+    "describe_cdm_table": (
+        "List the columns of a raw CDM table (schema like CDM_LMS) or a LEARN table (schema LEARN). "
+        "Only for writing execute_sql when no governed metric, measure or dimension fits."
+    ),
+    "execute_sql": (
+        "Last resort: run read-only SQL against the CDM schemas and the LEARN schema when search_catalog "
+        "and query_semantic cannot answer. Name every table with its schema, e.g. {database}.LEARN.<table>. "
+        "Results are shown to the user as ungoverned. `reason` must say why no governed definition fits."
+    ),
+}
+
+
+def _with_learn(spec: dict) -> dict:
+    text = _LEARN_SPEC_TEXT.get(spec["name"])
+    return {**spec, "description": text} if text else spec
+
+
 @dataclass
 class ToolResult:
     content: dict
@@ -152,7 +171,9 @@ class ChatTools:
 
     @property
     def specs(self) -> list[dict]:
-        return SPECS
+        if not allows_learn(self.tenant):
+            return SPECS
+        return [_with_learn(spec) for spec in SPECS]
 
     def dispatch(self, name: str, tool_input: dict, called: Iterable[str] = ()) -> ToolResult:
         """called: the tools already run earlier in this turn."""
@@ -206,6 +227,8 @@ class ChatTools:
 
     def _tool_describe_cdm_table(self, tool_input: dict) -> ToolResult:
         schema, table = tool_input.get("schema", ""), tool_input.get("table", "")
+        if schema.upper() == "LEARN" and not allows_learn(self.tenant):
+            return ToolResult({"error": LEARN_REFUSAL})
         columns = self.describe(schema, table)
         if not columns:
             return ToolResult({"error": f"No dictionary entry for {schema.upper()}.{table.upper()}"})

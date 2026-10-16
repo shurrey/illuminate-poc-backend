@@ -1,7 +1,8 @@
 from semantic_layer.catalog import load_catalog
 import snowflake_client
 from semantic_layer.chat_tools import MODEL_ROW_LIMIT, ChatTools
-from tests.tenant_fakes import TENANT_A, TENANT_B
+from licenses import LEARN_REFUSAL
+from tests.tenant_fakes import TENANT_A, TENANT_B, TENANT_CORE
 
 CATALOG = load_catalog()
 
@@ -216,3 +217,27 @@ def test_chat_tools_execute_with_their_tenant(monkeypatch):
                                    "reason": "No dataset covers raw course counts"}, called=SEARCHED)
     tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
     assert seen == [TENANT_B, TENANT_B]
+
+
+def test_core_tool_specs_never_mention_learn():
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_CORE)
+    assert "learn" not in str(tools.specs).lower()
+
+
+def test_premium_tool_specs_mention_learn_and_keep_the_tool_names():
+    specs = _tools().specs
+    assert [s["name"] for s in specs] == [s["name"] for s in ChatTools(CATALOG, "DB", tenant=TENANT_CORE).specs]
+    assert "LEARN" in {s["name"]: s for s in specs}["describe_cdm_table"]["description"]
+    assert "LEARN" in {s["name"]: s for s in specs}["execute_sql"]["description"]
+
+
+def test_core_describe_learn_refused():
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_CORE)
+    assert tools.dispatch("describe_cdm_table", {"schema": "learn", "table": "USERS"}).content == {"error": LEARN_REFUSAL}
+
+
+def test_premium_describe_learn_lists_columns():
+    content = _tools().dispatch("describe_cdm_table", {"schema": "LEARN", "table": "ACTIVITY_ACCUMULATOR"}).content
+    assert content["table"] == "LEARN.ACTIVITY_ACCUMULATOR"
+    by_name = {c["name"]: c for c in content["columns"]}
+    assert by_name["COURSE_PK1"]["type"] == "NUMBER" and by_name["COURSE_PK1"]["pii"] is False

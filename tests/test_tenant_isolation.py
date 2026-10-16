@@ -4,6 +4,7 @@ Only the edges are faked: the registry, overlay and conversation tables and Secr
 snowflake.connector.connect and Bedrock. Later phases add their routes here.
 """
 import json
+import re
 import types
 
 import boto3
@@ -274,6 +275,19 @@ def test_core_tenant_is_refused_learn_through_chat_raw_sql(world):
     r = _chat(world.client, {"Authorization": "Bearer c2"})
     assert r.status_code == 200
     assert licenses.LEARN_REFUSAL in json.dumps(world.bedrock.calls[-1], default=str)
+    assert world.connects == [] and world.log == []
+
+
+def test_core_tenant_is_refused_learn_describe_and_preview(world):
+    world.bedrock.tool_script = [
+        ("search_catalog", {"question": "learn users"}),
+        ("describe_cdm_table", {"schema": "LEARN", "table": "USERS"}),
+    ]
+    assert _chat(world.client, {"Authorization": "Bearer c2"}).status_code == 200
+    assert licenses.LEARN_REFUSAL in json.dumps(world.bedrock.calls[-1], default=str)
+    assert not re.search(r"\blearn\b", json.dumps(world.bedrock.calls[0].get("system"), default=str), re.I)
+    r = world.client.get("/api/v1/dictionary/preview?schema=LEARN&table=USERS", headers={"Authorization": "Bearer c2"})
+    assert r.status_code == 403 and r.json()["detail"] == licenses.PREVIEW_REFUSAL
     assert world.connects == [] and world.log == []
 
 
