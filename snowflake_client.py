@@ -1,12 +1,9 @@
 """
 Snowflake client for the Lambda proxy.
 
-Provides a lazy-initialized, reusable Snowflake connection for direct
-data queries (e.g., table previews). Credentials are loaded from AWS
-Secrets Manager on first use.
-
-Imported lazily by lambda_handler.py only when Snowflake endpoints are
-hit, so dictionary proxy endpoints don't pay the cold start cost.
+Connections and credentials are per tenant, read from the Secrets Manager secret
+illuminate/tenants/{tenant_id}/snowflake and cached per Lambda instance. A missing secret
+or database means the tenant is not set up (TenantNotReady); there is no shared fallback.
 """
 
 import json
@@ -14,74 +11,87 @@ import logging
 import os
 
 import boto3
+from botocore.exceptions import ClientError
 
 from semantic_layer.compiler import is_bounded_generator
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
+from tenancy import Tenant, TenantNotReady
 
 logger = logging.getLogger("API-PROXY")
 
-_sf_connection = None
-_sf_credentials: dict | None = None
+_connections: dict = {}
+_credentials: dict[str, dict] = {}
 
 
-def _load_credentials() -> dict:
-    """Load Snowflake credentials from Secrets Manager (cached)."""
-    global _sf_credentials
-    if _sf_credentials:
-        return _sf_credentials
-
-    secret_name = os.environ.get("SNOWFLAKE_SECRET_NAME", "illuminate/dev/snowflake")
-    region = os.environ.get("AWS_REGION", "us-east-1")
-
-    client = boto3.client("secretsmanager", region_name=region)
-    response = client.get_secret_value(SecretId=secret_name)
-    _sf_credentials = json.loads(response["SecretString"])
-    logger.info(f"Loaded Snowflake credentials from {secret_name}")
-    return _sf_credentials
+def _require(tenant: Tenant | None) -> Tenant:
+    if tenant is None:
+        raise TenantNotReady("no tenant")
+    return tenant
 
 
-def get_connection():
-    """Get or create a Snowflake connection (lazy, reused across requests)."""
-    global _sf_connection
-    if _sf_connection is None or _sf_connection.is_closed():
+def _load_credentials(tenant: Tenant) -> dict:
+    """The tenant's Snowflake secret (cached). Raises TenantNotReady if the secret does not exist."""
+    cached = _credentials.get(tenant.tenant_id)
+    if cached:
+        return cached
+
+    secret_id = f"illuminate/tenants/{tenant.tenant_id}/snowflake"
+    client = boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+    try:
+        response = client.get_secret_value(SecretId=secret_id)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+            raise TenantNotReady(tenant.tenant_id) from exc
+        raise
+    creds = json.loads(response["SecretString"])
+    _credentials[tenant.tenant_id] = creds
+    logger.info("Loaded Snowflake credentials for tenant %s", tenant.tenant_id)
+    return creds
+
+
+def tenant_database(tenant: Tenant | None) -> str:
+    """The tenant's Snowflake database. Raises TenantNotReady if the secret or its database is missing."""
+    database = _load_credentials(_require(tenant)).get("database")
+    if not database:
+        raise TenantNotReady(tenant.tenant_id)
+    return database
+
+
+def get_connection(tenant: Tenant | None):
+    """Get or create the tenant's Snowflake connection (lazy, reused across requests)."""
+    tenant = _require(tenant)
+    conn = _connections.get(tenant.tenant_id)
+    if conn is None or conn.is_closed():
         import snowflake.connector
 
-        creds = _load_credentials()
-        _sf_connection = snowflake.connector.connect(
+        creds = _load_credentials(tenant)
+        tenant_database(tenant)
+        conn = snowflake.connector.connect(
             account=creds.get("account", ""),
             user=creds.get("user", creds.get("username", "")),
             password=creds.get("password", ""),
-            database=creds.get("database", ""),
+            database=creds["database"],
             warehouse=creds.get("warehouse", ""),
             role=creds.get("role", ""),
             network_timeout=30,
             login_timeout=30,
         )
-        logger.info("Snowflake connection established")
-    return _sf_connection
+        _connections[tenant.tenant_id] = conn
+        logger.info("Snowflake connection established for tenant %s", tenant.tenant_id)
+    return conn
 
 
-def invalidate():
-    """Close the current connection and clear cached credentials.
-
-    Call this after updating Snowflake credentials in Secrets Manager so the
-    next query picks up the new values.
-    """
-    global _sf_connection, _sf_credentials
-    if _sf_connection is not None:
-        try:
-            _sf_connection.close()
-        except Exception:
-            pass
-    _sf_connection = None
-    _sf_credentials = None
-    logger.info("Snowflake connection and credentials cache invalidated")
+def invalidate(tenant_id: str):
+    """Close one tenant's connection and forget its credentials so the next query re-reads the secret."""
+    _drop_connection(tenant_id)
+    _credentials.pop(tenant_id, None)
+    logger.info("Snowflake connection and credentials invalidated for tenant %s", tenant_id)
 
 
-def query_preview(schema: str, table: str, limit: int = 20) -> dict:
+def query_preview(schema: str, table: str, limit: int = 20, *, tenant: Tenant | None = None) -> dict:
     """Execute SELECT * FROM schema.table LIMIT n and return columns + rows.
 
-    The database is set on the connection from Secrets Manager credentials,
+    The database is set on the connection from the tenant's credentials,
     so only schema and table are needed.
 
     Returns:
@@ -89,7 +99,7 @@ def query_preview(schema: str, table: str, limit: int = 20) -> dict:
     """
     # Identifiers are double-quoted per Snowflake convention.
     # Callers must validate schema/table before calling this function.
-    return _run(f'SELECT * FROM "{schema}"."{table}" LIMIT {limit}', None)
+    return _run(f'SELECT * FROM "{schema}"."{table}" LIMIT {limit}', None, tenant)
 
 
 def _in_filter(node) -> bool:
@@ -105,7 +115,7 @@ def _in_filter(node) -> bool:
     return False
 
 
-def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool = False,
+def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None = None, compiled: bool = False,
                          allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset()) -> dict:
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
@@ -133,7 +143,9 @@ def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool
             if kw in upper:
                 return {"error": f"Statement contains disallowed keyword: {kw}"}
         try:
-            return query_sql(stripped, params)
+            return query_sql(stripped, params, tenant=tenant)
+        except TenantNotReady:
+            raise
         except Exception as exc:
             return {"error": str(exc)}
 
@@ -246,7 +258,9 @@ def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool
 
     # Validation passed — execute
     try:
-        return query_sql(stripped, params)
+        return query_sql(stripped, params, tenant=tenant)
+    except TenantNotReady:
+        raise
     except Exception as exc:
         logger.error("Snowflake execution error: %s", exc)
         # warehouse_error separates Snowflake failures (internal detail) from guard rejections.
@@ -256,7 +270,7 @@ def validate_and_execute(sql: str, params: dict | None = None, *, compiled: bool
 MAX_ROWS = 1000
 
 
-def query_sql(sql: str, params: dict | None = None) -> dict:
+def query_sql(sql: str, params: dict | None = None, *, tenant: Tenant | None = None) -> dict:
     """Execute a read-only SQL statement and return columns + rows.
 
     Only SELECT and WITH statements are allowed. Supports Snowflake bind
@@ -277,33 +291,33 @@ def query_sql(sql: str, params: dict | None = None) -> dict:
     if not (normalized.startswith("SELECT") or normalized.startswith("WITH")):
         raise ValueError("Only SELECT and WITH queries are allowed")
 
-    return _run(sql, params)
+    return _run(sql, params, tenant)
 
 
-def _run(sql: str, params: dict | None) -> dict:
-    """Execute on the cached connection, reconnecting once if Snowflake has expired its session."""
+def _run(sql: str, params: dict | None, tenant: Tenant | None) -> dict:
+    """Execute on the tenant's cached connection, reconnecting once if Snowflake has expired its session."""
+    tenant = _require(tenant)
     try:
-        return _execute(get_connection(), sql, params)
+        return _execute(get_connection(tenant), sql, params)
     except Exception as exc:
         if getattr(exc, "errno", None) not in _SESSION_EXPIRED:
             raise
         logger.info("Snowflake session expired (%s); reconnecting", exc.errno)
-        _drop_connection()
-        return _execute(get_connection(), sql, params)
+        _drop_connection(tenant.tenant_id)
+        return _execute(get_connection(tenant), sql, params)
 
 
 # Session gone, or its session/master token expired: a new login fixes these.
 _SESSION_EXPIRED = {390111, 390112, 390114}
 
 
-def _drop_connection() -> None:
-    global _sf_connection
-    if _sf_connection is not None:
+def _drop_connection(tenant_id: str) -> None:
+    conn = _connections.pop(tenant_id, None)
+    if conn is not None:
         try:
-            _sf_connection.close()
+            conn.close()
         except Exception:
             pass
-    _sf_connection = None
 
 
 def _execute(conn, sql: str, params: dict | None) -> dict:

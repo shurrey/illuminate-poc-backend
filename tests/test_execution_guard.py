@@ -111,8 +111,8 @@ def test_results_are_capped_at_max_rows_and_marked_truncated(monkeypatch):
         def cursor(self):
             return _Cursor(5000)
 
-    monkeypatch.setattr(snowflake_client, "get_connection", lambda: Conn())
-    result = snowflake_client.query_sql("SELECT N FROM CDM_LMS.T")
+    monkeypatch.setattr(snowflake_client, "get_connection", lambda tenant: Conn())
+    result = snowflake_client.query_sql("SELECT N FROM CDM_LMS.T", tenant=object())
     assert len(result["rows"]) == snowflake_client.MAX_ROWS
     assert result["truncated"] is True
 
@@ -165,18 +165,18 @@ COMPILED_NAMES = "WITH DS AS (SELECT FIRST_NAME, EMAIL FROM CDM_LMS.PERSON) SELE
 
 
 def test_compiled_identity_passes_only_when_the_caller_may_see_identity(monkeypatch):
-    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": [], "rows": []})
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
     assert "error" in snowflake_client.validate_and_execute(COMPILED_NAMES, compiled=True)
     assert "error" not in snowflake_client.validate_and_execute(COMPILED_NAMES, compiled=True, allow_identity=True)
 
 
 def test_freehand_sql_never_returns_identity_whatever_the_role(monkeypatch):
-    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": [], "rows": []})
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
     assert "error" in snowflake_client.validate_and_execute("SELECT EMAIL FROM CDM_LMS.PERSON", allow_identity=True)
 
 
 def test_declared_dataset_pii_is_guarded_for_callers_without_identity(monkeypatch):
-    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": [], "rows": []})
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
     sql = "WITH DS AS (SELECT CREATOR_NAME FROM CDM_LMS.PERSON) SELECT CREATOR_NAME AS creator_name FROM DS"
     assert "error" in snowflake_client.validate_and_execute(sql, compiled=True, extra_pii={"CREATOR_NAME"})
     assert "error" not in snowflake_client.validate_and_execute(sql, compiled=True, extra_pii={"CREATOR_NAME"}, allow_identity=True)
