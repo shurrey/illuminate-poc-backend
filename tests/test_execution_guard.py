@@ -203,6 +203,8 @@ def own_database(monkeypatch):
     "SELECT COUNT(*) FROM CDM_LMS.COURSE c JOIN OTHER_DB.CDM_LMS.TERM t ON c.ID = t.ID",
     "WITH x AS (SELECT COUNT(*) AS n FROM OTHER_DB.CDM_LMS.COURSE) SELECT n FROM x",
     "SELECT COUNT(*) FROM MY_DB.CDM_LMS.COURSE WHERE ID IN (SELECT ID FROM OTHER_DB.CDM_LMS.TERM)",
+    'SELECT COUNT(*) FROM "my_db".CDM_LMS.COURSE',
+    'SELECT "my_db".CDM_LMS.F(1) AS n FROM CDM_LMS.COURSE',
 ])
 def test_a_table_in_another_database_is_a_guard_error(sql, executed, own_database):
     result = _validate(sql)
@@ -434,3 +436,10 @@ def test_metadata_and_system_functions_are_refused_anywhere(sql, compiled, execu
     result = _validate(sql, compiled=compiled)
     assert "is not allowed" in result["error"], sql
     assert executed == []
+
+
+def test_premium_schema_refusal_lists_learn_and_core_does_not(executed):
+    premium = _validate("SELECT COUNT(*) FROM PUBLIC.T")["error"]
+    core = _validate_as(CORE, "SELECT COUNT(*) FROM PUBLIC.T")["error"]
+    assert "not in the allowed list" in premium and "LEARN" in premium
+    assert "not in the allowed list" in core and "LEARN" not in core

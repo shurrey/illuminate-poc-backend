@@ -15,7 +15,7 @@ import time
 import boto3
 from botocore.exceptions import ClientError
 
-from licenses import LEARN_REFUSAL, schema_allowed
+from licenses import LEARN_REFUSAL, allows_learn, schema_allowed
 from semantic_layer.compiler import is_bounded_generator_call
 from semantic_layer.learn import learn_columns, learn_pii
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
@@ -489,7 +489,7 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     for catalog in filter(None, catalogs):
         if own_database is None:
             own_database = tenant_database(tenant).upper()
-        if catalog.name.upper() != own_database:
+        if _folded(catalog) != own_database:
             return {"error": f"Database '{catalog.name}' is not the tenant's database. Only the tenant's own database is accessible."}
 
     # Other views list databases, roles, grants, stages and load history beyond the tenant's tables.
@@ -513,12 +513,9 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         if not schema_allowed(tenant, schema_name):
             if schema_name.upper() == "LEARN":
                 return {"error": LEARN_REFUSAL}
-            return {
-                "error": (
-                    f"Schema '{schema_name.upper()}' is not in the allowed list. "
-                    "Only CDM_* schemas and INFORMATION_SCHEMA are accessible."
-                )
-            }
+            allowed = "CDM_* schemas, LEARN and INFORMATION_SCHEMA are" if allows_learn(tenant) else \
+                "CDM_* schemas and INFORMATION_SCHEMA are"
+            return {"error": f"Schema '{schema_name.upper()}' is not in the allowed list. Only {allowed} accessible."}
 
     # PII columns must sit inside a counting aggregate. Value-returning aggregates (MIN, ARRAY_AGG,
     # LISTAGG, ANY_VALUE, MEDIAN...) and window functions return raw values, and GROUP BY on a PII

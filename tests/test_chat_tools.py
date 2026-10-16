@@ -229,6 +229,7 @@ def test_premium_tool_specs_mention_learn_and_keep_the_tool_names():
     assert [s["name"] for s in specs] == [s["name"] for s in ChatTools(CATALOG, "DB", tenant=TENANT_CORE).specs]
     assert "LEARN" in {s["name"]: s for s in specs}["describe_cdm_table"]["description"]
     assert "LEARN" in {s["name"]: s for s in specs}["execute_sql"]["description"]
+    assert not any("{" in s["description"] for s in specs)
 
 
 def test_core_describe_learn_refused():
