@@ -8,6 +8,8 @@ from dataclasses import dataclass
 
 import boto3
 
+from licenses import LICENSES
+
 TABLE_NAME = os.environ.get("TENANT_TABLE", "illuminate-tenants-dev")
 NOT_READY = "Your organization is not set up yet"
 _CACHE_SECONDS = 60
@@ -25,7 +27,7 @@ class Tenant:
 
 
 class TenantNotReady(Exception):
-    """No registry row exists for the tenant."""
+    """No registry row exists for the tenant, or its license is not a known one."""
 
 
 def _get_table():
@@ -44,10 +46,12 @@ def get_tenant(tenant_id: str) -> Tenant:
     item = _get_table().get_item(Key={"tenant_id": tenant_id}).get("Item")
     if not item:
         raise TenantNotReady(tenant_id)
+    if item.get("license") not in LICENSES:
+        raise TenantNotReady(tenant_id)
     tenant = Tenant(
         tenant_id=item["tenant_id"],
         name=item.get("name", ""),
-        license=item.get("license", ""),
+        license=item["license"],
         mcp_enabled=bool(item.get("mcp_enabled", False)),
     )
     _cache[tenant_id] = (now, tenant)

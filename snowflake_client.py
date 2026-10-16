@@ -14,6 +14,7 @@ import time
 import boto3
 from botocore.exceptions import ClientError
 
+from licenses import LEARN_REFUSAL, schema_allowed
 from semantic_layer.compiler import is_bounded_generator
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
 from tenancy import Tenant, TenantNotReady
@@ -126,12 +127,56 @@ def _in_filter(node) -> bool:
     return False
 
 
+def _folded(identifier) -> str:
+    """Snowflake name resolution: unquoted identifiers fold to upper case, quoted ones are exact."""
+    return identifier.name if identifier.args.get("quoted") else identifier.name.upper()
+
+
+def _is_cte_reference(table_node) -> bool:
+    """True when an unqualified table names a CTE visible at that point.
+
+    Inside a CTE body only earlier CTEs of the same WITH are visible (its own name too when RECURSIVE);
+    the main query sees them all.
+    """
+    import sqlglot.expressions as exp
+
+    name = _folded(table_node.this)
+    prev, node = table_node, table_node.parent
+    while node is not None:
+        if isinstance(node, exp.With):
+            ctes = node.expressions
+            visible = ctes[:ctes.index(prev) + (1 if node.args.get("recursive") else 0)] if prev in ctes else ctes
+        else:
+            with_ = node.args.get("with") or node.args.get("with_")
+            visible = with_.expressions if with_ is not None and prev is not with_ else []
+        if any(_folded(cte.args["alias"].this) == name for cte in visible):
+            return True
+        prev, node = node, node.parent
+    return False
+
+
+def _qualified_functions(stmt):
+    """Yield the qualifier identifiers ([database,] schema) of each schema-qualified function call."""
+    import sqlglot.expressions as exp
+
+    for dot in stmt.find_all(exp.Dot):
+        if not isinstance(dot.expression, exp.Func):
+            continue
+        parts, node = [], dot.this
+        while isinstance(node, exp.Dot):
+            parts.insert(0, node.expression)
+            node = node.this
+        parts.insert(0, node)
+        if all(isinstance(p, exp.Identifier) for p in parts):
+            yield parts
+
+
 def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None, compiled: bool = False,
                          allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset()) -> dict:
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
-    Allowed statement types: SELECT, WITH (CTE), SHOW, DESCRIBE.
-    Blocked: DML/DDL in any subquery, non-CDM/INFORMATION_SCHEMA references, tables in another database, LIMIT > 1000, and
+    Allowed statement types: SELECT, WITH (CTE), UNION.
+    Blocked: DML/DDL in any subquery, references outside CDM_*, INFORMATION_SCHEMA and (Premium only) LEARN, INFORMATION_SCHEMA.DATABASES, tables in another database, LIMIT > 1000, and
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
     allow_identity lifts the projection check for compiled SQL only (callers whose role may see
@@ -145,20 +190,6 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     import sqlglot.expressions as exp
 
     stripped = sql.strip()
-    upper = stripped.upper()
-
-    # SHOW / DESCRIBE — allow with only a basic safety check
-    if upper.startswith("SHOW") or upper.startswith("DESCRIBE"):
-        dangerous = ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE"]
-        for kw in dangerous:
-            if kw in upper:
-                return {"error": f"Statement contains disallowed keyword: {kw}"}
-        try:
-            return query_sql(stripped, params, tenant=tenant)
-        except TenantNotReady:
-            raise
-        except Exception as exc:
-            return {"error": str(exc)}
 
     # Parse with sqlglot
     try:
@@ -180,7 +211,7 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         return {
             "error": (
                 f"Statement type '{type(stmt).__name__}' is not allowed. "
-                "Only SELECT, WITH, SHOW, and DESCRIBE statements are permitted."
+                "Only SELECT and WITH statements are permitted."
             )
         }
 
@@ -209,28 +240,38 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
             return {"error": "Only the GENERATOR table function, with a literal ROWCOUNT, is allowed."
                              " Other table functions are not permitted."}
 
-    # A database-qualified table must name the tenant's own database, for CDM_* and INFORMATION_SCHEMA alike.
+    # A database-qualified table or function must name the tenant's own database.
     own_database = None
-    for table_node in stmt.find_all(exp.Table):
-        catalog = table_node.args.get("catalog")
-        if not catalog:
-            continue
+    qualified_functions = list(_qualified_functions(stmt))
+    catalogs = [t.args.get("catalog") for t in stmt.find_all(exp.Table)] + [parts[0] for parts in qualified_functions if len(parts) > 1]
+    for catalog in filter(None, catalogs):
         if own_database is None:
             own_database = tenant_database(tenant).upper()
         if catalog.name.upper() != own_database:
             return {"error": f"Database '{catalog.name}' is not the tenant's database. Only the tenant's own database is accessible."}
 
-    # Schema whitelist — only CDM_* schemas and INFORMATION_SCHEMA
+    # INFORMATION_SCHEMA.DATABASES lists every database the role can see.
     for table_node in stmt.find_all(exp.Table):
         db_part = table_node.args.get("db")
-        schema_name = (db_part.name.upper() if db_part else "").strip('"').strip("'")
-        if schema_name and not (
-            schema_name.startswith("CDM_")
-            or schema_name == "INFORMATION_SCHEMA"
-        ):
+        if db_part and db_part.name.upper() == "INFORMATION_SCHEMA" and table_node.name.upper() == "DATABASES":
+            return {"error": "INFORMATION_SCHEMA.DATABASES is not accessible."}
+
+    # Without a schema Snowflake resolves the table in the session's default schema, which may be LEARN.
+    for table_node in stmt.find_all(exp.Table):
+        if (isinstance(table_node.this, exp.Identifier) and not table_node.args.get("db")
+                and not _is_cte_reference(table_node)):
+            name = table_node.name
+            return {"error": f"Name the schema for table {name.upper()} (for example CDM_LMS.{name.upper()})."}
+
+    schemas = [t.args.get("db") for t in stmt.find_all(exp.Table)] + [parts[-1] for parts in qualified_functions]
+    for schema_part in filter(None, schemas):
+        schema_name = schema_part.name.strip('"').strip("'")
+        if not schema_allowed(tenant, schema_name):
+            if schema_name.upper() == "LEARN":
+                return {"error": LEARN_REFUSAL}
             return {
                 "error": (
-                    f"Schema '{schema_name}' is not in the allowed list. "
+                    f"Schema '{schema_name.upper()}' is not in the allowed list. "
                     "Only CDM_* schemas and INFORMATION_SCHEMA are accessible."
                 )
             }

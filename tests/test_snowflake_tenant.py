@@ -154,15 +154,6 @@ def test_validate_and_execute_propagates_missing_secret(aws):
     assert aws.connects == []
 
 
-def test_show_branch_propagates_tenant_not_ready(monkeypatch):
-    def not_ready(*a, **k):
-        raise TenantNotReady("T1")
-
-    monkeypatch.setattr(snowflake_client, "query_sql", not_ready)
-    with pytest.raises(TenantNotReady):
-        snowflake_client.validate_and_execute("SHOW TABLES", tenant=None)
-
-
 def test_secret_without_database_raises_before_connecting(aws):
     aws.secrets["illuminate/tenants/T1/snowflake"].pop("database")
     with pytest.raises(TenantNotReady):

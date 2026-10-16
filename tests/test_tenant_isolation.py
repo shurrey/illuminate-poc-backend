@@ -15,6 +15,7 @@ from moto import mock_aws
 import chat_engine
 import conversation_store
 import lambda_handler
+import licenses
 import overlay_store
 import snowflake_client
 import tenancy
@@ -26,13 +27,14 @@ from tests.conftest import REAL_LIST_OVERLAYS
 
 MARK_A, MARK_B = "ALPHA-ONLY", "BETA-ONLY"
 DB_A, DB_B = "DB_ALPHA_ONLY", "DB_BETA_ONLY"
-A, B, C = "tenant-a", "tenant-b", "tenant-c"
+A, B, C, C2 = "tenant-a", "tenant-b", "tenant-c", "tenant-c2"
 
 ADMIN = "illuminate-admins"
 USERS = {
     "Bearer a": {"sub": "u1", "custom:tenant_id": A, "cognito:groups": [ADMIN]},
     "Bearer b": {"sub": "u1", "custom:tenant_id": B, "cognito:groups": [ADMIN]},
     "Bearer c": {"sub": "u1", "custom:tenant_id": C, "cognito:groups": [ADMIN]},
+    "Bearer c2": {"sub": "u1", "custom:tenant_id": C2, "cognito:groups": [ADMIN]},
     "Bearer ghost": {"sub": "u1", "custom:tenant_id": "ghost", "cognito:groups": [ADMIN]},
 }
 AS_A, AS_B, AS_C, AS_GHOST = ({"Authorization": f"Bearer {t}"} for t in ("a", "b", "c", "ghost"))
@@ -88,11 +90,15 @@ class ScriptedBedrock:
     """Asks for one governed query, then answers; records every Converse call."""
 
     def __init__(self):
-        self.calls = []
+        self.calls, self.tool_script = [], []
 
     def converse(self, **kwargs):
         self.calls.append(kwargs)
         last = kwargs["messages"][-1]["content"]
+        if self.tool_script:
+            name, tool_input = self.tool_script.pop(0)
+            return {"output": {"message": {"role": "assistant", "content": [
+                {"toolUse": {"toolUseId": "t1", "name": name, "input": tool_input}}]}}, "stopReason": "tool_use"}
         if any("toolResult" in block for block in last):
             return {"output": {"message": {"role": "assistant", "content": [{"text": "Done."}]}}, "stopReason": "end_turn"}
         return {"output": {"message": {"role": "assistant", "content": [
@@ -117,6 +123,7 @@ def world(monkeypatch):
         registry = _table(ddb, "tenants-test", ["tenant_id"])
         for tid, name in ((A, "Alpha University"), (B, "Beta College"), (C, "Gamma Institute")):
             registry.put_item(Item={"tenant_id": tid, "name": name, "license": "premium", "mcp_enabled": False})
+        registry.put_item(Item={"tenant_id": C2, "name": "Core College", "license": "core", "mcp_enabled": False})
         overlays = _table(ddb, "overlays-test", ["tenant_id", "metric_id"])
         conversations = _table(
             ddb, "conversations-test", ["context_id"],
@@ -128,7 +135,7 @@ def world(monkeypatch):
                 "Projection": {"ProjectionType": "INCLUDE", "NonKeyAttributes": ["title"]},
             }])
         sm = boto3.client("secretsmanager", region_name="us-east-1")
-        for tid, mark, db in ((A, MARK_A, DB_A), (B, MARK_B, DB_B)):
+        for tid, mark, db in ((A, MARK_A, DB_A), (B, MARK_B, DB_B), (C2, MARK_B, DB_B)):
             sm.create_secret(Name=f"illuminate/tenants/{tid}/snowflake", SecretString=json.dumps({
                 "account": mark, "user": f"{mark}-user", "password": f"{mark}-pw", "database": db,
                 "warehouse": "WH", "role": "R"}))
@@ -257,6 +264,17 @@ def test_raw_sql_naming_another_tenants_database_is_refused_before_any_connectio
     assert world.connects == [] and world.log == []
     assert snowflake_client.validate_and_execute(f"SELECT COUNT(*) FROM {DB_B}.CDM_LMS.COURSE", tenant=tenant_b).get("rows")
     assert world.connects == [MARK_B]
+
+
+def test_core_tenant_is_refused_learn_through_chat_raw_sql(world):
+    world.bedrock.tool_script = [
+        ("search_catalog", {"question": "learn users"}),
+        ("execute_sql", {"sql": "SELECT COUNT(*) FROM LEARN.USERS", "reason": "no governed metric covers LEARN users"}),
+    ]
+    r = _chat(world.client, {"Authorization": "Bearer c2"})
+    assert r.status_code == 200
+    assert licenses.LEARN_REFUSAL in json.dumps(world.bedrock.calls[-1], default=str)
+    assert world.connects == [] and world.log == []
 
 
 def test_conversations_never_cross(world):
