@@ -1,8 +1,9 @@
 """Assertions over the synthesized CloudFormation templates.
 
 Run from cdk/ after:
-  npx cdk synth -q -c environment=dev -c initialUserPassword=Synth-Only-Passw0rd! -c initialTenantId=synth-tenant --exclusively IlluminateBase-dev
-The password and tenant id are placeholders so the initial-user resources synthesize; --exclusively skips
+  npx cdk synth -q -c environment=dev -c initialUserPassword=Synth-Only-Passw0rd! --exclusively IlluminateBase-dev
+The password is a placeholder so the initial-user resources synthesize (the tenant id comes from the initialTenantIds
+context, so INITIAL_TENANT_ID must be unset); --exclusively skips
 Lambda asset bundling, which needs Docker.
 """
 
@@ -29,6 +30,7 @@ def main() -> int:
     [pool] = resources("IlluminateBase-dev", "AWS::Cognito::UserPool")
     required = [a for a in pool["Properties"].get("Schema", []) if a.get("Required")]
     groups = [g["Properties"]["GroupName"] for g in resources("IlluminateBase-dev", "AWS::Cognito::UserPoolGroup")]
+    seed = [r for r in resources("IlluminateBase-dev", "Custom::AWS") if "initial-user" in json.dumps(r.get("Properties", {}).get("Create"))]
     base_text = (OUT / "IlluminateBase-dev.template.json").read_text()
     results = [
         check("user pool client declares its writable attributes", writable is not None),
@@ -41,6 +43,9 @@ def main() -> int:
         check("a deleted initial user does not fail the deploy",
               any("adminAddUserToGroup" in json.dumps(r) and "UserNotFoundException" in json.dumps(r)
                   for r in resources("IlluminateBase-dev", "Custom::AWS"))),
+        check("seed resources exist when the dev map has a tenant id", len(seed) >= 3),
+        check("no seed custom resource defines an Update call (deploys never re-tenant the seed user)",
+              all(not r["Properties"].get("Update") for r in seed)),
         check("no VPC or NAT gateway (nothing runs in it)",
               not resources("IlluminateBase-dev", "AWS::EC2::VPC") and not resources("IlluminateBase-dev", "AWS::EC2::NatGateway")),
         check("no unattached WAF web ACL", not resources("IlluminateBase-dev", "AWS::WAFv2::WebACL")),

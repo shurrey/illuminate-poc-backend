@@ -41,7 +41,9 @@ const base = new BaseStack(app, `IlluminateBase-${environment}`, {
   initialUserEmail: app.node.tryGetContext('initialUserEmail') || envVars['COGNITO_USER_EMAIL'] || 'admin@example.com',
   initialUserPassword: app.node.tryGetContext('initialUserPassword') || envVars['COGNITO_USER_PASSWORD'] || '',
   initialUserName: app.node.tryGetContext('initialUserName') || envVars['COGNITO_USER_NAME'] || 'Illuminate Admin',
-  initialTenantId: app.node.tryGetContext('initialTenantId') || process.env.INITIAL_TENANT_ID || envVars['INITIAL_TENANT_ID'],
+  // INITIAL_TENANT_ID overrides the per-environment map in cdk.json; neither set means no seed user.
+  initialTenantId:
+    process.env.INITIAL_TENANT_ID || envVars['INITIAL_TENANT_ID'] || app.node.tryGetContext('initialTenantIds')?.[environment],
 });
 
 // =============================================================================
