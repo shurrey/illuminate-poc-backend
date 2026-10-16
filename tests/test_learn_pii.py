@@ -169,8 +169,8 @@ def test_unresolvable_column_only_a_learn_table_lists_is_pii(executed):
 
 def test_learn_pii_path_exception_is_a_pii_refusal(monkeypatch, executed):
     def boom(*a, **k):
-        raise RuntimeError("table lookup failure")
-    monkeypatch.setattr(snowflake_client, "_base_table", boom)
+        raise RuntimeError("LEARN PII failure")
+    monkeypatch.setattr(snowflake_client, "_learn_pii_columns", boom)
     assert _refused_as_pii(_validate("SELECT a.EVENT_TYPE FROM LEARN.ACTIVITY_ACCUMULATOR a"))
     assert executed == []
 
@@ -203,3 +203,48 @@ def test_cte_column_list_rename_is_caught_at_the_base_read(executed, sql):
 def test_compiled_sql_is_not_checked_for_alias_lists(executed):
     result = snowflake_client.validate_and_execute("SELECT C1 FROM CDM_LMS.COURSE AS c (C1)", tenant=TENANT_A, compiled=True)
     assert "error" not in result
+
+
+WHOLE_ROW_REFUSAL = "Refer to columns by name; whole-row references are not allowed."
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT TO_VARIANT(p) FROM CDM_LMS.PERSON p",
+    "SELECT f.VALUE FROM CDM_LMS.PERSON p, LATERAL FLATTEN(input => p) f",
+    "SELECT TO_VARIANT(PERSON) FROM CDM_LMS.PERSON",
+    "SELECT TO_VARIANT(c) FROM (SELECT ID, EMAIL FROM CDM_LMS.PERSON WHERE ID > 0) c",
+    "WITH c AS (SELECT ID FROM CDM_LMS.PERSON) SELECT TO_JSON(c) FROM c",
+    "SELECT TO_VARIANT(u) FROM LEARN.USERS u",
+    "SELECT f.VALUE FROM LEARN.USERS u, LATERAL FLATTEN(input => u) f",
+    'SELECT TO_VARIANT("U") FROM LEARN.USERS u',
+])
+def test_guard_refuses_whole_row_references(executed, sql):
+    assert _validate(sql) == {"error": WHOLE_ROW_REFUSAL}
+    assert executed == []
+
+
+def test_a_real_column_named_like_an_alias_is_not_a_whole_row_reference(executed):
+    assert "error" not in _validate("SELECT NAME FROM CDM_LMS.COURSE name")
+    assert len(executed) == 1
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT OBJECT_CONSTRUCT(p.*) FROM CDM_LMS.PERSON p",
+    "SELECT ARRAY_CONSTRUCT(p.*) FROM CDM_LMS.PERSON p",
+    "SELECT HASH(p.*) FROM CDM_LMS.PERSON p",
+    "SELECT TO_JSON(OBJECT_CONSTRUCT(p.*)) FROM CDM_LMS.PERSON p",
+    "SELECT OBJECT_CONSTRUCT(*) FROM CDM_LMS.PERSON",
+    "SELECT OBJECT_CONSTRUCT(u.*) FROM LEARN.USERS u",
+    "SELECT HASH(u.*) FROM LEARN.USERS u",
+])
+def test_guard_refuses_row_stars_inside_functions(executed, sql):
+    assert "Star projections" in _validate(sql)["error"]
+    assert executed == []
+
+
+def test_whole_row_check_exception_is_a_refusal(monkeypatch, executed):
+    def boom(*a, **k):
+        raise RuntimeError("table lookup failure")
+    monkeypatch.setattr(snowflake_client, "_base_table", boom)
+    assert _validate("SELECT a.EVENT_TYPE FROM LEARN.ACTIVITY_ACCUMULATOR a") == {"error": WHOLE_ROW_REFUSAL}
+    assert executed == []

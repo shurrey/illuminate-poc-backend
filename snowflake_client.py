@@ -297,6 +297,25 @@ POSITIONAL_REFUSAL = "Refer to columns by name; positional ($1) and IDENTIFIER()
 
 ALIAS_LIST_REFUSAL = "Column alias lists on tables are not allowed; alias columns in the SELECT list instead."
 
+WHOLE_ROW_REFUSAL = "Refer to columns by name; whole-row references are not allowed."
+
+
+def _whole_row_reference(stmt) -> bool:
+    """Whether an unqualified column names a table, alias or CTE (Snowflake reads it as the whole row).
+
+    A name that is also a dictionary column of a referenced table is a column, not a row.
+    """
+    import sqlglot.expressions as exp
+
+    row_names = {_folded(a.this) for a in stmt.find_all(exp.TableAlias) if isinstance(a.this, exp.Identifier)}
+    row_names |= {_folded(t.this) for t in stmt.find_all(exp.Table) if isinstance(t.this, exp.Identifier)}
+    columns = set()
+    for table in filter(None, (_base_table(t) for t in stmt.find_all(exp.Table))):
+        columns |= (learn_columns(table[1]) or set()) if table[0] == "LEARN" else _cdm_columns().get(table, set())
+    return any(isinstance(c.this, exp.Identifier) and not c.args.get("table")
+               and _folded(c.this) in row_names and _folded(c.this) not in columns
+               for c in stmt.find_all(exp.Column))
+
 
 def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None, compiled: bool = False,
                          allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset()) -> dict:
@@ -427,6 +446,13 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         # rename projections checked where they read their tables; sqlglot fills in LATERAL FLATTEN's list.
         if any(a.columns and not isinstance(a.parent, (exp.CTE, exp.Lateral)) for a in stmt.find_all(exp.TableAlias)):
             return {"error": ALIAS_LIST_REFUSAL}
+        try:
+            whole_row = _whole_row_reference(stmt)
+        except Exception:
+            logger.exception("Whole-row reference check failed; refusing")
+            whole_row = True
+        if whole_row:
+            return {"error": WHOLE_ROW_REFUSAL}
         scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
     try:
         learn_pii_ids = set() if compiled else _learn_pii_columns(stmt, [col for col, _ in scopes])
