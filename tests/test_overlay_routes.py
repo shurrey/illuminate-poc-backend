@@ -5,9 +5,10 @@ from moto import mock_aws
 
 import lambda_handler
 import overlay_store
+from tests.tenant_fakes import TENANT_A, TENANT_B, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
-ADMIN = {"sub": "a1", "custom:tenant_id": "t1", "cognito:groups": ["illuminate-admins"]}
+ADMIN = user_of(TENANT_A, "illuminate-admins", sub="a1")
 TARGET = "measure:dataset.student_grade.v1:average_grade_percentage"
 URL = f"/api/v1/admin/overlay/{TARGET}"
 
@@ -17,7 +18,8 @@ def client(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
-    monkeypatch.setenv("SNOWFLAKE_DATABASE", "TESTDB")
+    monkeypatch.setenv("TEST_SNOWFLAKE_DATABASE", "TESTDB")
+    install_tenants(monkeypatch, TENANT_A, TENANT_B)
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     with mock_aws():
         t = boto3.resource("dynamodb", region_name="us-east-1").create_table(
@@ -74,7 +76,7 @@ def test_compile_applies_only_the_callers_tenant_overlays_and_names_them_in_prov
     mine = client.post("/api/v1/semantic/compile", headers=AUTH, json=contract).json()
     assert "ROUND(GRADE_PERCENTAGE, 0)" in mine["sql"]
     assert mine["provenance"]["overlays"] == [f"{TARGET}@v1"]
-    _as(monkeypatch, {"sub": "u2", "custom:tenant_id": "t2"})
+    _as(monkeypatch, user_of(TENANT_B, sub="u2"))
     theirs = client.post("/api/v1/semantic/compile", headers=AUTH, json=contract).json()
     assert "ROUND(GRADE_PERCENTAGE, 0)" not in theirs["sql"] and theirs["provenance"]["overlays"] == []
 
@@ -112,7 +114,7 @@ def test_get_returns_the_canonical_definition_beside_the_overlay(client):
 
 
 def _stale(table, target, **fields):
-    table.put_item(Item={"tenant_id": "t1", "metric_id": target, "target": target, "version": 1, "description": "", **fields})
+    table.put_item(Item={"tenant_id": TENANT_A.tenant_id, "metric_id": target, "target": target, "version": 1, "description": "", **fields})
 
 
 def test_an_overlay_that_no_longer_validates_is_skipped_reported_and_does_not_block_other_edits(client):

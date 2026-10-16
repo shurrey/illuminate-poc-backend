@@ -19,11 +19,12 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from semantic_layer.contract import QueryContract
-from tenancy import NOT_READY, Tenant, TenantNotReady, get_tenant
+import tenancy
+from tenancy import NOT_READY, Tenant, TenantNotReady
 
 # JWT validation
 from jose import jwt, JWTError
@@ -164,12 +165,7 @@ def _get_user_from_token(authorization: Optional[str]) -> Optional[dict]:
 
 
 def _tenant_id_from_user(user: Optional[dict]) -> Optional[str]:
-    """Return the user's tenant_id Cognito claim, if present.
-
-    Looks for `custom:tenant_id` (only in ID tokens). Returns None for
-    access tokens or users without the attribute — caller falls back to
-    canonical-only behavior.
-    """
+    """The user's `custom:tenant_id` claim (ID tokens only); None for access tokens or users without it."""
     if not user:
         return None
     value = user.get("custom:tenant_id")
@@ -182,7 +178,7 @@ def tenant_for(user: Optional[dict]) -> Tenant:
     if not tenant_id:
         raise HTTPException(status_code=403, detail=NOT_READY)
     try:
-        return get_tenant(tenant_id)
+        return tenancy.get_tenant(tenant_id)
     except TenantNotReady:
         raise HTTPException(status_code=403, detail=NOT_READY)
 
@@ -293,15 +289,18 @@ def _with_queries(text: str, queries: list[dict]) -> str:
 
 def _engine_kwargs(user: Optional[dict]) -> dict:
     """Tools and a system prompt over the caller's overlaid catalog, when their tenant has overlays."""
-    catalog, overlays = _catalog_for(user)
+    if not _tenant_id_from_user(user):
+        return {}
+    tenant = tenant_for(user)
+    catalog, overlays = _catalog_for(tenant)
     if not overlays:
         return {}
-    from chat_engine import _database
     from semantic_layer.chat_tools import ChatTools
     from semantic_layer.prompt import build_system_prompt
 
-    return {"tools": ChatTools(catalog, _database, overlays=overlays),
-            "system_prompt": build_system_prompt(catalog, _database)}
+    database = _database_for(tenant)
+    return {"tools": ChatTools(catalog, database, overlays=overlays),
+            "system_prompt": build_system_prompt(catalog, database)}
 
 
 async def send_message(
@@ -392,6 +391,14 @@ app = FastAPI(
     redoc_url="/redoc" if _API_DOCS else None,
     openapi_url="/openapi.json" if _API_DOCS else None,
 )
+
+
+
+@app.exception_handler(TenantNotReady)
+async def _tenant_not_ready(request: Request, exc: TenantNotReady) -> JSONResponse:
+    """A tenant with no secret or database is unusable; the body never names the tenant."""
+    return JSONResponse(status_code=403, content={"detail": NOT_READY})
+
 
 # CORS middleware
 origins = [o.strip() for o in ALLOWED_ORIGINS.split(",")]
@@ -675,6 +682,7 @@ async def dictionary_preview(
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     # Raw rows include person tables, so previews are for administrators only.
     _require_admin(user)
+    tenant = tenant_for(user)
 
     # Validate identifiers
     if not _SAFE_IDENTIFIER.match(schema) or not _SAFE_IDENTIFIER.match(table):
@@ -693,7 +701,7 @@ async def dictionary_preview(
 
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: query_preview(schema.upper(), table.upper(), limit)
+            None, lambda: query_preview(schema.upper(), table.upper(), limit, tenant=tenant)
         )
         logger.info(f"Preview: {schema}.{table} returned {len(result['rows'])} rows")
         return result
@@ -709,13 +717,16 @@ async def dictionary_preview(
 # =============================================================================
 
 
-def _semantic_database() -> str:
-    """Snowflake database the semantic layer's {{ database }} placeholder resolves to."""
-    db = os.environ.get("SNOWFLAKE_DATABASE")
-    if db:
-        return db
-    from chat_engine import _database
-    return _database
+def _database_for(tenant: Tenant) -> str:
+    """Snowflake database the semantic layer's {{ database }} placeholder resolves to for the tenant.
+
+    TEST_SNOWFLAKE_DATABASE overrides the tenant's secret; tests only.
+    """
+    override = os.environ.get("TEST_SNOWFLAKE_DATABASE")
+    if override:
+        return override
+    import snowflake_client
+    return snowflake_client.tenant_database(tenant)
 
 
 _OVERLAY_TTL_SECONDS = 60
@@ -765,14 +776,9 @@ def _tenant_state(tenant_id: str) -> tuple:
     return state
 
 
-def _catalog_for(user: Optional[dict]) -> tuple:
-    """The canonical catalog with the caller's tenant overlays applied, and the overlays used."""
-    from semantic_layer.catalog import default_catalog
-
-    tenant_id = _tenant_id_from_user(user)
-    if not tenant_id:
-        return default_catalog(), []
-    catalog, applied, _ = _tenant_state(tenant_id)
+def _catalog_for(tenant: Tenant) -> tuple:
+    """The canonical catalog with the tenant's overlays applied, and the overlays used."""
+    catalog, applied, _ = _tenant_state(tenant.tenant_id)
     return catalog, applied
 
 
@@ -781,20 +787,21 @@ def _compile_contract(contract: QueryContract, authorization: str):
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return _compile_for(contract, user)
+    return _compile_for(contract, user, tenant_for(user))
 
 
-def _compile_for(contract: QueryContract, user: dict):
-    """Compile against the caller's tenant catalog with their identity rights; 400 on a compile error."""
+def _compile_for(contract: QueryContract, user: dict, tenant: Tenant):
+    """Compile against the tenant's catalog and database with the caller's identity rights; 400 on a compile error."""
     from semantic_layer.compiler import CompileError, compile_query
     from semantic_layer.overlays import overlays_used
 
     from roles import role_allows_identity
 
-    catalog, overlays = _catalog_for(user)
+    catalog, overlays = _catalog_for(tenant)
     allow_identity = role_allows_identity(user)
+    database = _database_for(tenant)
     try:
-        compiled = compile_query(contract, catalog, _semantic_database(), allow_identity=allow_identity)
+        compiled = compile_query(contract, catalog, database, allow_identity=allow_identity)
     except CompileError as e:
         raise HTTPException(status_code=400, detail=str(e))
     compiled.provenance.overlays = overlays_used(compiled.provenance, catalog, overlays)
@@ -835,13 +842,13 @@ async def semantic_catalog(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
+    tenant = tenant_for(user)
     import hashlib
     from fastapi import Response
-    from fastapi.responses import JSONResponse
     from semantic_layer.catalog_view import public_catalog
 
     from roles import role_allows_identity
-    body = public_catalog(_catalog_for(user)[0], allow_identity=role_allows_identity(user))
+    body = public_catalog(_catalog_for(tenant)[0], allow_identity=role_allows_identity(user))
     etag = '"' + hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:32] + '"'
     headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
     if if_none_match and _etag_matches(if_none_match, etag):
@@ -852,9 +859,12 @@ async def semantic_catalog(
 @app.post("/api/v1/semantic/query")
 async def semantic_query(contract: QueryContract, authorization: Optional[str] = Header(None)):
     """Compile a semantic query contract and run it through the execution guard."""
-    compiled = _compile_contract(contract, authorization)
-    result = await _execute(compiled, _get_user_from_token(authorization))
-    from fastapi.responses import JSONResponse
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    tenant = tenant_for(user)
+    compiled = _compile_for(contract, user, tenant)
+    result = await _execute(compiled, user, tenant)
 
     # jsonable_encoder turns Snowflake's Decimal into numbers; response-model serialisation makes them strings.
     return JSONResponse(_json_safe({
@@ -865,19 +875,19 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
     }))
 
 
-async def _execute(compiled, user: Optional[dict] = None) -> dict:
-    """Run compiled SQL through the guard, with the caller's identity rights and every dataset's
-    declared PII columns; the named result, or a 502 carrying the SQL."""
+async def _execute(compiled, user: dict, tenant: Tenant) -> dict:
+    """Run compiled SQL in the tenant's warehouse through the guard, with the caller's identity rights and
+    every dataset's declared PII columns; the named result, or a 502 carrying the SQL."""
     import asyncio
     import snowflake_client
     from roles import role_allows_identity
     from semantic_layer.compiler import named_result
 
-    allow_identity = bool(user) and role_allows_identity(user)
-    extra_pii = frozenset(c.upper() for ds in _catalog_for(user)[0].datasets.values() for c in ds.pii_columns) if user else frozenset()
+    allow_identity = role_allows_identity(user)
+    extra_pii = frozenset(c.upper() for ds in _catalog_for(tenant)[0].datasets.values() for c in ds.pii_columns)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, lambda: snowflake_client.validate_and_execute(
-        compiled.sql, compiled=True, allow_identity=allow_identity, extra_pii=extra_pii))
+        compiled.sql, compiled=True, allow_identity=allow_identity, extra_pii=extra_pii, tenant=tenant))
     if "error" in result:
         logger.error("Semantic query failed: %s", result["error"])
         message = "The warehouse could not run this query." if result.get("warehouse_error") else result["error"]
@@ -903,23 +913,24 @@ def _reports() -> dict:
     return _loaded_reports
 
 
-def _current_terms() -> list[dict]:
-    """Every term's name, start and end, cached per instance for an hour."""
+def _current_terms(tenant: Tenant) -> list[dict]:
+    """Every term's name, start and end in the tenant's warehouse, cached per instance and tenant for an hour."""
     import time
     from semantic_layer.catalog import default_catalog
     from semantic_layer.compiler import compile_query, named_result
     from snowflake_client import validate_and_execute
 
-    cached = _terms_cache.get("terms")
+    cached = _terms_cache.get(tenant.tenant_id)
     if cached and time.time() - cached[0] < _TERMS_TTL_SECONDS:
         return cached[1]
     contract = QueryContract(measures=["dataset.terms.v1:terms"], dimensions=["term_name", "term_start", "term_end"], limit=1000)
-    result = validate_and_execute(compile_query(contract, default_catalog(), _semantic_database()).sql, compiled=True)
+    sql = compile_query(contract, default_catalog(), _database_for(tenant)).sql
+    result = validate_and_execute(sql, compiled=True, tenant=tenant)
     if "error" in result:
         logger.warning("Could not load terms for report defaults: %s", result["error"])
         return []
     rows = named_result(result)["rows"]
-    _terms_cache["terms"] = (time.time(), rows)
+    _terms_cache[tenant.tenant_id] = (time.time(), rows)
     return rows
 
 
@@ -933,8 +944,10 @@ def _report_or_404(report_id: str):
 @app.get("/api/v1/reports")
 async def list_reports(authorization: Optional[str] = Header(None)):
     """Every report's id, title, area and description."""
-    if not _get_user_from_token(authorization):
+    user = _get_user_from_token(authorization)
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    tenant_for(user)
     return {"reports": [{"id": r.id, "title": r.title, "area": r.area, "description": r.description}
                         for r in _reports().values()]}
 
@@ -942,14 +955,16 @@ async def list_reports(authorization: Optional[str] = Header(None)):
 @app.get("/api/v1/reports/{report_id}")
 async def get_report(report_id: str, authorization: Optional[str] = Header(None)):
     """A report definition and its filters' default values (current term, last 30 days)."""
-    if not _get_user_from_token(authorization):
+    user = _get_user_from_token(authorization)
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    tenant = tenant_for(user)
     import asyncio
     from datetime import date
     from semantic_layer.reports import resolve_defaults
 
     report = _report_or_404(report_id)
-    terms = await asyncio.get_running_loop().run_in_executor(None, _current_terms)
+    terms = await asyncio.get_running_loop().run_in_executor(None, _current_terms, tenant)
     return {"report": report.model_dump(mode="json"), "defaults": resolve_defaults(report, date.today(), terms)}
 
 
@@ -968,6 +983,7 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    tenant = tenant_for(user)
     from roles import role_allows_identity
     from semantic_layer.reports import ReportValueError, merged_contract, output_renames
 
@@ -978,9 +994,9 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
     missing = [f for f in report.filters if f.id in report.required_filters and not request.values.get(f.id)]
     if missing:
         return {"unavailable": f"Choose {missing[0].label} to see this"}
-    catalog, _ = _catalog_for(user)
+    catalog, _ = _catalog_for(tenant)
     try:
-        contract, ignored = merged_contract(report, visual, request.query, request.values, catalog, _semantic_database())
+        contract, ignored = merged_contract(report, visual, request.query, request.values, catalog, _database_for(tenant))
     except ReportValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not role_allows_identity(user):
@@ -995,9 +1011,8 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
                 "dimensions": kept,
                 "order_by": [o for o in contract.order_by if o.field in kept_names or not _is_identity(o.field, catalog)],
             })
-    compiled = _compile_for(contract, user)
-    result = await _execute(compiled, user)
-    from fastapi.responses import JSONResponse
+    compiled = _compile_for(contract, user, tenant)
+    result = await _execute(compiled, user, tenant)
 
     renames = output_renames(report, visual, request.query, request.values)
     columns = [renames.get(c, c) for c in result["columns"]]
@@ -1025,19 +1040,10 @@ def _require_admin(user: Optional[dict]) -> None:
         raise HTTPException(status_code=403, detail=f"Requires membership of the {ADMIN_GROUP} group.")
 
 
-def _require_admin_tenant(user: Optional[dict]) -> str:
-    """The caller's tenant_id; 403 unless they are in the admin group and carry a tenant."""
+def _require_admin_tenant(user: Optional[dict]) -> Tenant:
+    """The caller's registered tenant; 403 unless they are in the admin group and their tenant is set up."""
     _require_admin(user)
-    tid = _tenant_id_from_user(user)
-    if not tid:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "No tenant_id on this token. The frontend must send the ID token "
-                "(not the access token) to admin endpoints."
-            ),
-        )
-    return tid
+    return tenant_for(user)
 
 
 class OverlayWrite(BaseModel):
@@ -1057,7 +1063,7 @@ def _admin_tenant(authorization: Optional[str]) -> tuple[dict, str]:
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return user, _require_admin_tenant(user)
+    return user, _require_admin_tenant(user).tenant_id
 
 
 def _checked_target(target: str) -> str:

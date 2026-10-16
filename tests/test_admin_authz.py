@@ -3,10 +3,11 @@ from fastapi.testclient import TestClient
 
 import lambda_handler
 import overlay_store
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
-ADMIN = {"sub": "a1", "custom:tenant_id": "t1", "cognito:groups": ["illuminate-admins"]}
-MEMBER = {"sub": "u1", "custom:tenant_id": "t1"}
+ADMIN = user_of(TENANT_A, "illuminate-admins", sub="a1")
+MEMBER = user_of(TENANT_A)
 
 TARGET = "measure:dataset.student_grade.v1:average_grade_percentage"
 ADMIN_ROUTES = [
@@ -25,6 +26,7 @@ def _never(*a, **k):
 
 @pytest.fixture
 def client(monkeypatch):
+    install_tenants(monkeypatch, TENANT_A)
     for name in ("list_overlays", "get_overlay", "history", "put_overlay", "revert", "delete_overlay"):
         monkeypatch.setattr(overlay_store, name, _never)
     return TestClient(lambda_handler.app)
@@ -47,7 +49,7 @@ def test_admin_can_list_overlays(client, monkeypatch):
     _as(monkeypatch, ADMIN)
     r = client.get("/api/v1/admin/overlays", headers=AUTH)
     assert r.status_code == 200
-    assert r.json()["tenant_id"] == "t1"
+    assert r.json()["tenant_id"] == TENANT_A.tenant_id
 
 
 def test_admin_without_tenant_is_still_rejected(client, monkeypatch):

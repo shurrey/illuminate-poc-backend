@@ -3,10 +3,11 @@ from fastapi.testclient import TestClient
 
 import lambda_handler
 import snowflake_client
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
-MEMBER = {"sub": "u1", "custom:tenant_id": "t1"}
-ADMIN = {"sub": "a1", "custom:tenant_id": "t1", "cognito:groups": ["illuminate-admins"]}
+MEMBER = user_of(TENANT_A)
+ADMIN = user_of(TENANT_A, "illuminate-admins", sub="a1")
 
 
 @pytest.fixture
@@ -20,6 +21,7 @@ def executed(monkeypatch):
 
 
 def _client(monkeypatch, user):
+    install_tenants(monkeypatch, TENANT_A)
     monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user if a else None)
     return TestClient(lambda_handler.app)
 
