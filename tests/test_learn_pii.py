@@ -163,7 +163,7 @@ def test_unresolvable_column_listed_by_a_referenced_cdm_table_is_allowed(execute
 
 def test_unresolvable_column_only_a_learn_table_lists_is_pii(executed):
     sql = "SELECT MAX(x.EVENT_TYPE) FROM CDM_LMS.COURSE c JOIN LEARN.ACTIVITY_ACCUMULATOR a ON a.COURSE_PK1 = c.ID"
-    assert not __import__("semantic_layer.learn").learn.learn_pii("ACTIVITY_ACCUMULATOR", "EVENT_TYPE")
+    assert not learn_pii("ACTIVITY_ACCUMULATOR", "EVENT_TYPE")
     assert _refused_as_pii(_validate(sql))
 
 
@@ -173,3 +173,33 @@ def test_learn_pii_path_exception_is_a_pii_refusal(monkeypatch, executed):
     monkeypatch.setattr(snowflake_client, "_base_table", boom)
     assert _refused_as_pii(_validate("SELECT a.EVENT_TYPE FROM LEARN.ACTIVITY_ACCUMULATOR a"))
     assert executed == []
+
+
+ALIAS_LIST_REFUSAL = "Column alias lists on tables are not allowed; alias columns in the SELECT list instead."
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT C1 FROM CDM_LMS.PERSON AS p (C1)",
+    "SELECT C1 FROM CDM_LMS.PERSON p (C1)",
+    "SELECT C1 FROM (SELECT ID FROM CDM_LMS.PERSON) AS p (C1)",
+    "SELECT C1 FROM LEARN.USERS AS u (C1)",
+    "SELECT C1 FROM (SELECT PK1 FROM LEARN.USERS WHERE PK1 > 0) u (C1)",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE c JOIN LEARN.USERS u (C1, C2) ON c.ID = u.C1",
+])
+def test_guard_refuses_column_alias_lists_on_tables(executed, sql):
+    assert _validate(sql) == {"error": ALIAS_LIST_REFUSAL}
+    assert executed == []
+
+
+@pytest.mark.parametrize("sql", [
+    "WITH c (X) AS (SELECT EMAIL FROM CDM_LMS.PERSON) SELECT X FROM c",
+    "WITH c (X) AS (SELECT u.EMAIL FROM LEARN.USERS u) SELECT X FROM c",
+])
+def test_cte_column_list_rename_is_caught_at_the_base_read(executed, sql):
+    assert _refused_as_pii(_validate(sql))
+    assert executed == []
+
+
+def test_compiled_sql_is_not_checked_for_alias_lists(executed):
+    result = snowflake_client.validate_and_execute("SELECT C1 FROM CDM_LMS.COURSE AS c (C1)", tenant=TENANT_A, compiled=True)
+    assert "error" not in result

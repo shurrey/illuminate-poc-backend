@@ -295,6 +295,8 @@ def _qualified_functions(stmt):
 
 POSITIONAL_REFUSAL = "Refer to columns by name; positional ($1) and IDENTIFIER() column references are not allowed."
 
+ALIAS_LIST_REFUSAL = "Column alias lists on tables are not allowed; alias columns in the SELECT list instead."
+
 
 def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None, compiled: bool = False,
                          allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset()) -> dict:
@@ -421,6 +423,10 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         if any(isinstance(n, exp.Parameter) or (isinstance(n, exp.Anonymous) and n.name.upper() == "IDENTIFIER")
                for n in stmt.walk()):
             return {"error": POSITIONAL_REFUSAL}
+        # FROM t AS a (C1) renames t's columns before the name-based PII check sees them. CTE column lists
+        # rename projections checked where they read their tables; sqlglot fills in LATERAL FLATTEN's list.
+        if any(a.columns and not isinstance(a.parent, (exp.CTE, exp.Lateral)) for a in stmt.find_all(exp.TableAlias)):
+            return {"error": ALIAS_LIST_REFUSAL}
         scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
     try:
         learn_pii_ids = set() if compiled else _learn_pii_columns(stmt, [col for col, _ in scopes])
