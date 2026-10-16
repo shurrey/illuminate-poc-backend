@@ -12,8 +12,8 @@ export interface AuthProps {
   /** Display name for the initial admin user. */
   initialUserName?: string;
   /**
-   * Tenant id stamped on the initial user. Drives per-tenant overlay lookup
-   * in the API. Defaults to "blackboard-dev" if not set.
+   * Tenant id stamped on the initial user. The seed user is created only when
+   * this is set.
    */
   initialTenantId?: string;
 }
@@ -87,8 +87,8 @@ export class Auth extends Construct {
     });
 
     // Create initial admin user on first deploy (idempotent — ignores if user exists)
-    if (props.initialUserEmail && props.initialUserPassword) {
-      const tenantId = props.initialTenantId ?? 'blackboard-dev';
+    if (props.initialUserEmail && props.initialUserPassword && props.initialTenantId) {
+      const tenantId = props.initialTenantId;
 
       const createUser = new cr.AwsCustomResource(this, 'InitialUser', {
         onCreate: {
