@@ -164,6 +164,11 @@ def _seed_a_overlays():
                                          description=f"{MARK_A} honours"), f"{MARK_A}-admin", 0)
 
 
+def _save_a_conversation():
+    owner = lambda_handler._owner(USERS["Bearer a"], tenancy.get_tenant(A))
+    conversation_store.save_turn("c1", owner, f"{MARK_A} question", f"{MARK_A} answer")
+
+
 def _query(client, auth, **kw):
     return client.post("/api/v1/semantic/query", headers=auth, json=CONTRACT, **kw)
 
@@ -232,6 +237,7 @@ def test_reports_never_cross(world):
     b_run = _report_run(c, AS_B, f"{MARK_B} Term")
     assert b_run.status_code == 200 and MARK_B in b_run.text and f"{DB_B}." in b_run.json()["sql"]
     b_list = c.get("/api/v1/reports", headers=AS_B)
+    assert b_list.status_code == 200 and b_list.json()["reports"]
     for r in (b_report, b_run, b_list):
         _clean(r.text)
 
@@ -246,8 +252,7 @@ def test_preview_never_crosses(world):
 
 def test_conversations_never_cross(world):
     c = world.client
-    conversation_store.save_turn("c1", lambda_handler._owner(USERS["Bearer a"], tenancy.get_tenant(A)),
-                                 f"{MARK_A} question", f"{MARK_A} answer")
+    _save_a_conversation()
     assert MARK_A in c.get("/api/conversations/c1", headers=AS_A).text
 
     listed = c.get("/api/conversations", headers=AS_B)
@@ -259,6 +264,7 @@ def test_conversations_never_cross(world):
     world.bedrock.calls.clear()
     chat = _chat(c, AS_B, extra={"context_id": "c1"})
     assert chat.status_code == 200 and chat.json()["context_id"] != "c1"
+    assert world.bedrock.calls and MARK_B in chat.text
     assert MARK_A not in json.dumps(world.bedrock.calls, default=str)
     for r in (listed, got, deleted, chat):
         _clean(r.text)
@@ -302,6 +308,18 @@ def test_forged_tenant_fields_ignored(world, monkeypatch):
     c = world.client
     monkeypatch.setitem(USERS, "Bearer b", {**USERS["Bearer b"], "tenant_id": A, "custom:tenant": A})
     headers = {**AS_B, **FORGED}
+    _save_a_conversation()
+
+    listed = c.get("/api/conversations", headers=headers, params=FORGED_PARAMS)
+    assert listed.status_code == 200 and listed.json() == {"conversations": []}
+    assert c.get("/api/conversations/c1", headers=headers, params=FORGED_PARAMS).status_code == 404
+    assert c.delete("/api/conversations/c1", headers=headers, params=FORGED_PARAMS).status_code == 404
+    assert MARK_A in c.get("/api/conversations/c1", headers=AS_A).text
+    chat = _chat(c, headers, params=FORGED_PARAMS, extra={"tenant_id": A, "context_id": "c1"})
+    assert chat.status_code == 200 and chat.json()["context_id"] != "c1"
+    assert world.bedrock.calls and MARK_A not in json.dumps(world.bedrock.calls, default=str)
+    _clean(chat.text)
+
     responses = {
         "query": _query(c, headers, params=FORGED_PARAMS),
         "catalog": c.get("/api/v1/semantic/catalog", headers=headers, params=FORGED_PARAMS),
@@ -312,7 +330,6 @@ def test_forged_tenant_fields_ignored(world, monkeypatch):
         "overlays": c.get("/api/v1/admin/overlays", headers=headers, params=FORGED_PARAMS),
         "overlay": c.get(f"/api/v1/admin/overlay/{MEASURE}", headers=headers, params=FORGED_PARAMS),
         "history": c.get(f"/api/v1/admin/overlay/{MEASURE}/history", headers=headers, params=FORGED_PARAMS),
-        "conversations": c.get("/api/conversations", headers=headers, params=FORGED_PARAMS),
     }
     for name, r in responses.items():
         assert r.status_code == 200, (name, r.text)
@@ -351,8 +368,9 @@ NO_SECRET_ROUTES = [
     ("DELETE", f"/api/v1/admin/overlay/{MEASURE}?expected_version=1", {}),
     ("GET", f"/api/v1/admin/overlay/{MEASURE}/history", {}),
     ("POST", f"/api/v1/admin/overlay/{MEASURE}/revert", {"json": {"version": 1, "expected_version": 1}}),
+    ("POST", "/api/chat/cancel/r1", {}),
 ]
-TENANT_ROUTES = SECRET_ROUTES + NO_SECRET_ROUTES + [("POST", "/api/chat/cancel/r1", {})]
+TENANT_ROUTES = SECRET_ROUTES + NO_SECRET_ROUTES
 
 
 def _route_id(route):
@@ -362,6 +380,7 @@ def _route_id(route):
 @pytest.mark.parametrize("route", SECRET_ROUTES, ids=_route_id)
 def test_missing_secret_fails_closed(world, route):
     method, path, kw = route
+    assert tenancy.get_tenant(C).tenant_id == C
     r = world.client.request(method, path, headers=AS_C, **kw)
     assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
     assert C not in r.text
@@ -371,6 +390,7 @@ def test_missing_secret_fails_closed(world, route):
 @pytest.mark.parametrize("route", NO_SECRET_ROUTES, ids=_route_id)
 def test_missing_secret_fails_closed_without_snowflake(world, route):
     method, path, kw = route
+    assert tenancy.get_tenant(C).tenant_id == C
     r = world.client.request(method, path, headers=AS_C, **kw)
     assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
     assert C not in r.text
