@@ -127,6 +127,11 @@ def _in_filter(node) -> bool:
     return False
 
 
+def _folded(identifier) -> str:
+    """Snowflake name resolution: unquoted identifiers fold to upper case, quoted ones are exact."""
+    return identifier.name if identifier.args.get("quoted") else identifier.name.upper()
+
+
 def _is_cte_reference(table_node) -> bool:
     """True when an unqualified table names a CTE visible at that point.
 
@@ -135,7 +140,7 @@ def _is_cte_reference(table_node) -> bool:
     """
     import sqlglot.expressions as exp
 
-    name = table_node.name.upper()
+    name = _folded(table_node.this)
     prev, node = table_node, table_node.parent
     while node is not None:
         if isinstance(node, exp.With):
@@ -144,7 +149,7 @@ def _is_cte_reference(table_node) -> bool:
         else:
             with_ = node.args.get("with") or node.args.get("with_")
             visible = with_.expressions if with_ is not None and prev is not with_ else []
-        if any(cte.alias.upper() == name for cte in visible):
+        if any(_folded(cte.args["alias"].this) == name for cte in visible):
             return True
         prev, node = node, node.parent
     return False
