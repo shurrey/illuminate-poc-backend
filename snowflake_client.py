@@ -196,7 +196,7 @@ def _is_projection_alias(col, name: str, select) -> bool:
     """Whether col names an AS alias of select other than the one whose expression contains it."""
     import sqlglot.expressions as exp
 
-    return any(isinstance(e, exp.Alias) and e.alias.upper() == name and not col.find_ancestor(exp.Alias) is e
+    return any(isinstance(e, exp.Alias) and e.alias.upper() == name and col.find_ancestor(exp.Alias) is not e
                for e in select.expressions)
 
 
@@ -232,7 +232,7 @@ def _learn_pii_columns(stmt, columns) -> set[int]:
 
     A column read from a LEARN table is PII when the dictionary flags it or does not list it. Derived
     (CTE, subquery) outputs were checked where they read their tables. An unresolvable column is PII
-    when a referenced LEARN table flags it or no referenced table lists it.
+    unless a referenced CDM table lists it and no referenced LEARN table flags it.
     """
     import sqlglot.expressions as exp
     from sqlglot.optimizer.scope import traverse_scope
@@ -245,8 +245,7 @@ def _learn_pii_columns(stmt, columns) -> set[int]:
     def unresolved_is_pii(name: str) -> bool:
         if any(name in (learn_columns(t) or ()) and learn_pii(t, name) for t in learn_tables):
             return True
-        return not any(name in (learn_columns(t[1]) if t[0] == "LEARN" else _cdm_columns().get(t, ())) or ()
-                       for t in filter(None, tables))
+        return not any(name in _cdm_columns().get(t, ()) for t in filter(None, tables) if t[0] != "LEARN")
 
     try:
         scope_of, scope_of_select = {}, {}
@@ -262,7 +261,11 @@ def _learn_pii_columns(stmt, columns) -> set[int]:
         name = _folded(col.this) if isinstance(col.this, exp.Identifier) else col.name.upper()
         # Scopes omit ORDER BY / HAVING references to projection aliases; resolve those in their SELECT.
         scope = scope_of.get(id(col)) or scope_of_select.get(id(col.find_ancestor(exp.Select)))
-        sources = _resolve(col, scope) if scope is not None else None
+        try:
+            sources = _resolve(col, scope) if scope is not None else None
+        except Exception:
+            flagged.add(id(col))
+            continue
         if sources is None:
             if unresolved_is_pii(name):
                 flagged.add(id(col))
@@ -288,6 +291,9 @@ def _qualified_functions(stmt):
         parts.insert(0, node)
         if all(isinstance(p, exp.Identifier) for p in parts):
             yield parts
+
+
+POSITIONAL_REFUSAL = "Refer to columns by name; positional ($1) and IDENTIFIER() column references are not allowed."
 
 
 def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None, compiled: bool = False,
@@ -411,8 +417,16 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         for star in stmt.find_all(exp.Star):
             if not isinstance(star.parent, exp.Count):
                 return {"error": "Star projections are not allowed in freehand SQL; name the columns you need."}
+        # $1 and IDENTIFIER('COL') name columns without a Column node, so the PII checks cannot see them.
+        if any(isinstance(n, exp.Parameter) or (isinstance(n, exp.Anonymous) and n.name.upper() == "IDENTIFIER")
+               for n in stmt.walk()):
+            return {"error": POSITIONAL_REFUSAL}
         scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
-    learn_pii_ids = set() if compiled else _learn_pii_columns(stmt, [col for col, _ in scopes])
+    try:
+        learn_pii_ids = set() if compiled else _learn_pii_columns(stmt, [col for col, _ in scopes])
+    except Exception:
+        logger.exception("LEARN PII resolution failed; treating every column as PII")
+        learn_pii_ids = {id(col) for col, _ in scopes}
     for col_node, scope in scopes:
         col_name = col_node.name.upper().strip('"').strip("'")
         if (col_name in pii_names or id(col_node) in learn_pii_ids) and not inside_counting_aggregate(col_node, scope):

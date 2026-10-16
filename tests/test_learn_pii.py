@@ -110,3 +110,66 @@ def test_guard_does_not_bind_an_unlisted_learn_column_to_an_outer_table(executed
 def test_guard_resolves_a_qualified_correlated_reference_to_the_outer_table(executed):
     sql = "SELECT (SELECT MAX(c.NAME) FROM LEARN.COURSE_MAIN m WHERE m.COURSE_ID = c.SOURCE_ID) FROM CDM_LMS.COURSE c"
     assert "error" not in _validate(sql)
+
+
+POSITIONAL_REFUSAL = "Refer to columns by name; positional ($1) and IDENTIFIER() column references are not allowed."
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT $1 FROM LEARN.USERS",
+    "SELECT $2, $3 FROM LEARN.USERS",
+    "SELECT u.$1 FROM LEARN.USERS u",
+    "SELECT COUNT($1) FROM LEARN.USERS",
+    "SELECT IDENTIFIER('FIRSTNAME') FROM LEARN.USERS",
+    "SELECT $1 FROM CDM_LMS.PERSON",
+    "SELECT p.$2 FROM CDM_LMS.PERSON p",
+    "SELECT IDENTIFIER('EMAIL') FROM CDM_LMS.PERSON",
+    "SELECT ID FROM CDM_LMS.PERSON WHERE IDENTIFIER('EMAIL') LIKE 'a%'",
+])
+def test_guard_refuses_positional_and_identifier_columns(executed, sql):
+    assert _validate(sql) == {"error": POSITIONAL_REFUSAL}
+    assert executed == []
+
+
+def test_compiled_sql_is_not_checked_for_positional_columns(executed):
+    result = snowflake_client.validate_and_execute("SELECT $1 FROM CDM_LMS.COURSE", tenant=TENANT_A, compiled=True)
+    assert "error" not in result
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT x.FOO FROM LEARN.NOT_A_TABLE y",
+    "SELECT COUNT(*) FROM LEARN.NOT_A_TABLE y ORDER BY z.Q",
+    "WITH users AS (SELECT 1 AS ID FROM LEARN.COURSE) SELECT ID FROM USERS",
+    'SELECT U.FIRSTNAME FROM CDM_LMS.COURSE "u" JOIN LEARN.USERS u ON 1=1',
+])
+def test_guard_refuses_unresolvable_learn_columns_without_raising(executed, sql):
+    assert _refused_as_pii(_validate(sql))
+    assert executed == []
+
+
+def test_resolver_exception_is_a_pii_refusal(monkeypatch, executed):
+    def boom(*a, **k):
+        raise RuntimeError("resolver failure")
+    monkeypatch.setattr(snowflake_client, "_resolve", boom)
+    assert _refused_as_pii(_validate("SELECT a.EVENT_TYPE FROM LEARN.ACTIVITY_ACCUMULATOR a"))
+    assert executed == []
+
+
+def test_unresolvable_column_listed_by_a_referenced_cdm_table_is_allowed(executed):
+    # x matches no FROM alias, so the column cannot be resolved and falls back to the name lists.
+    sql = "SELECT COUNT(*), MAX(x.NAME) FROM CDM_LMS.COURSE c JOIN LEARN.COURSE_MAIN m ON m.PK1 = c.ID"
+    assert "error" not in _validate(sql)
+
+
+def test_unresolvable_column_only_a_learn_table_lists_is_pii(executed):
+    sql = "SELECT MAX(x.EVENT_TYPE) FROM CDM_LMS.COURSE c JOIN LEARN.ACTIVITY_ACCUMULATOR a ON a.COURSE_PK1 = c.ID"
+    assert not __import__("semantic_layer.learn").learn.learn_pii("ACTIVITY_ACCUMULATOR", "EVENT_TYPE")
+    assert _refused_as_pii(_validate(sql))
+
+
+def test_learn_pii_path_exception_is_a_pii_refusal(monkeypatch, executed):
+    def boom(*a, **k):
+        raise RuntimeError("table lookup failure")
+    monkeypatch.setattr(snowflake_client, "_base_table", boom)
+    assert _refused_as_pii(_validate("SELECT a.EVENT_TYPE FROM LEARN.ACTIVITY_ACCUMULATOR a"))
+    assert executed == []
