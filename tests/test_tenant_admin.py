@@ -276,3 +276,309 @@ def test_cli_exits_with_a_clear_message_when_the_source_secret_is_missing(aws, m
     out = capsys.readouterr()
     assert f"illuminate/{ENV}/snowflake" in out.err and "Nothing was written" in out.err
     assert aws.table("tenants").scan()["Items"] == []
+
+
+# --- create / add-users / set-connection / set-license ---
+
+def _groups(aws):
+    for g in ("illuminate-admins", "illuminate-authors", "illuminate-developers"):
+        aws.cognito.create_group(UserPoolId=aws.pool, GroupName=g)
+
+
+def _user_groups(aws, email):
+    resp = aws.cognito.admin_list_groups_for_user(UserPoolId=aws.pool, Username=email)
+    return sorted(g["GroupName"] for g in resp["Groups"])
+
+
+def _t1(aws):
+    return _create(aws)["tenant_id"]
+
+
+def _claims(aws, email):
+    attrs = aws.cognito.admin_get_user(UserPoolId=aws.pool, Username=email)["UserAttributes"]
+    return {a["Name"]: a["Value"] for a in attrs}
+
+
+def _create(aws, **kw):
+    args = dict(dynamodb=aws.dynamodb, secrets=aws.secrets, cognito=aws.cognito, user_pool_id=aws.pool, env=ENV,
+                name="Acme", license="core", connection=SECRET, users=[])
+    return tenant_admin.create_tenant(**{**args, **kw})
+
+
+def _secret_of(aws, tid):
+    return json.loads(aws.secrets.get_secret_value(SecretId=f"illuminate/tenants/{tid}/snowflake")["SecretString"])
+
+
+def test_create_tenant_with_copied_connection_and_two_users(aws):
+    _groups(aws)
+    source = _create(aws)["tenant_id"]
+    result = _create(aws, connection=None, copy_connection_from=source, name="Beta", license="premium",
+                     users=[("a@x.edu", "Admin"), ("v@x.edu", "Viewer")])
+    tid = result["tenant_id"]
+    assert result["users_created"] == ["a@x.edu", "v@x.edu"] and result["users_refused"] == []
+    assert _secret_of(aws, tid) == SECRET
+    row = aws.table("tenants").get_item(Key={"tenant_id": tid})["Item"]
+    assert (row["name"], row["license"], row["mcp_enabled"]) == ("Beta", "premium", False)
+    assert row["created_at"] == row["updated_at"]
+    claims = _claims(aws, "a@x.edu")
+    assert claims["custom:tenant_id"] == tid and claims["email_verified"] == "true"
+    assert _user_groups(aws, "a@x.edu") == ["illuminate-admins"]
+    assert _user_groups(aws, "v@x.edu") == []
+
+
+def test_create_tenant_writes_the_row_only_after_the_secret(aws):
+    with pytest.raises(ValueError):
+        _create(aws, connection=None, copy_connection_from="no-such-tenant")
+    with pytest.raises(ValueError):
+        _create(aws, connection={"account": "a"})
+    assert aws.table("tenants").scan()["Items"] == []
+
+
+@pytest.mark.parametrize("kw", [
+    {"license": "gold"},
+    {"users": [("a@x.edu", "Superuser")]},
+    {"connection": None},
+    {"copy_connection_from": "x"},
+    {"send_email": False},
+])
+def test_create_tenant_rejects_bad_input_before_writing(aws, kw):
+    with pytest.raises(ValueError):
+        _create(aws, **kw)
+    assert aws.table("tenants").scan()["Items"] == []
+    assert aws.cognito.list_users(UserPoolId=aws.pool)["Users"] == []
+
+
+def test_create_tenant_unknown_role_creates_no_users_or_tenant(aws):
+    with pytest.raises(ValueError):
+        _create(aws, users=[("a@x.edu", "Admin"), ("b@x.edu", "Boss")])
+    assert aws.cognito.list_users(UserPoolId=aws.pool)["Users"] == []
+
+
+def test_migrate_rejects_unknown_license(aws):
+    with pytest.raises(ValueError):
+        aws.migrate(license="gold")
+
+
+def test_add_users_refuses_other_tenant_email(aws):
+    T1 = _t1(aws)
+    _groups(aws)
+    aws.user("other@x.edu", "someone-else")
+    aws.user("none@x.edu", None)
+    result = tenant_admin.add_users(dynamodb=aws.dynamodb, env=ENV, cognito=aws.cognito, user_pool_id=aws.pool, tenant_id=T1,
+                                    users=[("other@x.edu", "Admin"), ("none@x.edu", "Admin"), ("new@x.edu", "Author")])
+    assert result == {"users_created": ["new@x.edu"], "users_refused": ["other@x.edu", "none@x.edu"]}
+    assert aws.user_tenant("other@x.edu") == "someone-else"
+    assert aws.user_tenant("none@x.edu") is None
+    assert _user_groups(aws, "other@x.edu") == [] and _user_groups(aws, "none@x.edu") == []
+    assert _user_groups(aws, "new@x.edu") == ["illuminate-authors"]
+
+
+def test_add_users_is_idempotent_for_same_tenant(aws):
+    T1 = _t1(aws)
+    _groups(aws)
+    users = [("a@x.edu", "Developer")]
+    kw = dict(dynamodb=aws.dynamodb, env=ENV, cognito=aws.cognito, user_pool_id=aws.pool, tenant_id=T1)
+    assert tenant_admin.add_users(users=users, **kw)["users_created"] == ["a@x.edu"]
+    again = tenant_admin.add_users(users=users, **kw)
+    assert again == {"users_created": [], "users_refused": []}
+    assert _user_groups(aws, "a@x.edu") == ["illuminate-developers"]
+    tenant_admin.add_users(users=[("a@x.edu", "Admin")], **kw)
+    assert _user_groups(aws, "a@x.edu") == ["illuminate-admins", "illuminate-developers"]
+
+
+def test_add_users_no_email_requires_and_uses_a_temporary_password(aws):
+    T1 = _t1(aws)
+    kw = dict(dynamodb=aws.dynamodb, env=ENV, cognito=aws.cognito, user_pool_id=aws.pool, tenant_id=T1, users=[("a@x.edu", "Viewer")])
+    with pytest.raises(ValueError):
+        tenant_admin.add_users(send_email=False, **kw)
+    assert tenant_admin.add_users(send_email=False, temporary_password="Tmp-Pass-1!", **kw)["users_created"] == ["a@x.edu"]
+    assert aws.cognito.admin_get_user(UserPoolId=aws.pool, Username="a@x.edu")["UserStatus"] == "FORCE_CHANGE_PASSWORD"
+
+
+def test_set_license_updates_row_and_rejects_unknown(aws):
+    tid = _create(aws)["tenant_id"]
+    before = aws.table("tenants").get_item(Key={"tenant_id": tid})["Item"]
+    tenant_admin.set_license(dynamodb=aws.dynamodb, env=ENV, tenant_id=tid, license="premium")
+    after = aws.table("tenants").get_item(Key={"tenant_id": tid})["Item"]
+    assert after["license"] == "premium" and after["updated_at"] >= before["updated_at"]
+    with pytest.raises(ValueError):
+        tenant_admin.set_license(dynamodb=aws.dynamodb, env=ENV, tenant_id=tid, license="gold")
+    with pytest.raises(ValueError):
+        tenant_admin.set_license(dynamodb=aws.dynamodb, env=ENV, tenant_id="missing", license="core")
+    assert aws.table("tenants").get_item(Key={"tenant_id": tid})["Item"]["license"] == "premium"
+
+
+def test_set_license_takes_effect_after_registry_cache(aws, monkeypatch):
+    import tenancy
+
+    tid = _create(aws)["tenant_id"]
+    monkeypatch.setattr(tenancy, "_table", aws.table("tenants"))
+    monkeypatch.setattr(tenancy, "_cache", {})
+    clock = [1000.0]
+    monkeypatch.setattr(tenancy.time, "monotonic", lambda: clock[0])
+    assert tenancy.get_tenant(tid).license == "core"
+    tenant_admin.set_license(dynamodb=aws.dynamodb, env=ENV, tenant_id=tid, license="premium")
+    assert tenancy.get_tenant(tid).license == "core"
+    clock[0] += 61
+    assert tenancy.get_tenant(tid).license == "premium"
+
+
+def test_set_connection_requires_tenant_and_validates(aws):
+    with pytest.raises(ValueError):
+        tenant_admin.set_connection(dynamodb=aws.dynamodb, secrets=aws.secrets, env=ENV, tenant_id="missing",
+                                    connection=SECRET)
+    tid = _create(aws)["tenant_id"]
+    with pytest.raises(ValueError):
+        tenant_admin.set_connection(dynamodb=aws.dynamodb, secrets=aws.secrets, env=ENV, tenant_id=tid)
+    assert _secret_of(aws, tid) == SECRET
+
+
+def test_set_connection_takes_effect_after_credential_ttl(aws, monkeypatch):
+    import snowflake_client
+    from tenancy import Tenant
+
+    tid = _create(aws)["tenant_id"]
+    clock = [1000.0]
+    monkeypatch.setattr(snowflake_client.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(snowflake_client, "_credentials", {})
+    monkeypatch.setattr(snowflake_client, "_drop_connection", lambda tenant_id: None)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    tenant = Tenant(tid, "Acme", "core", False)
+    assert snowflake_client.tenant_database(tenant) == "DB"
+    tenant_admin.set_connection(dynamodb=aws.dynamodb, secrets=aws.secrets, env=ENV, tenant_id=tid,
+                                connection={**SECRET, "database": "NEWDB"})
+    assert snowflake_client.tenant_database(tenant) == "DB"
+    clock[0] += snowflake_client.CREDENTIALS_TTL_SECONDS + 1
+    assert snowflake_client.tenant_database(tenant) == "NEWDB"
+
+
+def test_cli_creates_tenant_and_never_prints_password_or_secret(aws, monkeypatch, capsys, tmp_path):
+    _groups(aws)
+    monkeypatch.setattr(tenant_cli, "_clients", lambda env, *a, **k: (aws.dynamodb, aws.secrets, aws.cognito, aws.pool))
+    monkeypatch.setenv("ILLUMINATE_TEMP_PASSWORD", "Tmp-Pass-do-not-print-1!")
+    conn = tmp_path / "c.json"
+    conn.write_text(json.dumps(SECRET))
+    users = tmp_path / "u.csv"
+    users.write_text("email,role\na@x.edu,Admin\nb@x.edu,Viewer\n")
+    assert tenant_cli.main(["create", "--name", "Acme", "--license", "core", "--snowflake", str(conn),
+                            "--users", str(users), "--no-email"]) == 0
+    tid = json.loads(capsys.readouterr().out)["tenant_id"]
+    assert tenant_cli.main(["add-users", tid, "--users", str(users), "--no-email"]) == 0
+    assert tenant_cli.main(["set-connection", tid, "--snowflake", str(conn)]) == 0
+    assert tenant_cli.main(["set-connection", tid, "--copy-connection-from", tid]) == 0
+    assert tenant_cli.main(["set-license", tid, "premium"]) == 0
+    out = capsys.readouterr()
+    for secret in (PASSWORD, "Tmp-Pass-do-not-print-1!"):
+        assert secret not in out.out + out.err
+    assert aws.table("tenants").get_item(Key={"tenant_id": tid})["Item"]["license"] == "premium"
+
+
+def test_cli_prints_refused_users_and_exits_zero(aws, monkeypatch, capsys, tmp_path):
+    T1 = _t1(aws)
+    monkeypatch.setattr(tenant_cli, "_clients", lambda env, *a, **k: (aws.dynamodb, aws.secrets, aws.cognito, aws.pool))
+    aws.user("o@x.edu", "someone-else")
+    users = tmp_path / "u.csv"
+    users.write_text("email,role\no@x.edu,Viewer\n")
+    assert tenant_cli.main(["add-users", T1, "--users", str(users)]) == 0
+    assert json.loads(capsys.readouterr().out)["users_refused"] == ["o@x.edu"]
+
+
+def test_cli_no_email_without_env_password_fails(aws, monkeypatch, capsys, tmp_path):
+    T1 = _t1(aws)
+    monkeypatch.setattr(tenant_cli, "_clients", lambda env, *a, **k: (aws.dynamodb, aws.secrets, aws.cognito, aws.pool))
+    monkeypatch.delenv("ILLUMINATE_TEMP_PASSWORD", raising=False)
+    users = tmp_path / "u.csv"
+    users.write_text("email,role\na@x.edu,Viewer\n")
+    assert tenant_cli.main(["add-users", T1, "--users", str(users), "--no-email"]) == 1
+    assert aws.cognito.list_users(UserPoolId=aws.pool)["Users"] == []
+
+
+def test_set_snowflake_secret_rejects_non_uuid(tmp_path):
+    import os
+    import subprocess
+
+    log = tmp_path / "aws.log"
+    fake = tmp_path / "aws"
+    fake.write_text(f'#!/bin/bash\necho "$@" >> {log}\n')
+    fake.chmod(0o755)
+    script = Path(__file__).parent.parent / "scripts" / "set-snowflake-secret.sh"
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    for bad_id in ("../other/tenant", "not-a-uuid", "123e4567-e89b-12d3-a456-42661417400g"):
+        bad = subprocess.run([str(script), bad_id], env=env, capture_output=True, text=True)
+        assert bad.returncode != 0 and "UUID" in bad.stderr
+    assert not log.exists()
+
+
+def test_add_users_refuses_an_unregistered_tenant_before_any_write(aws):
+    with pytest.raises(ValueError, match="does not exist"):
+        tenant_admin.add_users(dynamodb=aws.dynamodb, env=ENV, cognito=aws.cognito, user_pool_id=aws.pool,
+                               tenant_id="typo", users=[("a@x.edu", "Viewer")])
+    assert aws.cognito.list_users(UserPoolId=aws.pool)["Users"] == []
+
+
+def test_copy_connection_from_must_be_a_registered_tenant(aws):
+    aws.secrets.create_secret(Name="illuminate/tenants/ghost/snowflake", SecretString=json.dumps(SECRET))
+    with pytest.raises(ValueError, match="does not exist"):
+        _create(aws, connection=None, copy_connection_from="ghost")
+    assert aws.table("tenants").scan()["Items"] == []
+
+
+def test_set_license_on_a_missing_tenant_creates_no_row(aws):
+    with pytest.raises(ValueError, match="does not exist"):
+        tenant_admin.set_license(dynamodb=aws.dynamodb, env=ENV, tenant_id="missing", license="core")
+    assert aws.table("tenants").scan()["Items"] == []
+
+
+def test_create_normalises_emails_and_rejects_invalid_ones(aws):
+    _groups(aws)
+    result = _create(aws, users=[("  A@X.edu ", "Viewer")])
+    assert result["users_created"] == ["a@x.edu"]
+    for bad in ("", "   ", "no-at-sign"):
+        with pytest.raises(ValueError, match="Invalid email"):
+            _create(aws, users=[(bad, "Viewer")])
+    assert len(aws.table("tenants").scan()["Items"]) == 1
+
+
+def test_create_reports_the_tenant_when_the_user_phase_fails(aws, monkeypatch):
+    _groups(aws)
+    real = aws.cognito.admin_create_user
+    calls = []
+
+    def flaky(**kw):
+        calls.append(kw["Username"])
+        if len(calls) == 2:
+            raise ClientError({"Error": {"Code": "InvalidPasswordException", "Message": "weak"}}, "AdminCreateUser")
+        return real(**kw)
+
+    monkeypatch.setattr(aws.cognito, "admin_create_user", flaky)
+    with pytest.raises(tenant_admin.UserPhaseFailed) as info:
+        _create(aws, users=[("a@x.edu", "Viewer"), ("b@x.edu", "Viewer")])
+    assert info.value.users_created == ["a@x.edu"]
+    assert aws.table("tenants").get_item(Key={"tenant_id": info.value.tenant_id}).get("Item")
+
+
+def test_cli_create_user_failure_prints_tenant_id_without_traceback(aws, monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(tenant_cli, "_clients", lambda env, *a, **k: (aws.dynamodb, aws.secrets, aws.cognito, aws.pool))
+    conn = tmp_path / "c.json"
+    conn.write_text(json.dumps(SECRET))
+    users = tmp_path / "u.csv"
+    users.write_text("email,role\na@x.edu,Admin\n")  # the admins group does not exist in the pool
+    assert tenant_cli.main(["create", "--name", "Acme", "--license", "core", "--snowflake", str(conn),
+                            "--users", str(users)]) == 1
+    out = capsys.readouterr()
+    tid = json.loads(out.out)["tenant_id"]
+    assert tid in out.err and "add-users" in out.err and "Traceback" not in out.err
+    assert aws.table("tenants").get_item(Key={"tenant_id": tid}).get("Item")
+
+
+@pytest.mark.parametrize("content", ["mail,role\na@x.edu,Viewer\n", "email,role\n,Viewer\n", ""])
+def test_cli_rejects_a_bad_users_csv_before_any_write(aws, monkeypatch, capsys, tmp_path, content):
+    monkeypatch.setattr(tenant_cli, "_clients", lambda env, *a, **k: (aws.dynamodb, aws.secrets, aws.cognito, aws.pool))
+    conn = tmp_path / "c.json"
+    conn.write_text(json.dumps(SECRET))
+    users = tmp_path / "u.csv"
+    users.write_text(content)
+    assert tenant_cli.main(["create", "--name", "Acme", "--license", "core", "--snowflake", str(conn),
+                            "--users", str(users)]) == 1
+    assert "Traceback" not in capsys.readouterr().err
+    assert aws.table("tenants").scan()["Items"] == []

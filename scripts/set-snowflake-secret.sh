@@ -3,6 +3,10 @@
 # illuminate/tenants/<tenant_id>/snowflake, creating it if missing. Warm Lambdas keep the old credentials until they recycle.
 set -euo pipefail
 TENANT_ID="${1:?usage: set-snowflake-secret.sh <tenant_id>}"
+if ! [[ "$TENANT_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  echo "tenant_id must be a UUID, got: $TENANT_ID" >&2
+  exit 1
+fi
 SECRET_ID="illuminate/tenants/${TENANT_ID}/snowflake"
 cd "$(dirname "$0")/.."
 # .env is raw KEY=VALUE (no quoting), parsed the same way as cdk/bin/illuminate.ts.
