@@ -117,6 +117,7 @@ def test_migrate_moves_users_overlays_history_and_conversations(aws):
     owners = {i["context_id"]: i.get("owner_sub") for i in aws.table("conversations").scan()["Items"]}
     assert owners == {"c1": f"{tid}#{s1}", "c2": f"{tid}#{s2}", "c3": "ghost-sub", "c4": None, "c5": f"already#{s1}"}
     assert (result["users"], result["overlays"], result["conversations"], result["orphaned"], result["ownerless"]) == (2, 4, 2, 1, 1)
+    assert result["other_tenant"] == 0 and result["conflicts"] == 0
 
 
 def test_migrate_twice_is_a_no_op_second_time(aws):
@@ -163,16 +164,35 @@ def test_migrate_resumes_after_partial_failure(aws):
     assert len(aws.table("tenants").scan()["Items"]) == 1
 
 
+def test_rerun_keeps_old_rows_the_new_tenant_has_changed(aws):
+    seeded(aws)
+    with pytest.raises(RuntimeError):
+        aws.migrate(dynamodb=FlakyDynamodb(aws.dynamodb, fail_on_delete=1))
+    tid = aws.table("tenants").scan()["Items"][0]["tenant_id"]
+    aws.table("overlays").put_item(Item={"tenant_id": tid, "metric_id": "measure:m", "expr": "edited"})
+    result = aws.migrate()
+    assert result["conflicts"] == 1 and result["overlays"] == 3
+    assert aws.keys("overlays", OLD) == ["measure:m"]
+    assert aws.table("overlays").get_item(Key={"tenant_id": tid, "metric_id": "measure:m"})["Item"]["expr"] == "edited"
+
+
+def snapshot(aws):
+    return (
+        sorted(map(str, aws.table("overlays").scan()["Items"])),
+        sorted(map(str, aws.table("conversations").scan()["Items"])),
+        sorted((u["Username"], str(u["Attributes"])) for u in aws.cognito.list_users(UserPoolId=aws.pool)["Users"]),
+    )
+
+
 def test_dry_run_writes_nothing(aws):
     seeded(aws)
+    before = snapshot(aws)
     result = aws.migrate(dry_run=True)
     assert (result["users"], result["overlays"], result["conversations"]) == (2, 4, 2)
     assert aws.table("tenants").scan()["Items"] == []
-    assert aws.user_tenant("a@x.edu") == OLD
-    assert len(aws.keys("overlays", OLD)) == 4
-    assert all("#" not in i.get("owner_sub", "") or i["context_id"] == "c5" for i in aws.table("conversations").scan()["Items"])
-    with pytest.raises(ClientError):
-        aws.secrets.get_secret_value(SecretId=f"illuminate/tenants/{result['tenant_id']}/snowflake")
+    assert snapshot(aws) == before
+    names = [s["Name"] for s in aws.secrets.list_secrets()["SecretList"]]
+    assert not [n for n in names if n.startswith("illuminate/tenants/")]
 
 
 def test_list_tenants_returns_rows_without_secrets(aws):
@@ -191,6 +211,14 @@ def test_scans_paginate(aws):
     assert aws.migrate()["orphaned"] == 31
 
 
+def test_conversation_of_another_tenants_user_is_counted_separately(aws):
+    seeded(aws)
+    other = aws.user("d@y.edu", "someone-else")
+    aws.table("conversations").put_item(Item={"context_id": "c6", "owner_sub": other})
+    result = aws.migrate()
+    assert (result["orphaned"], result["other_tenant"]) == (1, 1)
+
+
 def test_cli_never_prints_secret_values(aws, monkeypatch, capsys):
     seeded(aws)
     monkeypatch.setattr(tenant_cli, "_clients", lambda env, *a, **k: (aws.dynamodb, aws.secrets, aws.cognito, aws.pool))
@@ -199,3 +227,9 @@ def test_cli_never_prints_secret_values(aws, monkeypatch, capsys):
     out = capsys.readouterr()
     assert PASSWORD not in out.out + out.err
     assert "tenant_id" in out.out
+    assert tenant_cli.main(["migrate-current"]) == 0
+    tid = aws.table("tenants").scan()["Items"][0]["tenant_id"]
+    assert aws.secrets.get_secret_value(SecretId=f"illuminate/tenants/{tid}/snowflake")["SecretString"]
+    out = capsys.readouterr()
+    assert PASSWORD not in out.out + out.err
+    assert tid in out.out

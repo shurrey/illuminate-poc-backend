@@ -56,7 +56,7 @@ def _find_or_create_tenant(dynamodb, env, old_tenant_id, name, license, dry_run)
     table = dynamodb.Table(f"illuminate-tenants-{env}")
     from boto3.dynamodb.conditions import Attr
 
-    found = _scan(table, FilterExpression=Attr("migrated_from").eq(old_tenant_id))
+    found = _scan(table, FilterExpression=Attr("migrated_from").eq(old_tenant_id), ConsistentRead=True)
     if found:
         return found[0]["tenant_id"], 0
     tenant_id = str(uuid.uuid4())
@@ -99,34 +99,49 @@ def _move_users(cognito, user_pool_id, users, old_tenant_id, tenant_id, dry_run)
     return moved
 
 
-def _move_overlays(dynamodb, env, old_tenant_id, tenant_id, dry_run) -> int:
+def _move_overlays(dynamodb, env, old_tenant_id, tenant_id, dry_run) -> tuple[int, int]:
+    """Copy each row to the new partition, then delete the original. Returns (moved, conflicts).
+
+    A row whose target already holds different content is left in place: the new tenant changed it since the copy.
+    """
     table = dynamodb.Table(f"illuminate-overlays-{env}")
-    moved = 0
+    moved = conflicts = 0
     for item in _query_partition(table, old_tenant_id):
-        if not dry_run:
+        target = {**item, "tenant_id": tenant_id}
+        key = {"tenant_id": tenant_id, "metric_id": item["metric_id"]}
+        existing = None
+        if dry_run:
+            existing = table.get_item(Key=key, ConsistentRead=True).get("Item")
+        else:
             try:
-                table.put_item(Item={**item, "tenant_id": tenant_id}, ConditionExpression="attribute_not_exists(metric_id)")
+                table.put_item(Item=target, ConditionExpression="attribute_not_exists(metric_id)")
             except ClientError as e:
                 if not _is_code(e, "ConditionalCheckFailedException"):
                     raise
+                existing = table.get_item(Key=key, ConsistentRead=True).get("Item")
+        if existing is not None and existing != target:
+            conflicts += 1
+            continue
+        if not dry_run:
             table.delete_item(Key={"tenant_id": old_tenant_id, "metric_id": item["metric_id"]})
         moved += 1
-    return moved
+    return moved, conflicts
 
 
-def _rekey_conversations(dynamodb, env, users, tenant_id, dry_run) -> tuple[int, int, int]:
+def _rekey_conversations(dynamodb, env, users, tenant_id, dry_run) -> tuple[int, int, int, int]:
     table = dynamodb.Table(f"illuminate-conversations-{env}")
     tenant_by_sub = {_attr(u, "sub"): _attr(u, "custom:tenant_id") for u in users}
-    moved = orphaned = ownerless = 0
+    moved = orphaned = other_tenant = ownerless = 0
     for item in _scan(table):
         owner = item.get("owner_sub")
         if owner is None:
             ownerless += 1
         elif "#" in owner:
             continue
-        elif tenant_by_sub.get(owner) != tenant_id:
-            # Unknown to Cognito, or belongs to another tenant: not ours to re-key.
+        elif owner not in tenant_by_sub:
             orphaned += 1
+        elif tenant_by_sub[owner] != tenant_id:
+            other_tenant += 1
         else:
             if not dry_run:
                 try:
@@ -140,7 +155,7 @@ def _rekey_conversations(dynamodb, env, users, tenant_id, dry_run) -> tuple[int,
                         raise
                     continue
             moved += 1
-    return moved, orphaned, ownerless
+    return moved, orphaned, other_tenant, ownerless
 
 
 def migrate_current(*, dynamodb, secrets, cognito, user_pool_id: str, env: str, old_tenant_id: str = "blackboard-dev",
@@ -152,12 +167,14 @@ def migrate_current(*, dynamodb, secrets, cognito, user_pool_id: str, env: str, 
     tenant_id, created = _find_or_create_tenant(dynamodb, env, old_tenant_id, name, license, dry_run)
     secret_copied = _copy_secret(secrets, env, tenant_id, dry_run)
     users = _list_users(cognito, user_pool_id)
+    # Overlays first, so no user lands on a tenant whose overlays are only partly copied.
+    overlays, conflicts = _move_overlays(dynamodb, env, old_tenant_id, tenant_id, dry_run)
     moved_users = _move_users(cognito, user_pool_id, users, old_tenant_id, tenant_id, dry_run)
-    overlays = _move_overlays(dynamodb, env, old_tenant_id, tenant_id, dry_run)
-    conversations, orphaned, ownerless = _rekey_conversations(dynamodb, env, users, tenant_id, dry_run)
+    conversations, orphaned, other_tenant, ownerless = _rekey_conversations(dynamodb, env, users, tenant_id, dry_run)
     return {
         "tenant_id": tenant_id, "created": created, "secret_copied": secret_copied, "users": moved_users,
-        "overlays": overlays, "conversations": conversations, "orphaned": orphaned, "ownerless": ownerless,
+        "overlays": overlays, "conflicts": conflicts, "conversations": conversations,
+        "orphaned": orphaned, "other_tenant": other_tenant, "ownerless": ownerless,
     }
 
 
