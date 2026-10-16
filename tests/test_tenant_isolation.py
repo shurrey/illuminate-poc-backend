@@ -277,6 +277,17 @@ def test_core_tenant_is_refused_learn_through_chat_raw_sql(world):
     assert world.connects == [] and world.log == []
 
 
+def test_premium_tenant_is_refused_learn_pii_through_chat_raw_sql(world):
+    world.bedrock.tool_script = [
+        ("search_catalog", {"question": "learn activity by user"}),
+        ("execute_sql", {"sql": "SELECT a.USER_PK1 FROM LEARN.ACTIVITY_ACCUMULATOR a", "reason": "no governed metric"}),
+    ]
+    r = _chat(world.client, AS_A)
+    assert r.status_code == 200
+    assert "personally identifiable" in json.dumps(world.bedrock.calls[-1], default=str)
+    assert world.connects == [] and world.log == []
+
+
 def test_conversations_never_cross(world):
     c = world.client
     _save_a_conversation()

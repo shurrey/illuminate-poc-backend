@@ -6,6 +6,7 @@ illuminate/tenants/{tenant_id}/snowflake and cached per Lambda instance. A missi
 or database means the tenant is not set up (TenantNotReady); there is no shared fallback.
 """
 
+import functools
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from botocore.exceptions import ClientError
 
 from licenses import LEARN_REFUSAL, schema_allowed
 from semantic_layer.compiler import is_bounded_generator
+from semantic_layer.learn import learn_columns, learn_pii
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
 from tenancy import Tenant, TenantNotReady
 
@@ -155,6 +157,123 @@ def _is_cte_reference(table_node) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=1)
+def _cdm_columns() -> dict[tuple[str, str], frozenset[str]]:
+    from semantic_layer.validate import load_snapshot
+
+    (schemas,) = load_snapshot().values()
+    return {(s, t): frozenset(cols) for s, tables in schemas.items() for t, cols in tables.items()}
+
+
+def _base_table(source) -> tuple[str, str] | None:
+    """(SCHEMA, TABLE) of a scope source that is a schema-qualified table, else None."""
+    import sqlglot.expressions as exp
+
+    if not isinstance(source, exp.Table) or not isinstance(source.this, exp.Identifier) or not source.args.get("db"):
+        return None
+    return source.args["db"].name.upper(), _folded(source.this)
+
+
+def _source_has(source, column: str) -> bool:
+    """Whether a scope source is known to expose column: a snapshot table's column or a derived output name."""
+    from sqlglot.optimizer.scope import Scope
+    import sqlglot.expressions as exp
+
+    if isinstance(source, Scope):
+        if not isinstance(source.expression, (exp.Select, exp.SetOperation)):
+            return False
+        names = {n.upper() for n in source.expression.named_selects}
+        return column in names or "*" in names
+    table = _base_table(source)
+    if table is None:
+        return False
+    if table[0] == "LEARN":
+        return column in (learn_columns(table[1]) or ())
+    return column in _cdm_columns().get(table, ())
+
+
+def _is_projection_alias(col, name: str, select) -> bool:
+    """Whether col names an AS alias of select other than the one whose expression contains it."""
+    import sqlglot.expressions as exp
+
+    return any(isinstance(e, exp.Alias) and e.alias.upper() == name and not col.find_ancestor(exp.Alias) is e
+               for e in select.expressions)
+
+
+def _resolve(col, scope) -> list | None:
+    """The sources col may read from, [] for a projection alias, or None when it cannot be resolved.
+
+    Walks out through enclosing scopes so correlated references resolve to the outer query's tables.
+    """
+    import sqlglot.expressions as exp
+
+    name, qualifier = _folded(col.this), col.args.get("table")
+    while scope is not None:
+        selected = {alias.upper(): src for alias, (_, src) in scope.selected_sources.items()}
+        if qualifier is not None:
+            if qualifier.name.upper() in selected:
+                return [selected[qualifier.name.upper()]]
+        else:
+            candidates = [src for src in selected.values() if _source_has(src, name)]
+            if candidates:
+                return candidates
+            if isinstance(scope.expression, exp.Select) and _is_projection_alias(col, name, scope.expression):
+                return []
+            # Snowflake would bind to a column this LEARN table has but the snapshot does not list.
+            learn = [src for src in selected.values() if (_base_table(src) or ("",))[0] == "LEARN"]
+            if learn:
+                return learn
+        scope = scope.parent
+    return None
+
+
+def _learn_pii_columns(stmt, columns) -> set[int]:
+    """ids of the columns, of a statement that reads a LEARN table, that are LEARN PII.
+
+    A column read from a LEARN table is PII when the dictionary flags it or does not list it. Derived
+    (CTE, subquery) outputs were checked where they read their tables. An unresolvable column is PII
+    when a referenced LEARN table flags it or no referenced table lists it.
+    """
+    import sqlglot.expressions as exp
+    from sqlglot.optimizer.scope import traverse_scope
+
+    tables = [_base_table(t) for t in stmt.find_all(exp.Table)]
+    learn_tables = {t[1] for t in tables if t and t[0] == "LEARN"}
+    if not learn_tables:
+        return set()
+
+    def unresolved_is_pii(name: str) -> bool:
+        if any(name in (learn_columns(t) or ()) and learn_pii(t, name) for t in learn_tables):
+            return True
+        return not any(name in (learn_columns(t[1]) if t[0] == "LEARN" else _cdm_columns().get(t, ())) or ()
+                       for t in filter(None, tables))
+
+    try:
+        scope_of, scope_of_select = {}, {}
+        for scope in traverse_scope(stmt):
+            scope_of_select[id(scope.expression)] = scope
+            for c in scope.columns:
+                scope_of.setdefault(id(c), scope)
+    except Exception:
+        scope_of, scope_of_select = {}, {}
+
+    flagged = set()
+    for col in columns:
+        name = _folded(col.this) if isinstance(col.this, exp.Identifier) else col.name.upper()
+        # Scopes omit ORDER BY / HAVING references to projection aliases; resolve those in their SELECT.
+        scope = scope_of.get(id(col)) or scope_of_select.get(id(col.find_ancestor(exp.Select)))
+        sources = _resolve(col, scope) if scope is not None else None
+        if sources is None:
+            if unresolved_is_pii(name):
+                flagged.add(id(col))
+            continue
+        for source in sources:
+            table = _base_table(source)
+            if table and table[0] == "LEARN" and learn_pii(table[1], name):
+                flagged.add(id(col))
+    return flagged
+
+
 def _qualified_functions(stmt):
     """Yield the qualifier identifiers ([database,] schema) of each schema-qualified function call."""
     import sqlglot.expressions as exp
@@ -180,7 +299,8 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
     allow_identity lifts the projection check for compiled SQL only (callers whose role may see
-    identity); extra_pii adds dataset-declared PII column names to the check.
+    identity); extra_pii adds dataset-declared PII column names to the check. Freehand SQL over
+    LEARN also treats columns the LEARN dictionary flags or does not list as PII.
 
     Returns:
         {"columns": [...], "rows": [...]} on success
@@ -292,9 +412,10 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
             if not isinstance(star.parent, exp.Count):
                 return {"error": "Star projections are not allowed in freehand SQL; name the columns you need."}
         scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
+    learn_pii_ids = set() if compiled else _learn_pii_columns(stmt, [col for col, _ in scopes])
     for col_node, scope in scopes:
         col_name = col_node.name.upper().strip('"').strip("'")
-        if col_name in pii_names and not inside_counting_aggregate(col_node, scope):
+        if (col_name in pii_names or id(col_node) in learn_pii_ids) and not inside_counting_aggregate(col_node, scope):
             return {
                 "error": (
                     f"Column '{col_name}' contains personally identifiable information (PII). "
