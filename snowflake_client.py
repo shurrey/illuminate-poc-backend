@@ -128,16 +128,25 @@ def _in_filter(node) -> bool:
 
 
 def _is_cte_reference(table_node) -> bool:
-    """True when an unqualified table names a CTE defined in an enclosing WITH."""
+    """True when an unqualified table names a CTE visible at that point.
+
+    Inside a CTE body only earlier CTEs of the same WITH are visible (its own name too when RECURSIVE);
+    the main query sees them all.
+    """
     import sqlglot.expressions as exp
 
     name = table_node.name.upper()
-    node = table_node.parent
+    prev, node = table_node, table_node.parent
     while node is not None:
-        with_ = node.args.get("with") or node.args.get("with_")
-        if with_ is not None and any(cte.alias.upper() == name for cte in with_.expressions):
+        if isinstance(node, exp.With):
+            ctes = node.expressions
+            visible = ctes[:ctes.index(prev) + (1 if node.args.get("recursive") else 0)] if prev in ctes else ctes
+        else:
+            with_ = node.args.get("with") or node.args.get("with_")
+            visible = with_.expressions if with_ is not None and prev is not with_ else []
+        if any(cte.alias.upper() == name for cte in visible):
             return True
-        node = node.parent
+        prev, node = node, node.parent
     return False
 
 
