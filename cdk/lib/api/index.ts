@@ -11,7 +11,6 @@ export interface ApiStackProps extends cdk.StackProps {
   environment: string;
   userPoolId: string;
   userPoolClientId: string;
-  snowflakeSecretArn: string;
 }
 
 export class ApiStack extends cdk.Stack {
@@ -44,7 +43,6 @@ export class ApiStack extends cdk.Stack {
       tenantTableName: tenantTable.tableName,
       userPoolId: props.userPoolId,
       userPoolClientId: props.userPoolClientId,
-      snowflakeSecretArn: props.snowflakeSecretArn,
     });
 
     this.functionUrl = proxy.functionUrl;

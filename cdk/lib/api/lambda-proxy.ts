@@ -15,7 +15,6 @@ export interface LambdaProxyProps {
   tenantTableName: string;
   userPoolId: string;
   userPoolClientId: string;
-  snowflakeSecretArn: string;
   /** CloudFront origin URL to add to CORS allowed origins */
 }
 
@@ -84,12 +83,6 @@ export class LambdaProxy extends Construct {
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],
       resources: [`arn:aws:secretsmanager:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:secret:illuminate/tenants/*`],
-    }));
-
-    // Secrets Manager (read only)
-    role.addToPolicy(new iam.PolicyStatement({
-      actions: ['secretsmanager:GetSecretValue'],
-      resources: [props.snowflakeSecretArn],
     }));
 
     // Cognito

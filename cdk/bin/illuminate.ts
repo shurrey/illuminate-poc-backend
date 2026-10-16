@@ -32,7 +32,7 @@ const env: cdk.Environment = {
 };
 
 // =============================================================================
-// Stack 1: Base infrastructure (Cognito, S3, Secrets)
+// Stack 1: Base infrastructure (Cognito, S3)
 // =============================================================================
 const base = new BaseStack(app, `IlluminateBase-${environment}`, {
   env,
@@ -52,7 +52,6 @@ const api = new ApiStack(app, `IlluminateApi-${environment}`, {
   environment,
   userPoolId: base.userPool.userPoolId,
   userPoolClientId: base.userPoolClient.userPoolClientId,
-  snowflakeSecretArn: base.snowflakeSecret.secretArn,
 });
 api.addDependency(base);
 

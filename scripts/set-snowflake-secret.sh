@@ -1,8 +1,9 @@
 #!/bin/bash
-# set-snowflake-secret.sh [environment] : write the SNOWFLAKE_* values from .env to the
-# illuminate/<environment>/snowflake secret. Warm Lambdas keep the old credentials until they recycle.
+# set-snowflake-secret.sh <tenant_id> : write the SNOWFLAKE_* values from .env to the tenant's secret,
+# illuminate/tenants/<tenant_id>/snowflake, creating it if missing. Warm Lambdas keep the old credentials until they recycle.
 set -euo pipefail
-ENVIRONMENT="${1:-dev}"
+TENANT_ID="${1:?usage: set-snowflake-secret.sh <tenant_id>}"
+SECRET_ID="illuminate/tenants/${TENANT_ID}/snowflake"
 cd "$(dirname "$0")/.."
 # .env is raw KEY=VALUE (no quoting), parsed the same way as cdk/bin/illuminate.ts.
 SECRET=$(python3 - <<'PY'
@@ -22,5 +23,18 @@ if missing:
 print(json.dumps(secret))
 PY
 )
-aws secretsmanager put-secret-value --secret-id "illuminate/${ENVIRONMENT}/snowflake" \
-  --secret-string "$SECRET" --query VersionId --output text
+if ! DESCRIBE_ERR=$(aws secretsmanager describe-secret --secret-id "$SECRET_ID" 2>&1 >/dev/null); then
+  case "$DESCRIBE_ERR" in
+    *ResourceNotFoundException*) EXISTS=0 ;;
+    *) echo "$DESCRIBE_ERR" >&2; exit 1 ;;
+  esac
+else
+  EXISTS=1
+fi
+if [ "$EXISTS" = 1 ]; then
+  aws secretsmanager put-secret-value --secret-id "$SECRET_ID" \
+    --secret-string "$SECRET" --query VersionId --output text
+else
+  aws secretsmanager create-secret --name "$SECRET_ID" \
+    --secret-string "$SECRET" --query ARN --output text
+fi
