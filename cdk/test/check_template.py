@@ -44,9 +44,9 @@ def main() -> int:
         check("no VPC or NAT gateway (nothing runs in it)",
               not resources("IlluminateBase-dev", "AWS::EC2::VPC") and not resources("IlluminateBase-dev", "AWS::EC2::NatGateway")),
         check("no unattached WAF web ACL", not resources("IlluminateBase-dev", "AWS::WAFv2::WebACL")),
-        check("Snowflake credentials are not in the template",
-              all("SecretString" not in r["Properties"] for r in resources("IlluminateBase-dev", "AWS::SecretsManager::Secret"))),
-        check("API cannot write the Snowflake secret (nothing in the API writes it)",
+        check("no Secrets Manager secret in the base stack (tenant secrets are created outside CDK)",
+              not resources("IlluminateBase-dev", "AWS::SecretsManager::Secret")),
+        check("API cannot write Snowflake secrets (nothing in the API writes them)",
               "secretsmanager:PutSecretValue" not in json.dumps(resources("IlluminateApi-dev", "AWS::IAM::Policy"))),
     ]
     return 0 if all(results) else 1

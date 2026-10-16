@@ -90,7 +90,7 @@ print(compile_query(QueryContract(metrics=["metric.ongoing_courses.v1"], dimensi
 | `semantic_layer/dictionary.py` | Live data dictionary lookups for `describe_cdm_table` |
 | `semantic_layer/data/` | CDM dictionary snapshot, supplement and PII column list |
 | `scripts/build_dictionary_snapshot.py` | Rebuilds `cdm_dictionary.json` and `cdm_pii_columns.json` |
-| `scripts/set-snowflake-secret.sh` | Writes the `SNOWFLAKE_*` values from `.env` to the Snowflake secret |
+| `scripts/set-snowflake-secret.sh` | Writes the `SNOWFLAKE_*` values from `.env` to a tenant's Snowflake secret |
 
 ## Adding a dataset
 

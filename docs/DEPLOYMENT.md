@@ -23,14 +23,19 @@ cp .env.example .env
 
 `.env` is raw `KEY=VALUE`, one per line, with no quoting. Two things read it:
 
-- **`scripts/set-snowflake-secret.sh`** reads the Snowflake values: `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_PASSWORD` and `SNOWFLAKE_DATABASE` (all required), plus `SNOWFLAKE_USER` (default `SVC_BLACKBOARD_DATA`), `SNOWFLAKE_WAREHOUSE` (default `BLACKBOARD_DATA_WH`) and `SNOWFLAKE_ROLE` (default `BBDATA_USER_ROLE`). See [Secrets](#secrets). `SNOWFLAKE_DATABASE` is also the database the semantic layer's `{{ database }}` resolves to.
+- **`scripts/set-snowflake-secret.sh`** reads the Snowflake values: `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_PASSWORD` and `SNOWFLAKE_DATABASE` (all required), plus `SNOWFLAKE_USER` (default `SVC_BLACKBOARD_DATA`), `SNOWFLAKE_WAREHOUSE` (default `BLACKBOARD_DATA_WH`) and `SNOWFLAKE_ROLE` (default `BBDATA_USER_ROLE`). Run it as `set-snowflake-secret.sh <tenant_id>`; see [Secrets](#secrets). `SNOWFLAKE_DATABASE` is also the database the semantic layer's `{{ database }}` resolves to.
 - **`cdk/bin/illuminate.ts`** reads the Cognito values. Each can be overridden with a CDK context flag (`-c <key>=<value>`):
 
 | `.env` | Context key | Used for |
 |--------|-------------|----------|
 | `COGNITO_USER_EMAIL` | `initialUserEmail` | Initial Cognito user (default `admin@example.com`) |
-| `COGNITO_USER_PASSWORD` | `initialUserPassword` | Initial user's password. The initial user is created, given `custom:tenant_id = blackboard-dev` and added to `illuminate-admins` only when this is set. |
+| `COGNITO_USER_PASSWORD` | `initialUserPassword` | Initial user's password. The initial user is created, given `custom:tenant_id` and added to `illuminate-admins` only when this is set and a tenant id is set (see below). |
 | `COGNITO_USER_NAME` | `initialUserName` | Initial user's display name |
+
+The seed user's tenant comes from `initialTenantId` in `cdk/cdk.json` context (or the `INITIAL_TENANT_ID`
+environment variable or `.env` entry). It is required for the seed user and has no default. Set it before any base-stack
+deploy: without it the seed-user resources are removed, and adding them back later re-runs the
+password reset.
 
 The environment name comes from `-c environment=<env>` (default `dev`, set in `cdk/cdk.json`) and
 is part of every resource name.
@@ -41,11 +46,11 @@ is part of every resource name.
 
 | Stack | Resources |
 |-------|-----------|
-| `IlluminateBase-<env>` | Cognito user pool `illuminate-users-<env>` (LITE tier, email sign-in, `custom:tenant_id` attribute), app client `illuminate-api-<env>` (users cannot write `custom:tenant_id`), group `illuminate-admins`, the initial user; S3 bucket `illuminate-artifacts-<env>-<account>` (retained on delete); Secrets Manager secret `illuminate/<env>/snowflake`; SSM parameters |
-| `IlluminateApi-<env>` | Lambda `illuminate-api-<env>` (Python 3.11, x86_64, 1024 MB, 900 s timeout, Lambda Web Adapter layer) with a Function URL (auth `NONE`, `RESPONSE_STREAM`); DynamoDB tables `illuminate-conversations-<env>` and `illuminate-overlays-<env>`; IAM role `illuminate-lambda-<env>`; log group (one week, one month in `prod`); SSM parameter `api-url` |
+| `IlluminateBase-<env>` | Cognito user pool `illuminate-users-<env>` (LITE tier, email sign-in, `custom:tenant_id` attribute), app client `illuminate-api-<env>` (users cannot write `custom:tenant_id`), group `illuminate-admins`, the initial user; S3 bucket `illuminate-artifacts-<env>-<account>` (retained on delete); SSM parameters |
+| `IlluminateApi-<env>` | Lambda `illuminate-api-<env>` (Python 3.11, x86_64, 1024 MB, 900 s timeout, Lambda Web Adapter layer) with a Function URL (auth `NONE`, `RESPONSE_STREAM`); DynamoDB tables `illuminate-conversations-<env>`, `illuminate-overlays-<env>` and `illuminate-tenants-<env>` (tenant registry); IAM role `illuminate-lambda-<env>`; log group (one week, one month in `prod`); SSM parameter `api-url` |
 
-`IlluminateApi-<env>` depends on `IlluminateBase-<env>`. Both DynamoDB tables have
-`RemovalPolicy.DESTROY`: deleting the API stack deletes all conversations and tenant overlays.
+`IlluminateApi-<env>` depends on `IlluminateBase-<env>`. The DynamoDB tables have
+`RemovalPolicy.DESTROY`: deleting the API stack deletes all conversations, tenant overlays and the tenant registry.
 
 The Lambda bundle is `pip install -r requirements-lambda.txt` plus `lambda_handler.py`,
 `chat_engine.py`, `conversation_store.py`, `snowflake_client.py`, `overlay_store.py`, `run.sh`,
@@ -54,8 +59,8 @@ ships with an API stack deploy.
 
 ### SSM discovery parameters
 
-Published under `/illuminate/<env>/`: `cognito-pool-id`, `cognito-client-id`, `artifacts-bucket`,
-`snowflake-secret-arn` (base stack) and `api-url` (API stack). The frontend reads these.
+Published under `/illuminate/<env>/`: `cognito-pool-id`, `cognito-client-id`, `artifacts-bucket`
+(base stack) and `api-url` (API stack). The frontend reads these.
 The artifacts bucket is not used by the API.
 
 ## Deploy
@@ -64,19 +69,25 @@ The artifacts bucket is not used by the API.
 cd cdk
 npm install
 npx cdk deploy IlluminateBase-dev -c environment=dev  # first deploy: base stack
-../scripts/set-snowflake-secret.sh dev                 # first deploy, and whenever credentials change
 npx cdk deploy IlluminateApi-dev -c environment=dev   # API (code or definition changes)
-npx cdk deploy --all -c environment=dev               # both stacks, once the secret is set
+npx cdk deploy --all -c environment=dev               # both stacks
 npx cdk diff -c environment=dev                       # preview
 ```
 
-On a first deploy, the secret holds a generated placeholder until the script runs, and the API
-cannot reach Snowflake.
+Tenant Snowflake credentials are not part of the stacks; see [Secrets](#secrets).
 
-**Upgrading an environment deployed before the secret moved out of the template:** the first base
-deploy afterwards replaces the stored credentials with a generated placeholder. Run
-`scripts/set-snowflake-secret.sh <env>` straight after it. Until then, chat and semantic queries fail
-with "Snowflake secret ... has no database"; they recover by themselves once the script has run.
+**Upgrading an environment that has the global secret** (`illuminate/<env>/snowflake`): the API
+stack imports the base stack's secret ARN export, so deploy the API stack first, then base:
+
+```bash
+npx cdk deploy IlluminateApi-<env> --exclusively -c environment=<env>
+npx cdk deploy IlluminateBase-<env> --exclusively -c environment=<env>
+```
+
+`--all` and `npm run deploy:base` fail on such an environment ("Cannot delete export ... in use")
+until the API stack has been deployed, and `cdk deploy IlluminateApi-<env>` without `--exclusively`
+also deploys base. The base deploy schedules the old secret for deletion; Secrets Manager keeps it for
+a recovery window, during which its name stays reserved. Nothing reads it.
 
 `npm run deploy:api` and `npm run deploy:base` wrap `cdk deploy IlluminateApi-*` and
 `cdk deploy IlluminateBase-*`.
@@ -126,24 +137,29 @@ Read by the application with defaults, not set by CDK:
 
 ## Secrets
 
-`illuminate/<env>/snowflake` holds JSON with `account`, `user`, `password`, `database`,
-`warehouse` and `role`. The base stack creates it with a generated placeholder and never writes it
-again, so redeploys leave the credentials alone. To set the credentials from `.env`:
+Each tenant's Snowflake credentials are in `illuminate/tenants/<tenant_id>/snowflake`, JSON with
+`account`, `user`, `password`, `database`, `warehouse` and `role`. The registry row for the tenant is
+in DynamoDB table `illuminate-tenants-<env>`. To write a tenant's secret from `.env` (creating it if
+missing):
 
 ```bash
-scripts/set-snowflake-secret.sh dev
+scripts/set-snowflake-secret.sh <tenant_id>
 ```
 
-The Lambda role can only read the secret. Each Lambda instance caches the
-credentials and connection after first use, so after changing the secret, new values take effect as
+`scripts/tenant.py migrate-current` moves an existing single-tenant deployment into the first tenant,
+and `scripts/tenant.py list` shows the registered tenants (counts only, never secrets). Both use
+`AWS_PROFILE` credentials and take `--env`.
+
+The Lambda role can only read secrets under `illuminate/tenants/*`. Each Lambda instance caches the
+credentials and connection after first use, so after changing a secret, new values take effect as
 instances are replaced (for example after an API deploy).
 
 ## IAM
 
 The Lambda role (`illuminate-lambda-<env>`) has: Bedrock `InvokeModel`/`InvokeModelWithResponseStream` on
 Anthropic Claude models and `us.anthropic.claude-*` inference profiles, and `Converse`/`ConverseStream`; `GetItem`/`PutItem`/`DeleteItem` on the conversation table;
-`GetItem`/`PutItem`/`DeleteItem`/`Query` on the overlay table; `GetSecretValue` on the Snowflake
-secret; `cognito-idp:GetUser`/`AdminGetUser` on the
+`GetItem`/`PutItem`/`DeleteItem`/`Query` on the overlay table; read access to the tenant table;
+`GetSecretValue` on `illuminate/tenants/*`; `cognito-idp:GetUser`/`AdminGetUser` on the
 user pool; and basic Lambda logging.
 
 ## Administrators and tenants
@@ -174,8 +190,8 @@ curl -N "${API_URL%/}/api/chat/stream" \
 The stream should emit `status` events and end with a `complete` event.
 
 `cdk/test/check_template.py` checks security properties of the synthesized base stack (writable
-attributes, admin group, no VPC or WAF, no Snowflake credentials in the template) and that the API
-cannot write the Snowflake secret. Its
+attributes, admin group, no VPC or WAF, no secrets in the base stack) and that the API
+cannot write Snowflake secrets. Its
 docstring has the synth command.
 
 ## Troubleshooting
@@ -186,7 +202,7 @@ docstring has the synth command.
 | `403` on admin routes | User is in `illuminate-admins` and has `custom:tenant_id`; sign in again after changes |
 | Browser CORS errors after an API deploy | `ALLOWED_ORIGINS` lost the frontend origin; see above |
 | Chat returns `502` or `error` events | Bedrock model access in the region; Lambda logs at `/aws/lambda/illuminate-api-<env>` |
-| Queries return `502` "The warehouse could not run this query." | Snowflake secret values and the role's grants; the full error is in the Lambda logs |
+| Queries return `502` "The warehouse could not run this query." | The tenant's Snowflake secret values and the role's grants; the full error is in the Lambda logs |
 | Overlays not applied | The admin list shows `status: skipped` with `problems`; the overlay cache is per instance and lasts 60 seconds |
 
 ```bash

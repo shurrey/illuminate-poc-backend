@@ -224,7 +224,7 @@ PII is handled in layers:
 Two CDK stacks (`cdk/`), detailed in [DEPLOYMENT.md](DEPLOYMENT.md):
 
 - `IlluminateBase-<env>`: Cognito user pool, app client and `illuminate-admins` group, an S3
-  artifacts bucket (unused by the API), the Snowflake secret (its value is set by
-  `scripts/set-snowflake-secret.sh`), and SSM discovery parameters.
+  artifacts bucket (unused by the API), and SSM discovery parameters. Tenant Snowflake
+  secrets (`illuminate/tenants/<tenant_id>/snowflake`) are written by `scripts/set-snowflake-secret.sh`.
 - `IlluminateApi-<env>`: the Lambda function and Function URL, the conversation and overlay tables,
   and the `api-url` SSM parameter.
