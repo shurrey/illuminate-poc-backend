@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from semantic_layer.contract import QueryContract
+from tenancy import NOT_READY, Tenant, TenantNotReady, get_tenant
 
 # JWT validation
 from jose import jwt, JWTError
@@ -173,6 +174,17 @@ def _tenant_id_from_user(user: Optional[dict]) -> Optional[str]:
         return None
     value = user.get("custom:tenant_id")
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def tenant_for(user: Optional[dict]) -> Tenant:
+    """The caller's registered tenant; 403 when the token has no tenant claim or the tenant has no registry row."""
+    tenant_id = _tenant_id_from_user(user)
+    if not tenant_id:
+        raise HTTPException(status_code=403, detail=NOT_READY)
+    try:
+        return get_tenant(tenant_id)
+    except TenantNotReady:
+        raise HTTPException(status_code=403, detail=NOT_READY)
 
 
 # =============================================================================
