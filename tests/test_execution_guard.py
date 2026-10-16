@@ -1,6 +1,11 @@
 import pytest
 
 import snowflake_client
+from tests.tenant_fakes import TENANT_A
+
+
+def _validate(sql, **kwargs):
+    return snowflake_client.validate_and_execute(sql, tenant=TENANT_A, **kwargs)
 
 
 @pytest.fixture
@@ -11,19 +16,19 @@ def executed(monkeypatch):
 
 
 def test_pii_wrapped_in_an_unknown_function_is_blocked(executed):
-    result = snowflake_client.validate_and_execute("SELECT MY_UDF(FIRST_NAME) FROM CDM_LMS.PERSON")
+    result = _validate("SELECT MY_UDF(FIRST_NAME) FROM CDM_LMS.PERSON")
     assert "personally identifiable" in result["error"]
     assert executed == []
 
 
 def test_pii_under_a_real_aggregate_is_allowed(executed):
-    result = snowflake_client.validate_and_execute("SELECT COUNT(DISTINCT EMAIL) FROM CDM_LMS.PERSON")
+    result = _validate("SELECT COUNT(DISTINCT EMAIL) FROM CDM_LMS.PERSON")
     assert "error" not in result
     assert len(executed) == 1
 
 
 def test_bare_pii_column_is_blocked(executed):
-    result = snowflake_client.validate_and_execute("SELECT EMAIL FROM CDM_LMS.PERSON")
+    result = _validate("SELECT EMAIL FROM CDM_LMS.PERSON")
     assert "personally identifiable" in result["error"]
 
 
@@ -43,7 +48,7 @@ def test_bare_pii_column_is_blocked(executed):
     "SELECT UPPER(EMAIL), COUNT(*) FROM CDM_LMS.PERSON GROUP BY 1",
 ])
 def test_pii_must_be_inside_a_counting_aggregate(sql, executed):
-    result = snowflake_client.validate_and_execute(sql)
+    result = _validate(sql)
     assert "personally identifiable" in result.get("error", ""), sql
     assert executed == []
 
@@ -56,7 +61,7 @@ def test_pii_must_be_inside_a_counting_aggregate(sql, executed):
     "SELECT COUNT(*) FROM CDM_LMS.PERSON WHERE EMAIL LIKE '%@example.edu'",
 ])
 def test_counting_pii_is_allowed(sql, executed):
-    assert "error" not in snowflake_client.validate_and_execute(sql), sql
+    assert "error" not in _validate(sql), sql
     assert len(executed) == 1
 
 
@@ -69,7 +74,7 @@ def test_counting_pii_is_allowed(sql, executed):
     "SELECT COUNT(*) FROM CDM_LMS.PERSON UNION ALL SELECT EMAIL FROM CDM_LMS.PERSON",
 ])
 def test_freehand_sql_cannot_reach_pii_through_stars_subqueries_or_unions(sql, executed):
-    assert "error" in snowflake_client.validate_and_execute(sql), sql
+    assert "error" in _validate(sql), sql
     assert executed == []
 
 
@@ -78,13 +83,13 @@ def test_freehand_sql_cannot_reach_pii_through_stars_subqueries_or_unions(sql, e
     "WITH s AS (SELECT PERSON_ID, COURSE_ID FROM CDM_LMS.PERSON_COURSE) SELECT COUNT(DISTINCT PERSON_ID) FROM s",
 ])
 def test_freehand_sql_without_pii_projections_runs(sql, executed):
-    assert "error" not in snowflake_client.validate_and_execute(sql), sql
+    assert "error" not in _validate(sql), sql
 
 
 def test_compiled_sql_may_project_pii_inside_its_ctes(executed):
     sql = "WITH d AS (SELECT p.*, 1 AS K FROM CDM_LMS.PERSON p) SELECT COUNT(DISTINCT EMAIL) AS n FROM d"
-    assert "error" in snowflake_client.validate_and_execute(sql)
-    assert "error" not in snowflake_client.validate_and_execute(sql, compiled=True)
+    assert "error" in _validate(sql)
+    assert "error" not in _validate(sql, compiled=True)
 
 
 class _Cursor:
@@ -124,13 +129,13 @@ def test_results_are_capped_at_max_rows_and_marked_truncated(monkeypatch):
 ])
 @pytest.mark.parametrize("compiled", [False, True])
 def test_table_functions_other_than_a_bounded_generator_are_blocked(sql, compiled, executed):
-    result = snowflake_client.validate_and_execute(sql, compiled=compiled)
+    result = _validate(sql, compiled=compiled)
     assert "table function" in result["error"]
     assert executed == []
 
 
 def test_bounded_generator_and_lateral_functions_are_allowed(executed):
-    result = snowflake_client.validate_and_execute(
+    result = _validate(
         "SELECT SEQ4() AS N FROM TABLE(GENERATOR(ROWCOUNT => 10)) "
         "UNION ALL SELECT s.VALUE FROM CDM_LMS.COURSE c, LATERAL SPLIT_TO_TABLE(c.NAME, ',') s")
     assert "error" not in result
@@ -146,7 +151,7 @@ def test_bounded_generator_and_lateral_functions_are_allowed(executed):
     "SELECT ID FROM CDM_LMS.PERSON GROUP BY ID, EMAIL",
 ])
 def test_freehand_pii_outside_a_count_or_filter_is_blocked_anywhere_in_the_statement(sql, executed):
-    result = snowflake_client.validate_and_execute(sql)
+    result = _validate(sql)
     assert "personally identifiable" in result["error"]
     assert executed == []
 
@@ -158,7 +163,7 @@ def test_freehand_pii_outside_a_count_or_filter_is_blocked_anywhere_in_the_state
     "SELECT p.ID FROM CDM_LMS.PERSON p JOIN CDM_LMS.PERSON q ON p.EMAIL = q.EMAIL",
 ])
 def test_freehand_pii_in_a_count_or_filter_is_allowed(sql, executed):
-    assert "error" not in snowflake_client.validate_and_execute(sql)
+    assert "error" not in _validate(sql)
 
 
 COMPILED_NAMES = "WITH DS AS (SELECT FIRST_NAME, EMAIL FROM CDM_LMS.PERSON) SELECT FIRST_NAME AS first, EMAIL AS mail FROM DS"
@@ -166,17 +171,17 @@ COMPILED_NAMES = "WITH DS AS (SELECT FIRST_NAME, EMAIL FROM CDM_LMS.PERSON) SELE
 
 def test_compiled_identity_passes_only_when_the_caller_may_see_identity(monkeypatch):
     monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
-    assert "error" in snowflake_client.validate_and_execute(COMPILED_NAMES, compiled=True)
-    assert "error" not in snowflake_client.validate_and_execute(COMPILED_NAMES, compiled=True, allow_identity=True)
+    assert "error" in _validate(COMPILED_NAMES, compiled=True)
+    assert "error" not in _validate(COMPILED_NAMES, compiled=True, allow_identity=True)
 
 
 def test_freehand_sql_never_returns_identity_whatever_the_role(monkeypatch):
     monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
-    assert "error" in snowflake_client.validate_and_execute("SELECT EMAIL FROM CDM_LMS.PERSON", allow_identity=True)
+    assert "error" in _validate("SELECT EMAIL FROM CDM_LMS.PERSON", allow_identity=True)
 
 
 def test_declared_dataset_pii_is_guarded_for_callers_without_identity(monkeypatch):
     monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
     sql = "WITH DS AS (SELECT CREATOR_NAME FROM CDM_LMS.PERSON) SELECT CREATOR_NAME AS creator_name FROM DS"
-    assert "error" in snowflake_client.validate_and_execute(sql, compiled=True, extra_pii={"CREATOR_NAME"})
-    assert "error" not in snowflake_client.validate_and_execute(sql, compiled=True, extra_pii={"CREATOR_NAME"}, allow_identity=True)
+    assert "error" in _validate(sql, compiled=True, extra_pii={"CREATOR_NAME"})
+    assert "error" not in _validate(sql, compiled=True, extra_pii={"CREATOR_NAME"}, allow_identity=True)

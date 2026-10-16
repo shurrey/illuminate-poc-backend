@@ -28,8 +28,8 @@ python -m pytest -k overlay                        # a subset by name
 
 Tests do not call Bedrock, Snowflake or AWS. DynamoDB is provided by `moto` (`mock_aws`); Bedrock is
 replaced by scripted `converse` stubs; Snowflake execution and token validation are monkeypatched;
-the data dictionary is read from the snapshot in `semantic_layer/data/`. Tests that import
-`chat_engine` set `SNOWFLAKE_DATABASE` so it does not look the database up in Secrets Manager.
+the data dictionary is read from the snapshot in `semantic_layer/data/`. Route tests set
+`TEST_SNOWFLAKE_DATABASE` so the database comes from the environment, not a tenant's secret.
 
 `cdk/test/check_template.py` asserts properties of the synthesized CloudFormation templates; see its
 docstring for the `cdk synth` command to run first.
@@ -51,8 +51,6 @@ environment, export AWS credentials and:
 | `USER_POOL_ID`, `USER_POOL_CLIENT_ID` | From SSM `/illuminate/dev/cognito-pool-id` and `/illuminate/dev/cognito-client-id`; needed to validate tokens |
 | `OVERLAY_TABLE` | `illuminate-overlays-dev`; unset, overlay reads fail and queries fall back to the canonical catalog |
 | `CONVERSATION_TABLE` | Defaults to `illuminate-conversations-dev` |
-| `SNOWFLAKE_SECRET_NAME` | Defaults to `illuminate/dev/snowflake` |
-| `SNOWFLAKE_DATABASE` | Optional; otherwise the `database` field of the Snowflake secret |
 | `ALLOWED_ORIGINS` | Defaults to `http://localhost:3000,http://localhost:5173` |
 
 See [DEPLOYMENT.md](DEPLOYMENT.md#environment-variables) for the full list. Every route except

@@ -13,6 +13,8 @@ from typing import Callable, Iterable, Optional
 
 from pydantic import ValidationError
 
+from tenancy import Tenant
+
 from .compiler import CompileError, compile_query, named_result
 from .dictionary import describe_table
 from .overlays import overlays_used
@@ -120,12 +122,6 @@ class ToolResult:
     artifacts: list[dict] = field(default_factory=list)
 
 
-def _default_execute(sql: str, params: Optional[dict] = None, compiled: bool = False) -> dict:
-    from snowflake_client import validate_and_execute
-
-    return validate_and_execute(sql, params, compiled=compiled)
-
-
 def _model_error(result: dict) -> str:
     """The error the model sees: warehouse messages without object or role names."""
     message = result["error"]
@@ -140,13 +136,19 @@ def _artifact(kind: str, title: str, data, **extra) -> dict:
 
 
 class ChatTools:
-    def __init__(self, catalog: Catalog, database: str,
-                 execute: Callable[..., dict] = _default_execute,
+    def __init__(self, catalog: Catalog, database: str, *, tenant: Tenant,
+                 execute: Optional[Callable[..., dict]] = None,
                  describe: Callable[[str, str], Optional[list[dict]]] = describe_table,
                  overlays: Iterable = ()):
-        """overlays: the tenant overlays applied to catalog, reported in query provenance."""
-        self.catalog, self.database, self.execute, self.describe = catalog, database, execute, describe
+        """execute: defaults to running against the tenant's warehouse. overlays: applied to catalog, reported in provenance."""
+        self.catalog, self.database, self.tenant, self.describe = catalog, database, tenant, describe
+        self.execute = execute or self._execute_for_tenant
         self.overlays = list(overlays)
+
+    def _execute_for_tenant(self, sql: str, params: Optional[dict] = None, compiled: bool = False) -> dict:
+        from snowflake_client import validate_and_execute
+
+        return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled)
 
     @property
     def specs(self) -> list[dict]:

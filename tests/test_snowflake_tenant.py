@@ -133,9 +133,9 @@ def test_invalidate_affects_only_that_tenant(aws):
 
 def test_none_tenant_raises_tenant_not_ready(aws):
     with pytest.raises(TenantNotReady):
-        snowflake_client.query_sql("SELECT 1")
+        snowflake_client.query_sql("SELECT 1", tenant=None)
     with pytest.raises(TenantNotReady):
-        snowflake_client.query_preview("CDM_LMS", "T")
+        snowflake_client.query_preview("CDM_LMS", "T", tenant=None)
     with pytest.raises(TenantNotReady):
         snowflake_client.tenant_database(None)
     assert aws.secret_ids == [] and aws.connects == []
@@ -168,3 +168,13 @@ def test_secret_without_database_raises_before_connecting(aws):
     with pytest.raises(TenantNotReady):
         snowflake_client.get_connection(T1)
     assert aws.connects == []
+
+
+@pytest.mark.parametrize("call", [
+    lambda: snowflake_client.validate_and_execute("SELECT 1 FROM CDM_LMS.T"),
+    lambda: snowflake_client.query_sql("SELECT 1"),
+    lambda: snowflake_client.query_preview("CDM_LMS", "T"),
+])
+def test_validate_and_execute_requires_tenant(call):
+    with pytest.raises(TypeError, match="tenant"):
+        call()

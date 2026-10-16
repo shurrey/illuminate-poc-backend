@@ -1,5 +1,7 @@
 from semantic_layer.catalog import load_catalog
+import snowflake_client
 from semantic_layer.chat_tools import MODEL_ROW_LIMIT, ChatTools
+from tests.tenant_fakes import TENANT_A, TENANT_B
 
 CATALOG = load_catalog()
 
@@ -19,7 +21,7 @@ SEARCHED = ("search_catalog",)
 
 
 def _tools(warehouse=None):
-    return ChatTools(CATALOG, "DB", execute=warehouse or FakeWarehouse())
+    return ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=warehouse or FakeWarehouse())
 
 
 def test_specs_name_every_tool_once():
@@ -102,7 +104,7 @@ DICTIONARY = {
 
 
 def _fallback(warehouse=None):
-    return ChatTools(CATALOG, "DB", execute=warehouse or FakeWarehouse(),
+    return ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=warehouse or FakeWarehouse(),
                      describe=lambda schema, table: DICTIONARY.get((schema.upper(), table.upper())))
 
 
@@ -148,7 +150,7 @@ def test_specs_include_the_fallback_tools():
 
 def test_only_governed_queries_run_with_the_compiled_guard():
     modes = []
-    tools = ChatTools(CATALOG, "DB", execute=lambda sql, params=None, compiled=False: modes.append(compiled) or {"columns": ["N"], "rows": [{"N": 1}]})
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=lambda sql, params=None, compiled=False: modes.append(compiled) or {"columns": ["N"], "rows": [{"N": 1}]})
     tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
     tools.dispatch("execute_sql", {"sql": "SELECT COUNT(*) AS N FROM CDM_LMS.COURSE", "reason": "no governed metric counts all course rows"}, called=SEARCHED)
     assert modes == [True, False]
@@ -189,7 +191,7 @@ def test_filter_values_schema_names_the_value_types():
 
 def test_warehouse_errors_reach_the_model_without_internal_object_or_role_names():
     raw = "002003 (42S02): SQL compilation error:\nObject 'PROD_DB.SECRET_SCHEMA.T' does not exist or not authorized, role BBDATA_ROLE"
-    tools = ChatTools(CATALOG, "DB", execute=lambda sql, params=None, compiled=False: {"error": raw, "warehouse_error": True})
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=lambda sql, params=None, compiled=False: {"error": raw, "warehouse_error": True})
     out = tools.dispatch("execute_sql", {"sql": "SELECT 1", "reason": "testing the error path"}, called=SEARCHED)
     assert "SECRET_SCHEMA" not in out.content["error"] and "BBDATA_ROLE" not in out.content["error"]
     assert "does not exist" in out.content["error"]
@@ -199,7 +201,18 @@ def test_query_semantic_provenance_lists_the_tenant_overlays_it_used():
     from semantic_layer.overlays import Overlay
     used = Overlay(target="metric:metric.reportable_courses.v1", default_filters=[], version=3)
     unused = Overlay(target="metric:metric.average_grade.v1", default_filters=[], version=1)
-    tools = ChatTools(CATALOG, "DB", execute=FakeWarehouse([{"REPORTABLE_COURSES": 3}]), overlays=[used, unused])
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=FakeWarehouse([{"REPORTABLE_COURSES": 3}]), overlays=[used, unused])
     out = tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
     assert out.content["provenance"]["overlays"] == ["metric:metric.reportable_courses.v1@v3"]
     assert all(a["provenance"]["overlays"] == ["metric:metric.reportable_courses.v1@v3"] for a in out.artifacts)
+
+
+def test_chat_tools_execute_with_their_tenant(monkeypatch):
+    seen = []
+    monkeypatch.setattr(snowflake_client, "validate_and_execute",
+                        lambda sql, params=None, **k: seen.append(k["tenant"]) or {"columns": ["N"], "rows": [{"N": 1}]})
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_B)
+    tools.dispatch("execute_sql", {"sql": "SELECT 1 AS N FROM DB.CDM_LMS.COURSE",
+                                   "reason": "No dataset covers raw course counts"}, called=SEARCHED)
+    tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
+    assert seen == [TENANT_B, TENANT_B]
