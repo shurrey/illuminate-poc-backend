@@ -15,7 +15,6 @@ EMPTY = {"columns": [], "rows": []}
 @pytest.fixture
 def as_user(monkeypatch):
     install_tenants(monkeypatch, TENANT_A, TENANT_B)
-    monkeypatch.setattr(overlay_store, "list_overlays", lambda tenant_id: [])
     lambda_handler._terms_cache.clear()
     lambda_handler._overlay_cache.clear()
 
@@ -70,6 +69,17 @@ def test_preview_runs_in_callers_tenant(as_user, monkeypatch):
     r = as_user(user_of(TENANT_B, "illuminate-admins")).get(
         "/api/v1/dictionary/preview?schema=CDM_LMS&table=COURSE", headers=AUTH)
     assert r.status_code == 200 and seen == [TENANT_B]
+
+
+def test_preview_tenant_not_ready_inside_route_is_403(as_user, monkeypatch):
+    def not_ready(*a, **k):
+        raise TenantNotReady(TENANT_B.tenant_id)
+
+    monkeypatch.setattr(snowflake_client, "query_preview", not_ready)
+    r = as_user(user_of(TENANT_B, "illuminate-admins")).get(
+        "/api/v1/dictionary/preview?schema=CDM_LMS&table=COURSE", headers=AUTH)
+    assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
+    assert TENANT_B.tenant_id not in r.text
 
 
 def test_report_run_unknown_tenant_is_403_before_snowflake(as_user, monkeypatch):

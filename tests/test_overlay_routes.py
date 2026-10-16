@@ -5,6 +5,7 @@ from moto import mock_aws
 
 import lambda_handler
 import overlay_store
+from tests.conftest import REAL_LIST_OVERLAYS
 from tests.tenant_fakes import TENANT_A, TENANT_B, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
@@ -29,6 +30,7 @@ def client(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         monkeypatch.setattr(overlay_store, "_table", t)
+        monkeypatch.setattr(overlay_store, "list_overlays", REAL_LIST_OVERLAYS)
         lambda_handler._overlay_cache.clear()
         _as(monkeypatch, ADMIN)
         yield TestClient(lambda_handler.app)

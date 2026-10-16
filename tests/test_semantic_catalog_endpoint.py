@@ -39,6 +39,7 @@ def test_etag_changes_when_the_catalog_changes(client, monkeypatch):
 
     before = client.get("/api/v1/semantic/catalog", headers=AUTH).headers["etag"]
     monkeypatch.setattr(catalog_module, "default_catalog", lambda: catalog())
+    lambda_handler._overlay_cache.clear()
     after = client.get("/api/v1/semantic/catalog", headers=AUTH).headers["etag"]
     assert before != after
 

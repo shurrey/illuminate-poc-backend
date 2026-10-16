@@ -705,7 +705,7 @@ async def dictionary_preview(
         )
         logger.info(f"Preview: {schema}.{table} returned {len(result['rows'])} rows")
         return result
-    except HTTPException:
+    except (HTTPException, TenantNotReady):
         raise
     except Exception as e:
         logger.error(f"Snowflake preview query failed: {e}")
