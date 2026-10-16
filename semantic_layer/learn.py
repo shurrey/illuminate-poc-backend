@@ -16,6 +16,11 @@ def _dictionary() -> dict[str, frozenset[str]]:
 
 
 @lru_cache(maxsize=1)
+def _types() -> dict[str, dict[str, str]]:
+    return json.loads((_DATA / "learn_dictionary.json").read_text())
+
+
+@lru_cache(maxsize=1)
 def _pii() -> frozenset[str]:
     return frozenset(json.loads((_DATA / "learn_pii_columns.json").read_text()))
 
@@ -29,3 +34,8 @@ def learn_pii(table: str, column: str) -> bool:
     """True when the dictionary flags LEARN.<table>.<column> as PII, or lists no such table or column."""
     columns = learn_columns(table)
     return columns is None or column not in columns or f"{table}.{column}" in _pii()
+
+
+def learn_column_types(table: str) -> dict[str, str] | None:
+    """Column name to data type for LEARN.<table>, or None when the snapshot lacks it."""
+    return _types().get(table)

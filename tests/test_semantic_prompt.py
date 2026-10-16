@@ -1,8 +1,11 @@
+import re
+
 from semantic_layer.catalog import load_catalog
 from semantic_layer.prompt import build_system_prompt
 
 CATALOG = load_catalog()
-PROMPT = build_system_prompt(CATALOG, "PROD_DB")
+PROMPT = build_system_prompt(CATALOG, "PROD_DB", learn=False)
+PREMIUM_PROMPT = build_system_prompt(CATALOG, "PROD_DB", learn=True)
 
 
 def test_every_public_dataset_and_metric_is_described():
@@ -54,3 +57,12 @@ def test_freehand_results_must_be_called_ungoverned_in_the_answer():
 
 def test_rules_say_plain_dimension_names_prefer_the_measure_dataset():
     assert "own dataset first" in PROMPT
+
+
+def test_core_prompt_never_mentions_learn():
+    assert not re.search(r"\blearn\b", PROMPT, re.IGNORECASE)
+
+
+def test_premium_prompt_mentions_learn():
+    assert "`LEARN` schema" in PREMIUM_PROMPT
+    assert "PROD_DB.LEARN.<table>" in PREMIUM_PROMPT

@@ -15,7 +15,7 @@ _RULES = """## How to answer
    Results come back in columns named after the dimensions and each metric's column. Give the result a short `title`, and ask for a `chart` (by those
    column names) when a trend, distribution or comparison is clearer as one.
 3. Only when no metric, measure or dimension fits, use `describe_cdm_table` and then `execute_sql` on the
-   `{database}` database's CDM_* schemas. `execute_sql` needs a `reason` saying why the catalog does not
+   `{database}` database's CDM_* schemas{learn}. `execute_sql` needs a `reason` saying why the catalog does not
    cover the question. Say in your answer that the result is ungoverned and why.
 4. The tools return the data, SQL and provenance to the user directly. Do not repeat the SQL or
    reproduce whole result tables in your answer.
@@ -39,7 +39,11 @@ def _dimension(d: dict) -> str:
     return d["name"]
 
 
-def build_system_prompt(catalog: Catalog, database: str) -> str:
+_LEARN_RULE = (" and the `LEARN` schema. Name LEARN tables with their schema (`{database}.LEARN.<table>`) "
+               "in `execute_sql`")
+
+
+def build_system_prompt(catalog: Catalog, database: str, *, learn: bool) -> str:
     view = public_catalog(catalog)
     lines = [
         "You are Illuminate, an analytics assistant for educational institutions. You answer questions "
@@ -66,5 +70,5 @@ def build_system_prompt(catalog: Catalog, database: str) -> str:
             lines.append("Also uses dimensions from: " + ", ".join(f"`{j}`" for j in ds["joins"]))
         if ds["filters"]:
             lines.append("Named filters (used by metrics): " + ", ".join(f["name"] for f in ds["filters"]))
-    lines += ["", _RULES.format(database=database)]
+    lines += ["", _RULES.format(database=database, learn=_LEARN_RULE.format(database=database) if learn else "")]
     return "\n".join(lines)

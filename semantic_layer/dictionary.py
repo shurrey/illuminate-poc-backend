@@ -10,6 +10,8 @@ import urllib.request
 from functools import lru_cache
 from typing import Optional
 
+from .learn import learn_column_types, learn_pii
+
 logger = logging.getLogger("API-PROXY")
 
 _BASE_URL = os.environ.get("DATA_DICTIONARY_URL", "https://us.data.api.blackboard.com/api/v1/data/dictionary")
@@ -39,11 +41,17 @@ _failed_at: Optional[float] = None
 
 
 def describe_table(schema: str, table: str) -> Optional[list[dict]]:
-    """Columns of SCHEMA.TABLE, or None when the dictionary has no such table or cannot be reached.
+    """Columns of SCHEMA.TABLE (LEARN from the committed snapshot, CDM_* live), or None when the dictionary has no such table or cannot be reached.
 
     After a failed fetch, calls return None for a minute rather than waiting on the dictionary again.
     """
     global _failed_at
+    if schema.upper() == "LEARN":
+        types = learn_column_types(table.upper())
+        if types is None:
+            return None
+        return [{"name": c, "type": t, "pii": learn_pii(table.upper(), c), "description": ""}
+                for c, t in sorted(types.items())]
     if _failed_at is not None and time.monotonic() - _failed_at < _RETRY_SECONDS:
         return None
     try:

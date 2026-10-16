@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 
 import lambda_handler
 import snowflake_client
-from tests.tenant_fakes import TENANT_A, install_tenants, user_of
+from licenses import PREVIEW_REFUSAL
+from tests.tenant_fakes import TENANT_A, TENANT_CORE, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 MEMBER = user_of(TENANT_A)
@@ -36,3 +37,28 @@ def test_admins_can_preview_tables(monkeypatch, executed):
     r = _client(monkeypatch, ADMIN).get("/api/v1/dictionary/preview?schema=CDM_LMS&table=PERSON", headers=AUTH)
     assert r.status_code == 200
     assert executed == ["CDM_LMS.PERSON"]
+
+
+def test_core_preview_learn_403_with_message(monkeypatch, executed):
+    install_tenants(monkeypatch, TENANT_CORE)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token",
+                        lambda a: user_of(TENANT_CORE, "illuminate-admins", sub="a1"))
+    r = TestClient(lambda_handler.app).get("/api/v1/dictionary/preview?schema=LEARN&table=USERS", headers=AUTH)
+    assert r.status_code == 403 and r.json()["detail"] == PREVIEW_REFUSAL
+    assert executed == []
+
+
+def test_premium_preview_learn_allowed(monkeypatch, executed):
+    r = _client(monkeypatch, ADMIN).get("/api/v1/dictionary/preview?schema=learn&table=USERS", headers=AUTH)
+    assert r.status_code == 200
+    assert executed == ["LEARN.USERS"]
+
+
+def test_premium_preview_learn_is_admin_only(monkeypatch, executed):
+    r = _client(monkeypatch, MEMBER).get("/api/v1/dictionary/preview?schema=LEARN&table=USERS", headers=AUTH)
+    assert r.status_code == 403 and executed == []
+
+
+def test_preview_of_other_schemas_is_still_400(monkeypatch, executed):
+    r = _client(monkeypatch, ADMIN).get("/api/v1/dictionary/preview?schema=PUBLIC&table=USERS", headers=AUTH)
+    assert r.status_code == 400 and executed == []
