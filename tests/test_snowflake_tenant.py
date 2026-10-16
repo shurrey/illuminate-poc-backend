@@ -178,3 +178,59 @@ def test_secret_without_database_raises_before_connecting(aws):
 def test_validate_and_execute_requires_tenant(call):
     with pytest.raises(TypeError, match="tenant"):
         call()
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = types.SimpleNamespace(t=1000.0)
+    monkeypatch.setattr(snowflake_client.time, "monotonic", lambda: now.t)
+    return now
+
+
+def _secret(aws, tenant_id):
+    return aws.secrets[f"illuminate/tenants/{tenant_id}/snowflake"]
+
+
+def test_credentials_are_not_re_read_within_the_ttl(aws, clock):
+    snowflake_client.get_connection(T1)
+    clock.t += snowflake_client.CREDENTIALS_TTL_SECONDS - 1
+    snowflake_client.get_connection(T1)
+    assert aws.secret_ids == ["illuminate/tenants/T1/snowflake"]
+
+
+def test_an_unchanged_secret_keeps_its_connection_after_the_ttl(aws, clock):
+    first = snowflake_client.get_connection(T1)
+    clock.t += snowflake_client.CREDENTIALS_TTL_SECONDS
+    assert snowflake_client.get_connection(T1) is first
+    assert len(aws.secret_ids) == 2 and not first.closed
+
+
+def test_a_rotated_secret_reconnects_with_the_new_credentials_after_the_ttl(aws, clock):
+    t2_conn = snowflake_client.get_connection(T2)
+    old = snowflake_client.get_connection(T1)
+    _secret(aws, "T1")["password"] = "rotated"
+    assert snowflake_client.get_connection(T1) is old
+    clock.t += snowflake_client.CREDENTIALS_TTL_SECONDS
+    new = snowflake_client.get_connection(T1)
+    assert new is not old and old.closed
+    assert new.kw["password"] == "rotated"
+    assert snowflake_client._connections["T2"] is t2_conn and not t2_conn.closed
+
+
+def test_a_deleted_secret_is_not_ready_after_the_ttl_and_drops_the_connection(aws, clock):
+    t2_conn = snowflake_client.get_connection(T2)
+    conn = snowflake_client.get_connection(T1)
+    del aws.secrets["illuminate/tenants/T1/snowflake"]
+    snowflake_client.get_connection(T1)
+    clock.t += snowflake_client.CREDENTIALS_TTL_SECONDS
+    with pytest.raises(TenantNotReady):
+        snowflake_client.get_connection(T1)
+    assert conn.closed and "T1" not in snowflake_client._connections and "T1" not in snowflake_client._credentials
+    assert not t2_conn.closed and "T2" in snowflake_client._credentials
+
+
+def test_a_rotated_database_is_seen_by_the_guard_after_the_ttl(aws, clock):
+    assert snowflake_client.tenant_database(T1) == "DB_T1"
+    _secret(aws, "T1")["database"] = "DB_T1_NEW"
+    clock.t += snowflake_client.CREDENTIALS_TTL_SECONDS
+    assert snowflake_client.tenant_database(T1) == "DB_T1_NEW"
