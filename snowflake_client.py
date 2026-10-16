@@ -16,7 +16,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from licenses import LEARN_REFUSAL, schema_allowed
-from semantic_layer.compiler import is_bounded_generator
+from semantic_layer.compiler import is_bounded_generator_call
 from semantic_layer.learn import learn_columns, learn_pii
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
 from tenancy import Tenant, TenantNotReady
@@ -293,6 +293,53 @@ def _qualified_functions(stmt):
             yield parts
 
 
+TABLE_FUNCTION_REFUSAL = ("This table function is not allowed. Use FLATTEN, SPLIT_TO_TABLE, STRTOK_SPLIT_TO_TABLE,"
+                          " GENERATOR with a literal ROWCOUNT, or a LATERAL subquery.")
+
+_TABLE_FUNCTIONS = frozenset({"SPLIT_TO_TABLE", "STRTOK_SPLIT_TO_TABLE"})
+
+# Functions that read query history, results, DDL or account state rather than the tenant's tables.
+_REFUSED_FUNCTIONS = frozenset({"RESULT_SCAN", "LAST_QUERY_ID", "GET_DDL", "GET_QUERY_OPERATOR_STATS"})
+_REFUSED_FUNCTION_PREFIXES = ("QUERY_HISTORY", "SYSTEM$", "EXPLAIN")
+_REFUSED_QUALIFIERS = frozenset({"INFORMATION_SCHEMA", "SNOWFLAKE", "ACCOUNT_USAGE"})
+
+
+def _allowed_table_function(fn) -> bool:
+    """Whether a FROM/LATERAL source that is not a named table is a subquery or an allow-listed table function.
+
+    Only unquoted, unqualified names match: a quoted or qualified name may resolve to a UDF.
+    """
+    import sqlglot.expressions as exp
+
+    if isinstance(fn, exp.Subquery) or is_bounded_generator_call(fn):
+        return True
+    if isinstance(fn, exp.Anonymous) and fn.name.upper() == "TABLE" and len(fn.expressions) == 1:
+        fn = fn.expressions[0]
+    if isinstance(fn, exp.Explode):  # sqlglot's Snowflake FLATTEN
+        return True
+    return isinstance(fn, exp.Anonymous) and isinstance(fn.this, str) and fn.this.upper() in _TABLE_FUNCTIONS
+
+
+def _refused_function(stmt) -> str | None:
+    """The name of the first call in the statement to a refused function family, else None."""
+    import sqlglot.expressions as exp
+
+    for fn in stmt.find_all(exp.Func):
+        name = (fn.name if isinstance(fn, exp.Anonymous) else fn.sql_name()).upper()
+        if name in _REFUSED_FUNCTIONS or name.startswith(_REFUSED_FUNCTION_PREFIXES):
+            return name
+    for dot in stmt.find_all(exp.Dot):
+        if isinstance(dot.expression, exp.Func):
+            qualifiers = {i.name.upper() for i in dot.this.find_all(exp.Identifier)}
+            if qualifiers & _REFUSED_QUALIFIERS:
+                return dot.sql(dialect="snowflake").split("(")[0].upper()
+    for table in stmt.find_all(exp.Table):
+        qualifiers = {table.text(part).upper() for part in ("db", "catalog")}
+        if not isinstance(table.this, exp.Identifier) and qualifiers & _REFUSED_QUALIFIERS:
+            return table.sql(dialect="snowflake").split("(")[0].upper()
+    return None
+
+
 POSITIONAL_REFUSAL = "Refer to columns by name; positional ($1) and IDENTIFIER() column references are not allowed."
 
 ALIAS_LIST_REFUSAL = "Column alias lists on tables are not allowed; alias columns in the SELECT list instead."
@@ -377,11 +424,15 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
                 )
             }
 
-    # TABLE(...) sources carry no schema, so the whitelist below would pass RESULT_SCAN and friends.
-    for table_node in stmt.find_all(exp.Table):
-        if not isinstance(table_node.this, exp.Identifier) and not is_bounded_generator(table_node):
-            return {"error": "Only the GENERATOR table function, with a literal ROWCOUNT, is allowed."
-                             " Other table functions are not permitted."}
+    # Table functions carry no schema, so the whitelist below would pass RESULT_SCAN and friends.
+    sources = [t.this for t in stmt.find_all(exp.Table) if not isinstance(t.this, exp.Identifier)]
+    sources += [lateral.this for lateral in stmt.find_all(exp.Lateral)]
+    if stmt.find(exp.Unnest) is not None or not all(map(_allowed_table_function, sources)):
+        return {"error": TABLE_FUNCTION_REFUSAL}
+
+    refused = _refused_function(stmt)
+    if refused:
+        return {"error": f"Function {refused} is not allowed."}
 
     # A database-qualified table or function must name the tenant's own database.
     own_database = None

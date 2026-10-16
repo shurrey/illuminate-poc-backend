@@ -357,3 +357,57 @@ def test_unqualified_table_message_names_the_table(executed):
 def test_cte_names_and_generator_are_allowed_unqualified(executed, sql):
     assert "error" not in _validate(sql)
     assert len(executed) == 1
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL RESULT_SCAN(LAST_QUERY_ID(-1)) r",
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL TABLE(RESULT_SCAN(LAST_QUERY_ID(-1))) r",
+    "SELECT q.X FROM CDM_LMS.COURSE c, LATERAL INFORMATION_SCHEMA.QUERY_HISTORY() q",
+    "SELECT r.X FROM CDM_LMS.COURSE c JOIN LATERAL RESULT_SCAN(LAST_QUERY_ID()) r ON TRUE",
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL CDM_LMS.MY_FN(c.ID) r",
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL \"split_to_table\"(c.NAME, ',') r",
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL TABLE(GENERATOR(ROWCOUNT => 100000000)) r",
+    "SELECT r.X FROM TABLE(CDM_LMS.MY_FN(1)) r",
+    "SELECT r.X FROM UNNEST(ARRAY_CONSTRUCT(1)) r",
+])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_table_functions_outside_the_allow_list_are_refused_wherever_they_appear(sql, compiled, executed):
+    result = _validate(sql, compiled=compiled)
+    assert "table function" in result["error"], sql
+    assert executed == []
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT f.VALUE AS v FROM CDM_LMS.COURSE c, LATERAL FLATTEN(input => PARSE_JSON(c.NAME)) f",
+    "SELECT f.VALUE AS v FROM CDM_LMS.COURSE c, TABLE(FLATTEN(input => PARSE_JSON(c.NAME))) f",
+    "SELECT s.VALUE AS v FROM CDM_LMS.COURSE c, LATERAL SPLIT_TO_TABLE(c.NAME, ',') s",
+    "SELECT s.VALUE AS v FROM CDM_LMS.COURSE c, LATERAL TABLE(SPLIT_TO_TABLE(c.NAME, ',')) s",
+    "SELECT s.VALUE AS v FROM CDM_LMS.COURSE c, LATERAL STRTOK_SPLIT_TO_TABLE(c.NAME, ',') s",
+    "SELECT x.N FROM CDM_LMS.COURSE c, LATERAL (SELECT c.NAME AS N) x",
+    "SELECT g.N FROM CDM_LMS.COURSE c, LATERAL TABLE(GENERATOR(ROWCOUNT => 5)) g",
+])
+def test_allow_listed_table_functions_run(sql, executed):
+    assert "error" not in _validate(sql), sql
+    assert len(executed) == 1
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT RESULT_SCAN(LAST_QUERY_ID()) AS r",
+    "SELECT LAST_QUERY_ID() AS q",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE WHERE NAME = LAST_QUERY_ID(-2)",
+    "SELECT QUERY_HISTORY_BY_USER() AS q",
+    "SELECT GET_DDL('table', 'CDM_LMS.COURSE') AS d",
+    "SELECT SYSTEM$WHITELIST() AS w",
+    "SELECT system$allowlist() AS w",
+    "SELECT \"SYSTEM$WHITELIST\"() AS w",
+    "SELECT GET_QUERY_OPERATOR_STATS('x') AS s",
+    "SELECT EXPLAIN_JSON('x') AS e",
+    "SELECT SNOWFLAKE.CORTEX.COMPLETE('m', 'p') AS c",
+    "SELECT INFORMATION_SCHEMA.CURRENT_TASK_GRAPHS() AS t",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE WHERE NAME = ACCOUNT_USAGE.F()",
+])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_metadata_and_system_functions_are_refused_anywhere(sql, compiled, executed):
+    result = _validate(sql, compiled=compiled)
+    assert "is not allowed" in result["error"], sql
+    assert executed == []
