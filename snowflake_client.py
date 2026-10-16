@@ -120,7 +120,7 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
     Allowed statement types: SELECT, WITH (CTE), SHOW, DESCRIBE.
-    Blocked: DML/DDL in any subquery, non-CDM/INFORMATION_SCHEMA references, LIMIT > 1000, and
+    Blocked: DML/DDL in any subquery, non-CDM/INFORMATION_SCHEMA references, tables in another database, LIMIT > 1000, and
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
     allow_identity lifts the projection check for compiled SQL only (callers whose role may see
@@ -197,6 +197,17 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         if not isinstance(table_node.this, exp.Identifier) and not is_bounded_generator(table_node):
             return {"error": "Only the GENERATOR table function, with a literal ROWCOUNT, is allowed."
                              " Other table functions are not permitted."}
+
+    # A database-qualified table must name the tenant's own database, for CDM_* and INFORMATION_SCHEMA alike.
+    own_database = None
+    for table_node in stmt.find_all(exp.Table):
+        catalog = table_node.args.get("catalog")
+        if not catalog:
+            continue
+        if own_database is None:
+            own_database = tenant_database(tenant).upper()
+        if catalog.name.upper() != own_database:
+            return {"error": f"Database '{catalog.name}' is not the tenant's database. Only the tenant's own database is accessible."}
 
     # Schema whitelist — only CDM_* schemas and INFORMATION_SCHEMA
     for table_node in stmt.find_all(exp.Table):

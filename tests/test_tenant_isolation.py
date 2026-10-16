@@ -249,6 +249,16 @@ def test_preview_never_crosses(world):
     _clean(r.text)
 
 
+@pytest.mark.parametrize("table", [f"{DB_A}.CDM_LMS.COURSE", f"{DB_A}.INFORMATION_SCHEMA.DATABASES"])
+def test_raw_sql_naming_another_tenants_database_is_refused_before_any_connection(world, table):
+    tenant_b = tenancy.get_tenant(B)
+    result = snowflake_client.validate_and_execute(f"SELECT COUNT(*) FROM {table}", tenant=tenant_b)
+    assert "not the tenant's database" in result["error"] and "warehouse_error" not in result
+    assert world.connects == [] and world.log == []
+    assert snowflake_client.validate_and_execute(f"SELECT COUNT(*) FROM {DB_B}.CDM_LMS.COURSE", tenant=tenant_b).get("rows")
+    assert world.connects == [MARK_B]
+
+
 def test_conversations_never_cross(world):
     c = world.client
     _save_a_conversation()

@@ -42,6 +42,7 @@ def test_compiled_metric_passes_the_execution_guard(metric, monkeypatch):
     import snowflake_client
 
     monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
+    monkeypatch.setattr(snowflake_client, "tenant_database", lambda tenant: "DB")
     compiled = compile_query(QueryContract(metrics=[metric.id]), CATALOG, "DB")
     assert snowflake_client.validate_and_execute(compiled.sql, compiled=True, tenant=TENANT_A) == {"columns": [], "rows": []}
 
