@@ -57,7 +57,7 @@ def test_me_returns_admin_role(as_user):
     assert r.status_code == 200
     body = r.json()
     assert body["is_admin"] is True
-    assert "admin" in body["roles"]
+    assert body["roles"] == ["admin"]
 
 
 def test_me_returns_author_role(as_user):
@@ -65,7 +65,7 @@ def test_me_returns_author_role(as_user):
     assert r.status_code == 200
     body = r.json()
     assert body["is_admin"] is False
-    assert "author" in body["roles"]
+    assert body["roles"] == ["author"]
 
 
 def test_me_returns_developer_role(as_user):
@@ -73,7 +73,7 @@ def test_me_returns_developer_role(as_user):
     assert r.status_code == 200
     body = r.json()
     assert body["is_admin"] is False
-    assert "developer" in body["roles"]
+    assert body["roles"] == ["developer"]
 
 
 def test_me_returns_viewer_role_when_no_groups(as_user):
@@ -81,7 +81,23 @@ def test_me_returns_viewer_role_when_no_groups(as_user):
     assert r.status_code == 200
     body = r.json()
     assert body["is_admin"] is False
-    assert "viewer" in body["roles"]
+    assert body["roles"] == ["viewer"]
+
+
+def test_me_unknown_group_is_ignored(as_user):
+    r = as_user(user_of(TENANT_A, "ai-first-lms-users")).get("/api/v1/me", headers=AUTH)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["roles"] == ["viewer"]
+    assert body["is_admin"] is False
+
+
+def test_me_admin_with_unknown_group_ignores_unknown(as_user):
+    r = as_user(user_of(TENANT_A, "illuminate-admins", "ai-first-lms-users")).get("/api/v1/me", headers=AUTH)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["roles"] == ["admin"]
+    assert body["is_admin"] is True
 
 
 def test_me_returns_multiple_roles(as_user):
@@ -89,7 +105,7 @@ def test_me_returns_multiple_roles(as_user):
     assert r.status_code == 200
     body = r.json()
     assert body["is_admin"] is True
-    assert set(body["roles"]) == {"admin", "author"}
+    assert body["roles"] == ["admin", "author"]
 
 
 def test_me_without_token_is_401(monkeypatch):

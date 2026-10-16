@@ -445,10 +445,9 @@ async def get_me(authorization: Optional[str] = Header(None)):
     tenant = tenant_for(user)
     groups = set(user.get("cognito:groups") or [])
 
-    # Map groups to roles
     user_roles = sorted([role for group, role in roles.GROUP_ROLES.items() if group in groups])
     if not user_roles:
-        user_roles = ["viewer"]
+        user_roles = [roles.role_of(user)]
 
     return {
         "tenant": {"name": tenant.name, "license": tenant.license},
