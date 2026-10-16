@@ -13,9 +13,9 @@ ADMIN = {"sub": "a1", "custom:tenant_id": "t1", "cognito:groups": ["illuminate-a
 def executed(monkeypatch):
     calls = []
     monkeypatch.setattr(snowflake_client, "query_sql",
-                        lambda sql, params=None: calls.append(sql) or {"columns": ["N"], "rows": [{"N": 1}]})
+                        lambda sql, params=None, **k: calls.append(sql) or {"columns": ["N"], "rows": [{"N": 1}]})
     monkeypatch.setattr(snowflake_client, "query_preview",
-                        lambda schema, table, limit=20: calls.append(f"{schema}.{table}") or {"columns": [], "rows": []})
+                        lambda schema, table, limit=20, **k: calls.append(f"{schema}.{table}") or {"columns": [], "rows": []})
     return calls
 
 

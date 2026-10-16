@@ -49,7 +49,7 @@ def test_the_compiler_selects_identity_only_when_allowed():
 def client(monkeypatch):
     monkeypatch.setenv("SNOWFLAKE_DATABASE", "TESTDB")
     monkeypatch.setattr(snowflake_client, "query_sql",
-                        lambda sql, params=None: {"columns": ["PERSON_EMAIL", "STUDENTS"], "rows": []})
+                        lambda sql, params=None, **k: {"columns": ["PERSON_EMAIL", "STUDENTS"], "rows": []})
     return TestClient(lambda_handler.app)
 
 

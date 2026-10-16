@@ -20,7 +20,7 @@ def user(*groups):
 def ran(monkeypatch):
     sqls = []
 
-    def fake(sql, params=None):
+    def fake(sql, params=None, **k):
         sqls.append(sql)
         return {"columns": ["STUDENTS"], "rows": [{"STUDENTS": 7}]}
 
@@ -112,7 +112,7 @@ def test_run_renames_the_child_node_column_to_its_alias(client, monkeypatch):
                         "child_of": {"filters": ["ih1", "ih2"], "dimensions": ["dataset.courses.v1:ih_level_1", "dataset.courses.v1:ih_level_2"], "as": "node"}}},
                         "encode": {"x": "node", "y": "courses"}}]}])
     monkeypatch.setattr(lambda_handler, "_reports", lambda: {report.id: report})
-    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None: {"columns": ["IH_LEVEL_2", "COURSES"], "rows": [{"IH_LEVEL_2": "Music", "COURSES": 3}]})
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": ["IH_LEVEL_2", "COURSES"], "rows": [{"IH_LEVEL_2": "Music", "COURSES": 3}]})
     body = client.post("/api/v1/reports/report.nodes.v1/run", headers=AUTH,
                        json={"visual": "by_node", "query": "main", "values": {"ih1": ["Arts"]}}).json()
     assert body["columns"] == ["node", "courses"] and body["rows"] == [{"node": "Music", "courses": 3}]
