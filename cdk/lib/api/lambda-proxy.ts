@@ -11,6 +11,8 @@ export interface LambdaProxyProps {
   conversationTableName: string;
   overlayTableArn: string;
   overlayTableName: string;
+  tenantTableArn: string;
+  tenantTableName: string;
   userPoolId: string;
   userPoolClientId: string;
   snowflakeSecretArn: string;
@@ -72,6 +74,18 @@ export class LambdaProxy extends Construct {
       resources: [props.overlayTableArn],
     }));
 
+    // Tenant registry (read only)
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem'],
+      resources: [props.tenantTableArn],
+    }));
+
+    // Per-tenant Snowflake credentials
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue'],
+      resources: [`arn:aws:secretsmanager:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:secret:illuminate/tenants/*`],
+    }));
+
     // Secrets Manager (read only)
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['secretsmanager:GetSecretValue'],
@@ -111,7 +125,7 @@ export class LambdaProxy extends Construct {
           command: [
             'bash', '-c', [
               'pip install -q -t /asset-output --platform manylinux2014_x86_64 --implementation cp --python-version 3.11 --only-binary=:all: -r requirements-lambda.txt',
-              'cp lambda_handler.py chat_engine.py conversation_store.py snowflake_client.py overlay_store.py roles.py run.sh /asset-output/',
+              'cp lambda_handler.py chat_engine.py conversation_store.py snowflake_client.py overlay_store.py roles.py tenancy.py run.sh /asset-output/',
               // Semantic layer: the package (with its dictionary snapshot) and the canonical definitions
               'cp -r semantic_layer /asset-output/',
               'cp -r canonical /asset-output/',
@@ -126,6 +140,7 @@ export class LambdaProxy extends Construct {
         AWS_LWA_INVOKE_MODE: 'response_stream',
         CONVERSATION_TABLE: props.conversationTableName,
         OVERLAY_TABLE: props.overlayTableName,
+        TENANT_TABLE: props.tenantTableName,
         BEDROCK_MODEL_ID: 'us.anthropic.claude-sonnet-4-6',
         USER_POOL_ID: props.userPoolId,
         USER_POOL_CLIENT_ID: props.userPoolClientId,
