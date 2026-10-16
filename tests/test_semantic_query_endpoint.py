@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import lambda_handler
 import snowflake_client
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 CONTRACT = {"metrics": ["metric.reportable_courses.v1"], "dimensions": ["term_name"]}
@@ -25,8 +26,9 @@ def executed(monkeypatch):
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("SNOWFLAKE_DATABASE", "TESTDB")
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "u1"})
+    monkeypatch.setenv("TEST_SNOWFLAKE_DATABASE", "TESTDB")
+    install_tenants(monkeypatch, TENANT_A)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A))
     return TestClient(lambda_handler.app)
 
 

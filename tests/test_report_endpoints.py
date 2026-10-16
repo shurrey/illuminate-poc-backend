@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import lambda_handler
 import snowflake_client
 from semantic_layer.reports import load_reports
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 REPORTS = load_reports(Path(__file__).parent / "fixtures" / "reports")
@@ -13,7 +14,7 @@ TERMS = [{"term_name": "Q4: 2026", "term_start": "2026-04-01", "term_end": "2026
 
 
 def user(*groups):
-    return {"sub": "u1", "cognito:groups": list(groups)}
+    return user_of(TENANT_A, *groups)
 
 
 @pytest.fixture
@@ -24,10 +25,11 @@ def ran(monkeypatch):
         sqls.append(sql)
         return {"columns": ["STUDENTS"], "rows": [{"STUDENTS": 7}]}
 
-    monkeypatch.setenv("SNOWFLAKE_DATABASE", "TESTDB")
+    monkeypatch.setenv("TEST_SNOWFLAKE_DATABASE", "TESTDB")
+    install_tenants(monkeypatch, TENANT_A)
     monkeypatch.setattr(snowflake_client, "query_sql", fake)
     monkeypatch.setattr(lambda_handler, "_reports", lambda: REPORTS)
-    monkeypatch.setattr(lambda_handler, "_current_terms", lambda: TERMS)
+    monkeypatch.setattr(lambda_handler, "_current_terms", lambda tenant: TERMS)
     monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user() if a else None)
     return sqls
 
@@ -122,7 +124,7 @@ def test_identity_reaches_authors_through_the_guard_and_never_viewers(client, mo
     import snowflake_client as sc
     seen = []
     monkeypatch.setattr(sc, "validate_and_execute",
-                        lambda sql, params=None, *, compiled=False, allow_identity=False, extra_pii=frozenset():
+                        lambda sql, params=None, *, compiled=False, allow_identity=False, extra_pii=frozenset(), tenant=None:
                         seen.append((allow_identity, "PERSON_EMAIL" in extra_pii)) or {"columns": ["PERSON_EMAIL", "STUDENTS"], "rows": []})
     as_role(monkeypatch, "illuminate-authors")
     assert run(client, "roster").status_code == 200

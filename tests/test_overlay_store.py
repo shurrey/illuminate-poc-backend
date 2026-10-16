@@ -3,6 +3,7 @@ import pytest
 from moto import mock_aws
 
 import overlay_store
+from tests.conftest import REAL_LIST_OVERLAYS
 from semantic_layer.overlays import Overlay
 
 TARGET = "measure:dataset.student_grade.v1:average_grade_percentage"
@@ -22,6 +23,7 @@ def table(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         monkeypatch.setattr(overlay_store, "_table", t)
+        monkeypatch.setattr(overlay_store, "list_overlays", REAL_LIST_OVERLAYS)
         yield t
 
 

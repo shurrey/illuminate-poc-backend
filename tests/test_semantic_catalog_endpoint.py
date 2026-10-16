@@ -2,13 +2,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 import lambda_handler
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "u1"})
+    install_tenants(monkeypatch, TENANT_A)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A))
     return TestClient(lambda_handler.app)
 
 
@@ -37,6 +39,7 @@ def test_etag_changes_when_the_catalog_changes(client, monkeypatch):
 
     before = client.get("/api/v1/semantic/catalog", headers=AUTH).headers["etag"]
     monkeypatch.setattr(catalog_module, "default_catalog", lambda: catalog())
+    lambda_handler._overlay_cache.clear()
     after = client.get("/api/v1/semantic/catalog", headers=AUTH).headers["etag"]
     assert before != after
 

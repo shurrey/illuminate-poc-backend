@@ -12,6 +12,7 @@ from semantic_layer.catalog_view import public_catalog
 from semantic_layer.chat_tools import ChatTools
 from semantic_layer.compiler import CompileError, compile_query
 from semantic_layer.contract import QueryContract
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 NAMED = {"measures": ["dataset.course_student_activity.v1:students"], "dimensions": ["person_email"]}
@@ -47,19 +48,20 @@ def test_the_compiler_selects_identity_only_when_allowed():
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("SNOWFLAKE_DATABASE", "TESTDB")
+    monkeypatch.setenv("TEST_SNOWFLAKE_DATABASE", "TESTDB")
+    install_tenants(monkeypatch, TENANT_A)
     monkeypatch.setattr(snowflake_client, "query_sql",
                         lambda sql, params=None, **k: {"columns": ["PERSON_EMAIL", "STUDENTS"], "rows": []})
     return TestClient(lambda_handler.app)
 
 
 def test_viewers_cannot_select_identity_through_the_api(client, monkeypatch):
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user())
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A))
     assert client.post("/api/v1/semantic/query", headers=AUTH, json=NAMED).status_code == 400
 
 
 def test_authors_select_identity_and_the_query_is_logged(client, monkeypatch, caplog):
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user("illuminate-authors"))
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A, "illuminate-authors"))
     with caplog.at_level(logging.INFO, logger="API-PROXY"):
         assert client.post("/api/v1/semantic/query", headers=AUTH, json=NAMED).status_code == 200
     [record] = [r for r in caplog.records if r.getMessage().startswith("identity_query")]
@@ -67,7 +69,7 @@ def test_authors_select_identity_and_the_query_is_logged(client, monkeypatch, ca
 
 
 def test_unnamed_queries_are_not_logged_as_identity(client, monkeypatch, caplog):
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user("illuminate-authors"))
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A, "illuminate-authors"))
     with caplog.at_level(logging.INFO, logger="API-PROXY"):
         client.post("/api/v1/semantic/query", headers=AUTH, json={"measures": NAMED["measures"]})
     assert not [r for r in caplog.records if r.getMessage().startswith("identity_query")]

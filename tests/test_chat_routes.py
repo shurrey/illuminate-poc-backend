@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import lambda_handler
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 ARTIFACT = {"id": "a1", "type": "table", "title": "t",
@@ -74,7 +75,8 @@ def test_chat_queries_use_the_callers_tenant_overlays(client, monkeypatch, path)
     from semantic_layer.overlays import Overlay
 
     target = "measure:dataset.student_grade.v1:average_grade_percentage"
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "u1", "custom:tenant_id": "t1"})
+    install_tenants(monkeypatch, TENANT_A)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A))
     import overlay_store
     monkeypatch.setattr(overlay_store, "list_overlays",
                         lambda tid: [Overlay(target=target, expr="ROUND(GRADE_PERCENTAGE, 0)", version=2)])
@@ -101,7 +103,8 @@ def test_chat_prompt_lists_the_tenants_own_filters(client, monkeypatch):
     import overlay_store
     from semantic_layer.overlays import Overlay
 
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "u1", "custom:tenant_id": "t1"})
+    install_tenants(monkeypatch, TENANT_A)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A))
     monkeypatch.setattr(overlay_store, "list_overlays",
                         lambda tid: [Overlay(target="filter:dataset.student_grade.v1:honours", sql="GRADE_PERCENTAGE >= 90", version=1)])
     lambda_handler._overlay_cache.clear()
