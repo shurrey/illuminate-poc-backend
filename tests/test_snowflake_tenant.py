@@ -35,11 +35,16 @@ def clean():
 @pytest.fixture
 def aws(monkeypatch):
     """Fake Secrets Manager and snowflake connector; records secret ids read and connections opened."""
-    state = types.SimpleNamespace(secret_ids=[], connects=[], secrets={})
+    state = types.SimpleNamespace(secret_ids=[], connects=[], secrets={}, responses={})
 
     class SM:
         def get_secret_value(self, SecretId):
             state.secret_ids.append(SecretId)
+            if SecretId in state.responses:
+                response = state.responses[SecretId]
+                if isinstance(response, Exception):
+                    raise response
+                return response
             if SecretId not in state.secrets:
                 raise ClientError({"Error": {"Code": "ResourceNotFoundException", "Message": "x"}}, "GetSecretValue")
             return {"SecretString": json.dumps(state.secrets[SecretId])}
@@ -80,12 +85,52 @@ def test_missing_secret_raises_tenant_not_ready(aws):
     assert aws.connects == []
 
 
-def test_other_secret_errors_propagate(monkeypatch):
-    class SM:
-        def get_secret_value(self, SecretId):
-            raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "x"}}, "GetSecretValue")
+def _client_error(code):
+    return ClientError({"Error": {"Code": code, "Message": "x"}}, "GetSecretValue")
 
-    monkeypatch.setattr(snowflake_client.boto3, "client", lambda *a, **k: SM())
+
+SECRET_PW = "s3cret-pw"
+UNUSABLE_SECRETS = {
+    "access-denied": _client_error("AccessDeniedException"),
+    "pending-deletion": _client_error("InvalidRequestException"),
+    "kms-decryption": _client_error("DecryptionFailure"),
+    "malformed-json": {"SecretString": '{"account": "acct", "password": "' + SECRET_PW + '",'},
+    "not-an-object": {"SecretString": '["' + SECRET_PW + '"]'},
+    "binary": {"SecretBinary": SECRET_PW.encode()},
+    "no-account": {"SecretString": json.dumps({"user": "u", "password": SECRET_PW, "database": "DB_T1"})},
+    "no-user": {"SecretString": json.dumps({"account": "a", "password": SECRET_PW, "database": "DB_T1"})},
+    "no-password": {"SecretString": json.dumps({"account": "a", "user": "u", "database": "DB_T1"})},
+}
+
+
+@pytest.mark.parametrize("kind", UNUSABLE_SECRETS)
+def test_an_unusable_secret_is_not_ready_and_never_logs_the_secret(aws, caplog, kind):
+    aws.responses["illuminate/tenants/T1/snowflake"] = UNUSABLE_SECRETS[kind]
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(TenantNotReady):
+            snowflake_client.tenant_database(T1)
+        with pytest.raises(TenantNotReady):
+            snowflake_client.get_connection(T1)
+    assert aws.connects == []
+    assert "T1" in caplog.text and SECRET_PW not in caplog.text
+
+
+def test_an_unusable_secret_after_the_ttl_drops_the_connection(aws, clock):
+    conn = snowflake_client.get_connection(T1)
+    aws.responses["illuminate/tenants/T1/snowflake"] = _client_error("AccessDeniedException")
+    clock.t += snowflake_client.CREDENTIALS_TTL_SECONDS
+    with pytest.raises(TenantNotReady):
+        snowflake_client.get_connection(T1)
+    assert conn.closed and "T1" not in snowflake_client._connections and "T1" not in snowflake_client._credentials
+
+
+def test_a_secret_naming_username_instead_of_user_is_usable(aws):
+    _secret(aws, "T1")["username"] = _secret(aws, "T1").pop("user")
+    assert snowflake_client.get_connection(T1).kw["user"] == "u"
+
+
+def test_transient_secret_errors_propagate(aws):
+    aws.responses["illuminate/tenants/T1/snowflake"] = _client_error("ThrottlingException")
     with pytest.raises(ClientError):
         snowflake_client.tenant_database(T1)
 

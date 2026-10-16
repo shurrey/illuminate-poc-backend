@@ -35,11 +35,38 @@ def _require(tenant: Tenant | None) -> Tenant:
     return tenant
 
 
+# Secret states an operator has to fix; anything else (throttling, outages) is transient and propagates.
+_UNUSABLE_SECRET_CODES = frozenset({
+    "ResourceNotFoundException", "AccessDeniedException", "InvalidRequestException", "DecryptionFailure"})
+
+
+def _parse_secret(response: dict) -> tuple[dict, str | None]:
+    """The secret's connection fields and None, or ({}, a reason that names no secret value)."""
+    if "SecretString" not in response:
+        return {}, "binary secret (no SecretString)"
+    try:
+        creds = json.loads(response["SecretString"])
+    except ValueError:
+        return {}, "malformed JSON"
+    if not isinstance(creds, dict):
+        return {}, "not a JSON object"
+    missing = [k for k in ("account", "password", "database") if not creds.get(k)]
+    if not (creds.get("user") or creds.get("username")):
+        missing.append("user")
+    return (creds, None) if not missing else ({}, f"missing {', '.join(missing)}")
+
+
+def _not_ready(tenant_id: str, reason: str, cause: Exception | None = None):
+    logger.warning("Snowflake secret for tenant %s is unusable: %s", tenant_id, reason)
+    invalidate(tenant_id)
+    raise TenantNotReady(tenant_id) from cause
+
+
 def _load_credentials(tenant: Tenant) -> dict:
     """The tenant's Snowflake secret, re-read every CREDENTIALS_TTL_SECONDS.
 
-    A changed secret drops the tenant's connection so the next query logs in with the new one;
-    a deleted secret drops it too and raises TenantNotReady.
+    A changed secret drops the tenant's connection so the next query logs in with the new one; a deleted,
+    unreadable or incomplete secret drops it too and raises TenantNotReady.
     """
     tenant_id = tenant.tenant_id
     cached = _credentials.get(tenant_id)
@@ -51,11 +78,13 @@ def _load_credentials(tenant: Tenant) -> dict:
     try:
         response = client.get_secret_value(SecretId=secret_id)
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-            invalidate(tenant_id)
-            raise TenantNotReady(tenant_id) from exc
+        code = exc.response.get("Error", {}).get("Code")
+        if code in _UNUSABLE_SECRET_CODES:
+            _not_ready(tenant_id, code, exc)
         raise
-    creds = json.loads(response["SecretString"])
+    creds, reason = _parse_secret(response)
+    if reason:
+        _not_ready(tenant_id, reason)
     if cached and cached[1] != creds:
         _drop_connection(tenant_id)
         logger.info("Snowflake credentials changed for tenant %s", tenant_id)
