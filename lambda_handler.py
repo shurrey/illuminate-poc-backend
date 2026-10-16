@@ -173,14 +173,19 @@ def _tenant_id_from_user(user: Optional[dict]) -> Optional[str]:
 
 
 def tenant_for(user: Optional[dict]) -> Tenant:
-    """The caller's registered tenant; 403 when the token has no tenant claim or the tenant has no registry row."""
+    """The caller's registered tenant, failing closed with a 403 when the token has no tenant claim,
+    the tenant has no registry row, or its Snowflake secret or database is missing."""
+    import snowflake_client
+
     tenant_id = _tenant_id_from_user(user)
     if not tenant_id:
         raise HTTPException(status_code=403, detail=NOT_READY)
     try:
-        return tenancy.get_tenant(tenant_id)
+        tenant = tenancy.get_tenant(tenant_id)
+        snowflake_client.tenant_database(tenant)
     except TenantNotReady:
         raise HTTPException(status_code=403, detail=NOT_READY)
+    return tenant
 
 
 # =============================================================================
