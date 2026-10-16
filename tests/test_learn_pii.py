@@ -170,7 +170,7 @@ def test_unresolvable_column_only_a_learn_table_lists_is_pii(executed):
 def test_learn_pii_path_exception_is_a_pii_refusal(monkeypatch, executed):
     def boom(*a, **k):
         raise RuntimeError("LEARN PII failure")
-    monkeypatch.setattr(snowflake_client, "_learn_pii_columns", boom)
+    monkeypatch.setattr(snowflake_client, "_dictionary_pii_columns", boom)
     assert _refused_as_pii(_validate("SELECT a.EVENT_TYPE FROM LEARN.ACTIVITY_ACCUMULATOR a"))
     assert executed == []
 

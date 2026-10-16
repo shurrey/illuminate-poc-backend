@@ -82,7 +82,7 @@ def test_freehand_sql_cannot_reach_pii_through_stars_subqueries_or_unions(sql, e
 
 @pytest.mark.parametrize("sql", [
     "SELECT COUNT(*) FROM CDM_LMS.PERSON",
-    "WITH s AS (SELECT PERSON_ID, COURSE_ID FROM CDM_LMS.PERSON_COURSE) SELECT COUNT(DISTINCT PERSON_ID) FROM s",
+    "WITH s AS (SELECT COURSE_ID FROM CDM_LMS.PERSON_COURSE) SELECT COUNT(DISTINCT COURSE_ID) FROM s",
 ])
 def test_freehand_sql_without_pii_projections_runs(sql, executed):
     assert "error" not in _validate(sql), sql
@@ -161,8 +161,8 @@ def test_freehand_pii_outside_a_count_or_filter_is_blocked_anywhere_in_the_state
 @pytest.mark.parametrize("sql", [
     "SELECT COUNT_IF(EMAIL LIKE '%@example.edu') AS n FROM CDM_LMS.PERSON",
     "SELECT COUNT(*) AS n FROM CDM_LMS.PERSON HAVING MAX(EMAIL) = 'a@b.c'",
-    "SELECT ID FROM CDM_LMS.PERSON QUALIFY ROW_NUMBER() OVER (PARTITION BY EMAIL ORDER BY ID) = 1",
-    "SELECT p.ID FROM CDM_LMS.PERSON p JOIN CDM_LMS.PERSON q ON p.EMAIL = q.EMAIL",
+    "SELECT INSTITUTION_ROLE FROM CDM_LMS.PERSON QUALIFY ROW_NUMBER() OVER (PARTITION BY EMAIL ORDER BY ID) = 1",
+    "SELECT p.INSTITUTION_ROLE FROM CDM_LMS.PERSON p JOIN CDM_LMS.PERSON q ON p.EMAIL = q.EMAIL",
 ])
 def test_freehand_pii_in_a_count_or_filter_is_allowed(sql, executed):
     assert "error" not in _validate(sql)

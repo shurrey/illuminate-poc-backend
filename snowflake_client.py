@@ -227,25 +227,40 @@ def _resolve(col, scope) -> list | None:
     return None
 
 
-def _learn_pii_columns(stmt, columns) -> set[int]:
-    """ids of the columns, of a statement that reads a LEARN table, that are LEARN PII.
+@functools.lru_cache(maxsize=1)
+def _cdm_pii() -> frozenset[str]:
+    from semantic_layer.validate import load_pii_columns
 
-    A column read from a LEARN table is PII when the dictionary flags it or does not list it. Derived
-    (CTE, subquery) outputs were checked where they read their tables. An unresolvable column is PII
-    unless a referenced CDM table lists it and no referenced LEARN table flags it.
+    return load_pii_columns()
+
+
+def _cdm_flags(table: tuple[str, str], column: str) -> bool:
+    """Whether the CDM dictionary flags SCHEMA.TABLE.COLUMN, or the whole table, as PII."""
+    return f"{table[0]}.{table[1]}.{column}" in _cdm_pii() or f"{table[0]}.{table[1]}" in _cdm_pii()
+
+
+def _dictionary_pii_columns(stmt, columns) -> set[int]:
+    """ids of the columns that read a dictionary-flagged column of a CDM or LEARN table.
+
+    A LEARN column is also PII when the dictionary does not list it. Derived (CTE, subquery) outputs
+    were checked where they read their tables. An unresolvable column is PII when a referenced table
+    flags its name, or, in a statement that reads LEARN, unless a referenced CDM table lists it.
     """
     import sqlglot.expressions as exp
     from sqlglot.optimizer.scope import traverse_scope
 
-    tables = [_base_table(t) for t in stmt.find_all(exp.Table)]
-    learn_tables = {t[1] for t in tables if t and t[0] == "LEARN"}
-    if not learn_tables:
-        return set()
+    tables = [t for t in (_base_table(t) for t in stmt.find_all(exp.Table)) if t]
+    learn_tables = {t[1] for t in tables if t[0] == "LEARN"}
+    cdm_tables = [t for t in tables if t[0] != "LEARN"]
 
     def unresolved_is_pii(name: str) -> bool:
+        if any(_cdm_flags(t, name) for t in cdm_tables):
+            return True
+        if not learn_tables:
+            return False
         if any(name in (learn_columns(t) or ()) and learn_pii(t, name) for t in learn_tables):
             return True
-        return not any(name in _cdm_columns().get(t, ()) for t in filter(None, tables) if t[0] != "LEARN")
+        return not any(name in _cdm_columns().get(t, ()) for t in cdm_tables)
 
     try:
         scope_of, scope_of_select = {}, {}
@@ -272,7 +287,7 @@ def _learn_pii_columns(stmt, columns) -> set[int]:
             continue
         for source in sources:
             table = _base_table(source)
-            if table and table[0] == "LEARN" and learn_pii(table[1], name):
+            if table and (learn_pii(table[1], name) if table[0] == "LEARN" else _cdm_flags(table, name)):
                 flagged.add(id(col))
     return flagged
 
@@ -369,8 +384,8 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
     allow_identity lifts the projection check for compiled SQL only (callers whose role may see
-    identity); extra_pii adds dataset-declared PII column names to the check. Freehand SQL over
-    LEARN also treats columns the LEARN dictionary flags or does not list as PII.
+    identity); extra_pii adds dataset-declared PII column names to the check. Freehand SQL also
+    treats columns the CDM or LEARN dictionary flags, and LEARN columns it does not list, as PII.
 
     Returns:
         {"columns": [...], "rows": [...]} on success
@@ -502,13 +517,13 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
             return {"error": WHOLE_ROW_REFUSAL}
         scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
     try:
-        learn_pii_ids = set() if compiled else _learn_pii_columns(stmt, [col for col, _ in scopes])
+        dictionary_pii_ids = set() if compiled else _dictionary_pii_columns(stmt, [col for col, _ in scopes])
     except Exception:
-        logger.exception("LEARN PII resolution failed; treating every column as PII")
-        learn_pii_ids = {id(col) for col, _ in scopes}
+        logger.exception("Dictionary PII resolution failed; treating every column as PII")
+        dictionary_pii_ids = {id(col) for col, _ in scopes}
     for col_node, scope in scopes:
         col_name = col_node.name.upper().strip('"').strip("'")
-        if (col_name in pii_names or id(col_node) in learn_pii_ids) and not inside_counting_aggregate(col_node, scope):
+        if (col_name in pii_names or id(col_node) in dictionary_pii_ids) and not inside_counting_aggregate(col_node, scope):
             return {
                 "error": (
                     f"Column '{col_name}' contains personally identifiable information (PII). "

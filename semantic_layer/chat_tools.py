@@ -167,7 +167,8 @@ class ChatTools:
     def _execute_for_tenant(self, sql: str, params: Optional[dict] = None, compiled: bool = False) -> dict:
         from snowflake_client import validate_and_execute
 
-        return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled)
+        extra_pii = frozenset(c.upper() for ds in self.catalog.datasets.values() for c in ds.pii_columns)
+        return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled, extra_pii=extra_pii)
 
     @property
     def specs(self) -> list[dict]:
