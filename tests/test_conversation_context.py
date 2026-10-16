@@ -57,8 +57,8 @@ def _complete(r):
 
 
 def test_turns_keep_the_queries_behind_each_answer(table):
-    conversation_store.save_turn("c1", "bob", "q", "a", queries=[{"title": "t", "query": {"metrics": ["m"]}}])
-    history = conversation_store.load_history("c1", "bob")
+    conversation_store.save_turn("c1", "tenant-a#bob", "q", "a", queries=[{"title": "t", "query": {"metrics": ["m"]}}])
+    history = conversation_store.load_history("c1", "tenant-a#bob")
     assert history[1]["queries"] == [{"title": "t", "query": {"metrics": ["m"]}}]
 
 
@@ -81,7 +81,7 @@ def test_earlier_queries_are_replayed_on_the_user_turn_that_followed_them(client
 
 
 def test_a_blank_saved_answer_does_not_send_blank_text_to_the_model(client, engine):
-    conversation_store.save_turn("c7", "bob", "q", "")
+    conversation_store.save_turn("c7", "tenant-a#bob", "q", "")
     client.post("/api/chat/stream", headers=AUTH, json={"message": "again", "context_id": "c7"})
     _, history = engine[0]
     assert all(block["text"].strip() for m in history for block in m["content"])
@@ -89,7 +89,7 @@ def test_a_blank_saved_answer_does_not_send_blank_text_to_the_model(client, engi
 
 def test_a_new_conversation_gets_a_server_generated_id(client, engine):
     data = _complete(client.post("/api/chat/stream", headers=AUTH, json={"message": "hi"}))
-    assert data["contextId"] and conversation_store.owns(data["contextId"], "bob")
+    assert data["contextId"] and conversation_store.owns(data["contextId"], "tenant-a#bob")
 
 
 def test_someone_elses_conversation_id_is_replaced(client, engine):
@@ -102,9 +102,9 @@ def test_someone_elses_conversation_id_is_replaced(client, engine):
 
 def test_history_is_trimmed_to_whole_turns_starting_with_the_user(table, monkeypatch):
     monkeypatch.setattr(conversation_store, "_MAX_MESSAGES", 3)
-    conversation_store.save_turn("c5", "bob", "q1", "a1")
-    conversation_store.save_turn("c5", "bob", "q2", "a2")
-    history = conversation_store.load_history("c5", "bob")
+    conversation_store.save_turn("c5", "tenant-a#bob", "q1", "a1")
+    conversation_store.save_turn("c5", "tenant-a#bob", "q2", "a2")
+    history = conversation_store.load_history("c5", "tenant-a#bob")
     assert [m["role"] for m in history] == ["user", "assistant"]
     assert history[0]["content"] == "q2"
 

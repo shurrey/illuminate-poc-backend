@@ -5,6 +5,7 @@ from moto import mock_aws
 
 import conversation_store
 import lambda_handler
+from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
 
@@ -51,25 +52,30 @@ def test_legacy_items_without_an_owner_are_not_readable(table):
     assert conversation_store.load_history("old", "alice") == []
 
 
+OWNER_ALICE = f"{TENANT_A.tenant_id}#alice"
+OWNER_BOB = f"{TENANT_A.tenant_id}#bob"
+
+
 @pytest.fixture
 def client(table, monkeypatch):
-    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: {"sub": "bob"} if a else None)
+    install_tenants(monkeypatch, TENANT_A)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A, sub="bob") if a else None)
     return TestClient(lambda_handler.app)
 
 
 def test_reading_someone_elses_conversation_is_404(client):
-    conversation_store.save_turn("c1", "alice", "hi", "hello")
+    conversation_store.save_turn("c1", OWNER_ALICE, "hi", "hello")
     assert client.get("/api/conversations/c1", headers=AUTH).status_code == 404
 
 
 def test_deleting_someone_elses_conversation_is_404_and_keeps_it(client):
-    conversation_store.save_turn("c1", "alice", "hi", "hello")
+    conversation_store.save_turn("c1", OWNER_ALICE, "hi", "hello")
     assert client.delete("/api/conversations/c1", headers=AUTH).status_code == 404
-    assert conversation_store.load_history("c1", "alice") != []
+    assert conversation_store.load_history("c1", OWNER_ALICE) != []
 
 
 def test_owner_can_read_their_conversation(client):
-    conversation_store.save_turn("c2", "bob", "q", "a")
+    conversation_store.save_turn("c2", OWNER_BOB, "q", "a")
     r = client.get("/api/conversations/c2", headers=AUTH)
     assert r.status_code == 200
     assert [m["content"] for m in r.json()["messages"]] == ["q", "a"]

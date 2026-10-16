@@ -17,13 +17,13 @@ def client(monkeypatch):
 
 
 def test_cancel_requires_a_token(client):
-    lambda_handler._request_owners["r1"] = "bob"
+    lambda_handler._request_owners["r1"] = "tenant-a#bob"
     assert client.post("/api/chat/cancel/r1").status_code == 401
     assert lambda_handler._cancelled_requests == set()
 
 
 def test_cannot_cancel_someone_elses_request(client):
-    lambda_handler._request_owners["r1"] = "alice"
+    lambda_handler._request_owners["r1"] = "tenant-a#alice"
     assert client.post("/api/chat/cancel/r1", headers=AUTH).status_code == 404
     assert lambda_handler._cancelled_requests == set()
 
@@ -33,7 +33,7 @@ def test_unknown_request_is_404(client):
 
 
 def test_owner_can_cancel(client):
-    lambda_handler._request_owners["r1"] = "bob"
+    lambda_handler._request_owners["r1"] = "tenant-a#bob"
     r = client.post("/api/chat/cancel/r1", headers=AUTH)
     assert r.status_code == 200 and r.json()["success"] is True
     assert "r1" in lambda_handler._cancelled_requests
@@ -49,5 +49,5 @@ def test_streaming_registers_and_releases_the_request_owner(client, monkeypatch)
     monkeypatch.setattr(lambda_handler, "send_message_streaming", fake_stream)
     r = client.post("/api/chat/stream", headers=AUTH, json={"message": "hi", "request_id": "r9"})
     assert r.status_code == 200
-    assert seen == [{"r9": "bob"}]
+    assert seen == [{"r9": "tenant-a#bob"}]
     assert lambda_handler._request_owners == {}
