@@ -301,19 +301,15 @@ WHOLE_ROW_REFUSAL = "Refer to columns by name; whole-row references are not allo
 
 
 def _whole_row_reference(stmt) -> bool:
-    """Whether an unqualified column names a table, alias or CTE (Snowflake reads it as the whole row).
+    """Whether an unqualified column shares a name with any table, alias or CTE in the statement.
 
-    A name that is also a dictionary column of a referenced table is a column, not a row.
+    Snowflake may resolve such a name to the whole row, so it is refused even when a column has that name.
     """
     import sqlglot.expressions as exp
 
     row_names = {_folded(a.this) for a in stmt.find_all(exp.TableAlias) if isinstance(a.this, exp.Identifier)}
     row_names |= {_folded(t.this) for t in stmt.find_all(exp.Table) if isinstance(t.this, exp.Identifier)}
-    columns = set()
-    for table in filter(None, (_base_table(t) for t in stmt.find_all(exp.Table))):
-        columns |= (learn_columns(table[1]) or set()) if table[0] == "LEARN" else _cdm_columns().get(table, set())
-    return any(isinstance(c.this, exp.Identifier) and not c.args.get("table")
-               and _folded(c.this) in row_names and _folded(c.this) not in columns
+    return any(isinstance(c.this, exp.Identifier) and not c.args.get("table") and _folded(c.this) in row_names
                for c in stmt.find_all(exp.Column))
 
 

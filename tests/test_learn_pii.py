@@ -217,14 +217,25 @@ WHOLE_ROW_REFUSAL = "Refer to columns by name; whole-row references are not allo
     "SELECT TO_VARIANT(u) FROM LEARN.USERS u",
     "SELECT f.VALUE FROM LEARN.USERS u, LATERAL FLATTEN(input => u) f",
     'SELECT TO_VARIANT("U") FROM LEARN.USERS u',
+    "SELECT TO_VARIANT(NAME) FROM CDM_LMS.PERSON NAME WHERE EXISTS (SELECT 1 FROM CDM_LMS.COURSE)",
+    "WITH x AS (SELECT 1 AS k FROM CDM_LMS.COURSE) SELECT TO_VARIANT(NAME) FROM CDM_LMS.PERSON NAME",
+    "SELECT TO_VARIANT(NAME) FROM CDM_LMS.PERSON NAME, (SELECT 1 AS z FROM CDM_LMS.COURSE) s",
+    "SELECT TO_VARIANT(ID) FROM CDM_LMS.PERSON ID",
+    "SELECT NAME FROM CDM_LMS.COURSE name",
 ])
 def test_guard_refuses_whole_row_references(executed, sql):
     assert _validate(sql) == {"error": WHOLE_ROW_REFUSAL}
     assert executed == []
 
 
-def test_a_real_column_named_like_an_alias_is_not_a_whole_row_reference(executed):
-    assert "error" not in _validate("SELECT NAME FROM CDM_LMS.COURSE name")
+@pytest.mark.parametrize("sql", [
+    "SELECT c.NAME FROM CDM_LMS.COURSE c",
+    "SELECT NAME FROM CDM_LMS.COURSE c",
+    "SELECT c.NAME, t.NAME FROM CDM_LMS.COURSE c JOIN CDM_LMS.TERM t ON c.TERM_ID = t.ID",
+    "SELECT x.n FROM (SELECT COUNT(*) AS n FROM CDM_LMS.COURSE) x",
+])
+def test_columns_that_do_not_name_a_row_are_allowed(executed, sql):
+    assert "error" not in _validate(sql)
     assert len(executed) == 1
 
 
@@ -245,6 +256,6 @@ def test_guard_refuses_row_stars_inside_functions(executed, sql):
 def test_whole_row_check_exception_is_a_refusal(monkeypatch, executed):
     def boom(*a, **k):
         raise RuntimeError("table lookup failure")
-    monkeypatch.setattr(snowflake_client, "_base_table", boom)
+    monkeypatch.setattr(snowflake_client, "_folded", boom)
     assert _validate("SELECT a.EVENT_TYPE FROM LEARN.ACTIVITY_ACCUMULATOR a") == {"error": WHOLE_ROW_REFUSAL}
     assert executed == []
