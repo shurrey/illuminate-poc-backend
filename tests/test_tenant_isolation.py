@@ -257,6 +257,16 @@ def test_preview_never_crosses(world):
     _clean(r.text)
 
 
+def test_me_never_crosses(world):
+    c = world.client
+    a_resp = c.get("/api/v1/me", headers=AS_A)
+    assert a_resp.status_code == 200 and a_resp.json()["tenant"]["name"] == "Alpha University"
+
+    b_resp = c.get("/api/v1/me", headers=AS_B)
+    assert b_resp.status_code == 200 and b_resp.json()["tenant"]["name"] == "Beta College"
+    _clean(b_resp.text)
+
+
 @pytest.mark.parametrize("table", [f"{DB_A}.CDM_LMS.COURSE", f"{DB_A}.INFORMATION_SCHEMA.DATABASES"])
 def test_raw_sql_naming_another_tenants_database_is_refused_before_any_connection(world, table):
     tenant_b = tenancy.get_tenant(B)
@@ -411,6 +421,7 @@ SECRET_ROUTES = [
 NO_SECRET_ROUTES = [
     ("GET", "/api/v1/semantic/catalog", {}),
     ("GET", "/api/v1/reports", {}),
+    ("GET", "/api/v1/me", {}),
     ("GET", "/api/conversations", {}),
     ("GET", "/api/conversations/c1", {}),
     ("DELETE", "/api/conversations/c1", {}),

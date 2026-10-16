@@ -27,6 +27,7 @@ from semantic_layer.contract import QueryContract
 import tenancy
 from licenses import PREVIEW_REFUSAL, allows_learn
 from tenancy import NOT_READY, Tenant, TenantNotReady
+import roles
 
 # JWT validation
 from jose import jwt, JWTError
@@ -432,6 +433,27 @@ async def health_check():
         version="0.4.0",
         mode="chat_engine"
     )
+
+
+@app.get("/api/v1/me")
+async def get_me(authorization: Optional[str] = Header(None)):
+    """Tenant and roles for the caller."""
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    tenant = tenant_for(user)
+    groups = set(user.get("cognito:groups") or [])
+
+    user_roles = sorted([role for group, role in roles.GROUP_ROLES.items() if group in groups])
+    if not user_roles:
+        user_roles = [roles.role_of(user)]
+
+    return {
+        "tenant": {"name": tenant.name, "license": tenant.license},
+        "roles": user_roles,
+        "is_admin": ADMIN_GROUP in groups,
+    }
 
 
 @app.post("/api/chat", response_model=ChatResponse)
