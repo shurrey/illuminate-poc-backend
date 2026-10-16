@@ -1,8 +1,8 @@
 """Assertions over the synthesized CloudFormation templates.
 
 Run from cdk/ after:
-  npx cdk synth -q -c environment=dev -c initialUserPassword=Synth-Only-Passw0rd! --exclusively IlluminateBase-dev
-The password is a placeholder so the initial-user resources synthesize; --exclusively skips
+  npx cdk synth -q -c environment=dev -c initialUserPassword=Synth-Only-Passw0rd! -c initialTenantId=synth-tenant --exclusively IlluminateBase-dev
+The password and tenant id are placeholders so the initial-user resources synthesize; --exclusively skips
 Lambda asset bundling, which needs Docker.
 """
 
