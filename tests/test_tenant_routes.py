@@ -191,7 +191,7 @@ def test_chat_tenant_not_ready_mid_request_is_403(as_user, no_bedrock, monkeypat
 def test_engine_kwargs_prompt_names_tenant_database(as_user, monkeypatch):
     monkeypatch.setattr(snowflake_client, "tenant_database",
                         lambda t: {TENANT_A.tenant_id: "DB_A", TENANT_B.tenant_id: "DB_B"}[t.tenant_id])
-    kwargs = lambda_handler._engine_kwargs(TENANT_B)
+    kwargs = lambda_handler._engine_kwargs(TENANT_B, {"sub": "u1"})
     assert "DB_B" in kwargs["system_prompt"] and "DB_A" not in kwargs["system_prompt"]
     assert kwargs["tools"].database == "DB_B" and kwargs["tools"].tenant == TENANT_B
 
@@ -251,7 +251,7 @@ def test_same_sub_other_tenant_cannot_read_conversation(as_user, conversations):
 
 def test_same_sub_other_tenant_gets_new_context_id(as_user, conversations, monkeypatch):
     import chat_engine
-    monkeypatch.setattr(lambda_handler, "_engine_kwargs", lambda tenant: {})
+    monkeypatch.setattr(lambda_handler, "_engine_kwargs", lambda tenant, user: {})
     monkeypatch.setattr(chat_engine, "send_message", lambda *a, **k: ("answer", [], []))
     conversation_store.save_turn("c1", _owner_a(), "hi", "hello")
     r = as_user(user_of(TENANT_B)).post("/api/chat", headers=AUTH, json={"message": "mine", "context_id": "c1"})

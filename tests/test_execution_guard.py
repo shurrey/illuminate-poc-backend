@@ -177,9 +177,39 @@ def test_compiled_identity_passes_only_when_the_caller_may_see_identity(monkeypa
     assert "error" not in _validate(COMPILED_NAMES, compiled=True, allow_identity=True)
 
 
-def test_freehand_sql_never_returns_identity_whatever_the_role(monkeypatch):
-    monkeypatch.setattr(snowflake_client, "query_sql", lambda sql, params=None, **k: {"columns": [], "rows": []})
-    assert "error" in _validate("SELECT EMAIL FROM CDM_LMS.PERSON", allow_identity=True)
+def test_freehand_identity_passes_only_when_the_caller_may_see_identity(executed):
+    sql = "SELECT p.EMAIL FROM CDM_LMS.PERSON p"
+    assert "personally identifiable" in _validate(sql)["error"]
+    assert "error" not in _validate(sql, allow_identity=True)
+    assert len(executed) == 1
+
+
+def test_freehand_extra_pii_is_skipped_with_identity(executed):
+    sql = "SELECT CREATOR_NAME FROM CDM_LMS.PERSON"
+    assert "error" in _validate(sql, extra_pii={"CREATOR_NAME"})
+    assert "error" not in _validate(sql, extra_pii={"CREATOR_NAME"}, allow_identity=True)
+
+
+def test_freehand_learn_pii_runs_on_premium_with_identity_only(executed):
+    sql = "SELECT a.USER_PK1 FROM LEARN.ACTIVITY_ACCUMULATOR a"
+    assert "personally identifiable" in _validate(sql)["error"]
+    assert "error" not in _validate(sql, allow_identity=True)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM CDM_LMS.PERSON",
+    "SELECT p.* FROM CDM_LMS.PERSON p",
+    "SELECT $1 FROM CDM_LMS.PERSON",
+    "SELECT IDENTIFIER('EMAIL') FROM CDM_LMS.PERSON",
+    "SELECT x FROM CDM_LMS.PERSON AS p (x, y)",
+    "SELECT OBJECT_CONSTRUCT(p.*) FROM CDM_LMS.PERSON p",
+    "SELECT EMAIL FROM CDM_LMS.PERSON LIMIT 5000",
+    "SELECT EMAIL FROM OTHER_SCHEMA.PERSON",
+    "SELECT EMAIL FROM CDM_LMS.PERSON; SELECT 1",
+])
+def test_structural_and_other_checks_still_apply_with_identity(executed, sql):
+    assert "error" in _validate(sql, allow_identity=True)
+    assert executed == []
 
 
 def test_declared_dataset_pii_is_guarded_for_callers_without_identity(monkeypatch):

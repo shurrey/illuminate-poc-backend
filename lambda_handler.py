@@ -301,15 +301,28 @@ def _with_queries(text: str, queries: list[dict]) -> str:
     return f"<previous_queries>{json.dumps(queries)}</previous_queries>\n\n{text}"
 
 
-def _engine_kwargs(tenant: Tenant) -> dict:
+def _engine_kwargs(tenant: Tenant, user: dict) -> dict:
     """The chat engine's tools and system prompt over the tenant's overlaid catalog and database."""
     from semantic_layer.chat_tools import ChatTools
     from semantic_layer.prompt import build_system_prompt
 
+    from roles import role_allows_identity
+
     catalog, overlays = _catalog_for(tenant)
     database = _database_for(tenant)
-    return {"tools": ChatTools(catalog, database, tenant=tenant, overlays=overlays),
-            "system_prompt": build_system_prompt(catalog, database, learn=allows_learn(tenant))}
+    allow_identity = role_allows_identity(user)
+
+    def audit(kind: str, subject) -> None:
+        if kind == "freehand":
+            logger.info("identity_query sub=%s freehand=true", user.get("sub"))
+        elif _selects_identity(subject, catalog):
+            _log_identity_query(user, subject)
+
+    tools = ChatTools(catalog, database, tenant=tenant, overlays=overlays,
+                      allow_identity=allow_identity, identity_audit=audit)
+    return {"tools": tools,
+            "system_prompt": build_system_prompt(catalog, database, learn=allows_learn(tenant),
+                                            allow_identity=allow_identity)}
 
 
 async def send_message(
@@ -1150,7 +1163,7 @@ async def chat(
     logger.info(f"Chat request: message='{message_text[:100]}...', context_id={context_id}")
 
     tenant = tenant_for(user)
-    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant)
+    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant, user)
 
     try:
         result = await send_message(
@@ -1199,7 +1212,7 @@ async def chat_stream(
     )
 
     tenant = tenant_for(user)
-    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant)
+    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant, user)
 
     if request_id:
         _request_owners[request_id] = _owner(user, tenant)
@@ -1515,8 +1528,15 @@ def _compile_for(contract: QueryContract, user: dict, tenant: Tenant):
         raise HTTPException(status_code=400, detail=str(e))
     compiled.provenance.overlays = overlays_used(compiled.provenance, catalog, overlays)
     if allow_identity and _selects_identity(contract, catalog):
-        logger.info("identity_query sub=%s contract=%s", user.get("sub"), contract.model_dump_json(exclude_defaults=True))
+        _log_identity_query(user, contract)
     return compiled
+
+
+def _log_identity_query(user: dict, contract: QueryContract) -> None:
+    """Audit line naming what was selected; filter values can be PII, so only filter dimensions and ops are logged."""
+    logger.info(
+        "identity_query sub=%s metrics=%s measures=%s dimensions=%s filters=%s", user.get("sub"),
+        contract.metrics, contract.measures, contract.dimensions, [(f.dimension, f.op) for f in contract.filters])
 
 
 def _selects_identity(contract: QueryContract, catalog) -> bool:

@@ -242,3 +242,34 @@ def test_premium_describe_learn_lists_columns():
     assert content["table"] == "LEARN.ACTIVITY_ACCUMULATOR"
     by_name = {c["name"]: c for c in content["columns"]}
     assert by_name["COURSE_PK1"]["type"] == "NUMBER" and by_name["COURSE_PK1"]["pii"] is False
+
+
+IDENTITY_CONTRACT = {"measures": ["dataset.course_student_activity.v1:students"], "dimensions": ["person_email"]}
+
+
+def test_chat_refuses_an_identity_dimension_for_a_viewer_and_runs_nothing():
+    wh = FakeWarehouse()
+    out = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=wh).dispatch("query_semantic", IDENTITY_CONTRACT)
+    assert "personally identifiable" in out.content["error"] and wh.sql == []
+
+
+def test_chat_runs_an_identity_dimension_for_an_allowed_role_and_audits_it():
+    wh, audited = FakeWarehouse(), []
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=wh, allow_identity=True,
+                      identity_audit=lambda kind, subject: audited.append(kind))
+    out = tools.dispatch("query_semantic", IDENTITY_CONTRACT)
+    assert "error" not in out.content and "PERSON_EMAIL" in wh.sql[0]
+    assert audited == ["governed"]
+
+
+def test_chat_passes_allow_identity_to_the_guard_for_governed_and_freehand_sql(monkeypatch):
+    seen = []
+    monkeypatch.setattr(snowflake_client, "validate_and_execute",
+                        lambda sql, params=None, **kw: seen.append((kw["compiled"], kw["allow_identity"]))
+                        or {"columns": ["N"], "rows": [{"N": 1}]})
+    reason = "no governed metric covers this question"
+    for allow in (False, True):
+        tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, allow_identity=allow)
+        tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
+        tools.dispatch("execute_sql", {"sql": "SELECT 1", "reason": reason}, called=SEARCHED)
+    assert seen == [(True, False), (False, False), (True, True), (False, True)]

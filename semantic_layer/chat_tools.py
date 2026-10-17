@@ -158,17 +158,22 @@ class ChatTools:
     def __init__(self, catalog: Catalog, database: str, *, tenant: Tenant,
                  execute: Optional[Callable[..., dict]] = None,
                  describe: Callable[[str, str], Optional[list[dict]]] = describe_table,
-                 overlays: Iterable = ()):
-        """execute: defaults to running against the tenant's warehouse. overlays: applied to catalog, reported in provenance."""
+                 overlays: Iterable = (), allow_identity: bool = False,
+                 identity_audit: Optional[Callable[[str, object], None]] = None):
+        """execute: defaults to running against the tenant's warehouse. overlays: applied to catalog, reported in provenance.
+        allow_identity: the caller's role may see PII columns (governed and freehand).
+        identity_audit: called with ("governed", contract) before, or ("freehand", None) after the guard accepts, an identity-capable query."""
         self.catalog, self.database, self.tenant, self.describe = catalog, database, tenant, describe
         self.execute = execute or self._execute_for_tenant
         self.overlays = list(overlays)
+        self.allow_identity, self.identity_audit = allow_identity, identity_audit
 
     def _execute_for_tenant(self, sql: str, params: Optional[dict] = None, compiled: bool = False) -> dict:
         from snowflake_client import validate_and_execute
 
         extra_pii = frozenset(c.upper() for ds in self.catalog.datasets.values() for c in ds.pii_columns)
-        return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled, extra_pii=extra_pii)
+        return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled,
+                                    allow_identity=self.allow_identity, extra_pii=extra_pii)
 
     @property
     def specs(self) -> list[dict]:
@@ -191,10 +196,12 @@ class ChatTools:
     def _tool_query_semantic(self, tool_input: dict) -> ToolResult:
         try:
             contract = QueryContract(**{k: v for k, v in tool_input.items() if k in _CONTRACT_FIELDS})
-            compiled = compile_query(contract, self.catalog, self.database)
+            compiled = compile_query(contract, self.catalog, self.database, allow_identity=self.allow_identity)
         except (ValidationError, CompileError) as e:
             return ToolResult({"error": str(e)})
 
+        if self.allow_identity and self.identity_audit:
+            self.identity_audit("governed", contract)
         result = self.execute(compiled.sql, None, compiled=True)
         if "error" in result:
             return ToolResult({"error": _model_error(result)})
@@ -241,6 +248,9 @@ class ChatTools:
             return ToolResult({"error": "execute_sql needs a reason (a sentence) saying why no governed definition fits"})
         sql = tool_input.get("sql", "")
         result = self.execute(sql, None)
+        # Logged only once the guard accepted the statement; a warehouse failure still means it was accepted.
+        if self.allow_identity and self.identity_audit and ("error" not in result or "warehouse_error" in result):
+            self.identity_audit("freehand", None)
         if "error" in result:
             return ToolResult({"error": _model_error(result)})
         rows, columns = result["rows"], result["columns"]
