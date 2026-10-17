@@ -350,6 +350,41 @@ def test_an_admin_runs_a_governed_identity_query_through_chat(world):
     assert world.connects == [MARK_B]
 
 
+
+GRADES_BY_TERM = {"measures": ["dataset.student_grade.v1:average_grade_percentage"], "dimensions": ["term_name"]}
+MIXED_SQL = [
+    ("search_catalog", {"question": "average grade by term against all courses"}),
+    ("execute_sql", {"sql": "SELECT g.term_name, g.average_grade_percentage, c.N FROM governed_1 g"
+                            " CROSS JOIN (SELECT COUNT(*) AS N FROM CDM_LMS.COURSE) c",
+                     "reason": "No governed metric counts every course row", "governed": {"governed_1": GRADES_BY_TERM}}),
+]
+
+A_ROUNDING = re.compile(r"ROUND\((\w+\.)?GRADE_PERCENTAGE, 0\)")
+
+
+def test_a_governed_part_compiles_against_the_callers_overlays_only(world):
+    _seed_a_overlays()
+    world.bedrock.tool_script = list(MIXED_SQL)
+    a = _chat(world.client, AS_A)
+    a_sql = [sql for mark, sql in world.log if mark == MARK_A]
+    assert a.status_code == 200 and len(a_sql) == 1 and A_ROUNDING.search(a_sql[0])
+    assert f"{MEASURE}@v1" in json.dumps(a.json()["artifacts"])
+
+    world.bedrock.tool_script = list(MIXED_SQL)
+    b = _chat(world.client, AS_B)
+    assert b.status_code == 200
+    b_sql = [sql for mark, sql in world.log if mark == MARK_B]
+    assert len(b_sql) == 1 and "governed_1 AS (" in b_sql[0] and f"{DB_B}." in b_sql[0]
+    assert "AVG(b.GRADE_PERCENTAGE)" in b_sql[0] and not A_ROUNDING.search(b_sql[0])
+    _clean(b_sql[0])
+    _clean(b.text)
+    assert not A_ROUNDING.search(b.text)
+    artifacts = b.json()["artifacts"]
+    assert artifacts and all(x["provenance"]["overlays"] == [] for x in artifacts)
+    assert all(x["provenance"]["governance"] in ("partial", "none") for x in artifacts)
+    _clean(json.dumps(world.bedrock.calls[-1]["messages"], default=str))
+
+
 CROSS_SESSION_SQL = [
     "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL RESULT_SCAN(LAST_QUERY_ID(-1)) r",
     "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL TABLE(RESULT_SCAN(LAST_QUERY_ID(-1))) r",

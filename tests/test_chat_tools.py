@@ -11,8 +11,9 @@ class FakeWarehouse:
     def __init__(self, rows=None, error=None):
         self.rows, self.error, self.sql = rows if rows is not None else [{"N": 1}], error, []
 
-    def __call__(self, sql, params=None, compiled=False):
+    def __call__(self, sql, params=None, compiled=False, **guard):
         self.sql.append(sql)
+        self.guard = guard
         if self.error:
             return {"error": self.error}
         return {"columns": list(self.rows[0]) if self.rows else [], "rows": self.rows}
@@ -123,7 +124,9 @@ def test_execute_sql_results_are_marked_ungoverned_with_the_reason():
                                                  "reason": "No dataset covers raw course counts by instance"},
                                     called=SEARCHED)
     assert wh.sql == ["SELECT COUNT(*) AS N FROM DB.CDM_LMS.COURSE"]
-    assert out.content["provenance"] == {"governed": False, "reason": "No dataset covers raw course counts by instance"}
+    reason = "No dataset covers raw course counts by instance"
+    assert out.content["provenance"] == {"governed": False, "governance": "none", "rows": "modified", "reason": reason,
+                                         "columns": {"N": {"governed": False, "reason": reason}}}
     assert all(a["provenance"]["governed"] is False for a in out.artifacts)
     assert "query" not in out.artifacts[0]
 
@@ -273,3 +276,134 @@ def test_chat_passes_allow_identity_to_the_guard_for_governed_and_freehand_sql(m
         tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
         tools.dispatch("execute_sql", {"sql": "SELECT 1", "reason": reason}, called=SEARCHED)
     assert seen == [(True, False), (False, False), (True, True), (False, True)]
+
+
+COURSES_BY_TERM = {"metrics": ["metric.reportable_courses.v1"], "dimensions": ["term_name"]}
+MIXED_SQL = ("SELECT g.term_name, g.reportable_courses, c.N FROM governed_1 g"
+             " CROSS JOIN (SELECT COUNT(*) AS N FROM DB.CDM_LMS.COURSE) c")
+MIXED_REASON = "No governed metric counts every course row"
+
+
+def _mixed(wh, sql=MIXED_SQL, governed=None, **tool_input):
+    return _fallback(wh).dispatch("execute_sql", {"sql": sql, "reason": MIXED_REASON,
+                                                  "governed": governed or {"governed_1": COURSES_BY_TERM}, **tool_input},
+                                  called=SEARCHED)
+
+
+def test_execute_sql_with_a_governed_part_runs_the_spliced_sql_and_labels_each_column():
+    wh = FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}])
+    out = _mixed(wh)
+    assert len(wh.sql) == 1 and "governed_1 AS (" in wh.sql[0] and "DS_COURSE_FILTERS_V1" in wh.sql[0]
+    assert wh.guard == {"governed_parts": frozenset({"governed_1"}),
+                        "governed_helpers": frozenset({"governed_1__DS_COURSE_FILTERS_V1"})}
+    provenance = out.content["provenance"]
+    assert provenance == {
+        "governed": False, "governance": "partial", "rows": "modified", "reason": MIXED_REASON,
+        "columns": {"TERM_NAME": {"governed": True, "definition": "dimension:term_name"},
+                    "REPORTABLE_COURSES": {"governed": True, "definition": "metric.reportable_courses.v1"},
+                    "N": {"governed": False, "reason": MIXED_REASON}},
+        "metrics": ["metric.reportable_courses.v1"], "measures": ["dataset.course_filters.v1:courses"],
+        "datasets": ["dataset.course_filters.v1"], "overlays": [],
+    }
+    assert out.content["rows"] == [{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}]
+    assert "sql" not in out.content
+
+
+def test_a_partly_governed_result_carries_the_outer_sql_its_parts_and_the_executed_sql():
+    wh = FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}])
+    out = _mixed(wh)
+    table, sql = (next(a for a in out.artifacts if a["type"] == kind) for kind in ("table", "sql"))
+    assert table["title"] == sql["title"] == "Partly governed query result"
+    assert sql["data"] == table["sql"] == sql["sql"] == MIXED_SQL
+    for artifact in (table, sql):
+        assert artifact["governed_parts"] == {"governed_1": COURSES_BY_TERM}
+        assert artifact["executed_sql"] == wh.sql[0]
+        assert artifact["provenance"]["governance"] == "partial"
+        assert "query" not in artifact
+
+
+def test_a_query_of_only_governed_columns_is_a_governed_query_result():
+    wh = FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3}])
+    out = _mixed(wh, sql="SELECT term_name, reportable_courses FROM governed_1 WHERE reportable_courses > 1")
+    assert out.content["provenance"]["governed"] is True
+    assert out.content["provenance"]["governance"] == "full"
+    assert {a["title"] for a in out.artifacts} == {"Governed query result"}
+
+
+def test_a_given_title_wins_over_the_governance_title():
+    out = _mixed(FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}]), title="Courses vs all")
+    assert {a["title"] for a in out.artifacts} == {"Courses vs all"}
+
+
+def test_provenance_unions_the_parts_and_lists_the_overlays_they_used():
+    from semantic_layer.overlays import Overlay
+    used = Overlay(target="metric:metric.reportable_courses.v1", default_filters=[], version=3)
+    unused = Overlay(target="metric:metric.average_grade.v1", default_filters=[], version=1)
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, overlays=[used, unused],
+                      execute=FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "STUDENTS": 9}]))
+    out = tools.dispatch("execute_sql", {
+        "sql": "SELECT a.term_name, a.reportable_courses, b.students FROM governed_1 a JOIN governed_2 b"
+               " ON a.term_name = b.term_name",
+        "reason": MIXED_REASON,
+        "governed": {"governed_1": COURSES_BY_TERM,
+                     "governed_2": {"measures": ["dataset.student_grade.v1:students"], "dimensions": ["term_name"]}},
+    }, called=SEARCHED)
+    provenance = out.content["provenance"]
+    assert provenance["metrics"] == ["metric.reportable_courses.v1"]
+    assert provenance["measures"] == ["dataset.course_filters.v1:courses", "dataset.student_grade.v1:students"]
+    assert {"dataset.course_filters.v1", "dataset.student_grade.v1"} <= set(provenance["datasets"])
+    assert len(provenance["datasets"]) == len(set(provenance["datasets"]))
+    assert provenance["overlays"] == ["metric:metric.reportable_courses.v1@v3"]
+
+
+def test_an_invalid_governed_part_is_reported_like_query_semantic_and_nothing_runs():
+    wh = FakeWarehouse()
+    out = _mixed(wh, governed={"governed_1": {"metrics": ["metric.nope.v1"]}})
+    assert "governed_1" in out.content["error"] and "unknown metric" in out.content["error"]
+    out = _mixed(wh, governed={"governed_1": {"limit": 5000}})
+    assert "governed_1" in out.content["error"]
+    out = _mixed(wh, governed={"governed_1": "metric.reportable_courses.v1"})
+    assert "governed_1" in out.content["error"]
+    out = _mixed(wh, governed=["governed_1"])
+    assert "governed" in out.content["error"]
+    assert wh.sql == [] and out.artifacts == []
+
+
+def test_a_splice_refusal_reaches_the_model_and_nothing_runs():
+    wh = FakeWarehouse()
+    out = _mixed(wh, sql="SELECT COUNT(*) AS N FROM DB.CDM_LMS.COURSE")
+    assert "governed_1 is declared but the SQL never selects from it" in out.content["error"]
+    assert wh.sql == [] and out.artifacts == []
+
+
+def test_governed_parts_still_need_a_governed_tool_called_first():
+    wh = FakeWarehouse()
+    out = _tools(wh).dispatch("execute_sql", {"sql": MIXED_SQL, "reason": MIXED_REASON,
+                                              "governed": {"governed_1": COURSES_BY_TERM}})
+    assert "search_catalog" in out.content["error"] and wh.sql == []
+
+
+def test_governed_parts_compile_and_run_with_the_callers_identity_rights(monkeypatch):
+    seen = []
+    monkeypatch.setattr(snowflake_client, "validate_and_execute",
+                        lambda sql, params=None, **kw: seen.append(kw) or {"columns": ["PERSON_EMAIL"], "rows": []})
+    email = {"governed_1": {"measures": ["dataset.course_student_activity.v1:students"], "dimensions": ["person_email"]}}
+    request = {"sql": "SELECT person_email FROM governed_1", "reason": MIXED_REASON, "governed": email}
+    viewer = ChatTools(CATALOG, "DB", tenant=TENANT_A).dispatch("execute_sql", request, called=SEARCHED)
+    assert "personally identifiable" in viewer.content["error"] and seen == []
+    audited = []
+    admin = ChatTools(CATALOG, "DB", tenant=TENANT_A, allow_identity=True,
+                      identity_audit=lambda kind, subject: audited.append(kind))
+    assert "error" not in admin.dispatch("execute_sql", request, called=SEARCHED).content
+    assert seen[0]["allow_identity"] is True and seen[0]["tenant"] == TENANT_A and not seen[0]["compiled"]
+    assert seen[0]["governed_parts"] == frozenset({"governed_1"}) and isinstance(seen[0]["extra_pii"], frozenset)
+    assert audited == ["governed", "freehand"]
+
+
+def test_execute_sql_spec_describes_governed_parts_for_every_licence():
+    for tenant in (TENANT_A, TENANT_CORE):
+        spec = next(s for s in ChatTools(CATALOG, "DB", tenant=tenant).specs if s["name"] == "execute_sql")
+        assert "governed_1" in spec["description"]
+        governed = spec["inputSchema"]["json"]["properties"]["governed"]
+        assert governed["type"] == "object"
+        assert "metrics" in governed["additionalProperties"]["properties"]

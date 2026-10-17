@@ -274,10 +274,15 @@ def _queries_from(artifacts: list[dict]) -> list[dict]:
     for a in artifacts:
         if a.get("type") != "sql":
             continue
-        governed = a.get("provenance", {}).get("governed", False)
-        entry = {"title": a.get("title"), "governed": governed}
-        entry["query" if governed else "sql"] = a.get("query") if governed else a.get("data")
-        out.append(entry)
+        provenance = a.get("provenance") or {}
+        governed = provenance.get("governed") is True
+        # query_semantic provenance has no `governance`; execute_sql's always does, even when fully governed.
+        if governed and "governance" not in provenance:
+            out.append({"title": a.get("title"), "governed": True, "query": a.get("query")})
+        else:
+            out.append({"title": a.get("title"), "governed": governed,
+                        "governance": provenance.get("governance", "none"), "sql": a.get("data"),
+                        "governed_parts": a.get("governed_parts") or {}})
     return out
 
 

@@ -16,7 +16,12 @@ _RULES = """## How to answer
    column names) when a trend, distribution or comparison is clearer as one.
 3. Only when no metric, measure or dimension fits, use `describe_cdm_table` and then `execute_sql` on the
    `{database}` database's CDM_* schemas{learn}. `execute_sql` needs a `reason` saying why the catalog does not
-   cover the question. Say in your answer that the result is ungoverned and why.
+   cover the question. When the catalog covers part of the question, put each governed part in `execute_sql`'s
+   `governed` object as `governed_1`, `governed_2`, ... (each shaped like a `query_semantic` input) and write SQL
+   that selects from or joins them by name. Never re-derive a governed metric or measure by hand. Each result
+   column comes back labelled governed or ungoverned: say in your answer which columns are governed and which are
+   not, and why. A previous query's `governed_parts` can be re-sent as `governed` to build on it. A result with no
+   governed parts is ungoverned; say so and why.
 4. The tools return the data, SQL and provenance to the user directly. Do not repeat the SQL or
    reproduce whole result tables in your answer.
 
