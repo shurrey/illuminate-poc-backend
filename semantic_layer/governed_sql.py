@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import sqlglot
 import sqlglot.expressions as exp
+from sqlglot.lineage import Node, lineage
+from sqlglot.optimizer.qualify import qualify
 
 from .compiler import CompileError, _output_name, compile_query
 from .contract import CompiledQuery, QueryContract
@@ -164,3 +166,78 @@ def splice(outer_sql: str, governed: dict[str, QueryContract], catalog: Catalog,
     except Exception as e:
         raise SpliceError(f"The spliced SQL does not parse: {e}") from e
     return Spliced(sql=sql, parts=parts, part_names=frozenset(parts), helper_names=helper_names)
+
+
+UNTRACED = "Column origin could not be traced"
+
+
+def _trace_tree(spliced: Spliced) -> exp.Query:
+    """The spliced statement without the parts' definitions, so lineage stops at each part as if it were a table."""
+    tree = sqlglot.parse_one(spliced.sql, dialect="snowflake")
+    with_ = _with(tree)
+    dropped = spliced.part_names | spliced.helper_names
+    kept = [c for c in with_.expressions if c.alias not in dropped]
+    tree.set("with", exp.With(expressions=kept, recursive=with_.args.get("recursive")) if kept else None)
+    return tree
+
+
+def _origin(root: Node, spliced: Spliced) -> tuple[str, str] | None:
+    """(part, column) when every path from root ends at the same part column through plain references."""
+    leaves = set()
+    for node in root.walk():
+        expression = node.expression
+        if not node.downstream:
+            if not (isinstance(expression, exp.Table) and isinstance(expression.this, exp.Identifier)
+                    and not expression.args.get("db") and not expression.args.get("catalog")):
+                return None
+            leaves.add((expression.name.lower(), node.name.rpartition(".")[2].upper()))
+        elif isinstance(expression, exp.Alias):
+            if not isinstance(expression.this, exp.Column):
+                return None
+        elif not isinstance(expression, exp.Column):
+            return None
+    if len(leaves) != 1:
+        return None
+    part, column = next(iter(leaves))
+    return (part, column) if part in spliced.part_names and column in spliced.parts[part].outputs else None
+
+
+def _rows_modified(tree: exp.Query, spliced: Spliced) -> bool:
+    """Whether the outer query reads anything but governed parts (a raw table, an outer CTE, a table function)."""
+    tables = (t for t in tree.find_all(exp.Table)
+              if not (unqualified_table(t) and t.name.lower() in spliced.part_names))
+    return any(True for _ in tables) or any(True for _ in tree.find_all(exp.Lateral, exp.Unnest))
+
+
+def label(spliced: Spliced, result_columns: list[str], *, reason: str) -> dict:
+    """Mark each result column governed when it is one governed part column passed through unchanged
+    (aliasing allowed), else ungoverned with reason. Never raises; a tracing failure leaves all ungoverned.
+    `rows` is "modified" when the outer query reads a non-governed source, which also caps governance at partial."""
+    ungoverned = {"governed": False, "reason": reason}
+    try:
+        schema = {name: {column: "VARCHAR" for column in part.outputs} for name, part in spliced.parts.items()}
+        trace = _trace_tree(spliced)
+        modified = _rows_modified(trace, spliced)
+        tree = qualify(trace, schema=schema, dialect="snowflake", validate_qualify_columns=False)
+        folded: dict[str, list[str]] = {}
+        for name in tree.named_selects:
+            folded.setdefault(name.upper(), []).append(name)
+        columns = {}
+        for column in result_columns:
+            names = folded.get(column.upper(), [])
+            # Selects whose names differ only by case cannot be told apart in the result, so none is claimed.
+            origin = None
+            if len(names) == 1:
+                root = lineage(exp.to_identifier(names[0], quoted=True).sql(), tree, schema=schema,
+                               dialect="snowflake")
+                origin = _origin(root, spliced)
+            columns[column] = ({"governed": True, "definition": spliced.parts[origin[0]].outputs[origin[1]]}
+                               if origin else dict(ungoverned))
+    except Exception:
+        modified = True
+        columns = {c: {"governed": False, "reason": UNTRACED} for c in result_columns}
+    governed = sum(1 for c in columns.values() if c["governed"])
+    level = "none" if governed == 0 else "full" if governed == len(columns) else "partial"
+    if modified and level == "full":
+        level = "partial"
+    return {"governance": level, "rows": "modified" if modified else "governed", "columns": columns}
