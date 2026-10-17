@@ -38,7 +38,8 @@ def test_one_part_becomes_a_top_level_cte_after_its_prefixed_helpers():
     assert isinstance(spliced, Spliced)
     assert _cte_names(spliced.sql) == ["governed_1__DS_ENROLLMENTS_V1", "governed_1"]
     assert _unqualified_tables(_cte(spliced.sql, "governed_1")) == {"governed_1__DS_ENROLLMENTS_V1"}
-    assert spliced.governed_ctes == frozenset({"governed_1__DS_ENROLLMENTS_V1", "governed_1"})
+    assert spliced.part_names == frozenset({"governed_1"})
+    assert spliced.helper_names == frozenset({"governed_1__DS_ENROLLMENTS_V1"})
 
 
 def test_part_records_its_contract_compiled_query_and_output_definitions():
@@ -139,6 +140,14 @@ def test_a_viewers_part_that_selects_an_identity_dimension_gets_the_compile_refu
         _splice("SELECT email FROM governed_1", {"governed_1": contract})
 
 
+def test_an_unmapped_output_name_is_a_splice_error(monkeypatch):
+    from semantic_layer import governed_sql
+
+    monkeypatch.setattr(governed_sql, "_output_name", lambda ref: "something_else")
+    with pytest.raises(SpliceError, match="course_role"):
+        _splice("SELECT course_role FROM governed_1", {"governed_1": STUDENTS})
+
+
 def test_an_admins_part_may_select_an_identity_dimension():
     contract = QueryContract(metrics=["metric.student_enrollments.v1"], dimensions=["email"])
     spliced = _splice("SELECT email FROM governed_1", {"governed_1": contract}, allow_identity=True)
@@ -162,7 +171,8 @@ def executed(monkeypatch):
 
 
 def _guard(spliced, tenant=TENANT_A, **kwargs):
-    return snowflake_client.validate_and_execute(spliced.sql, tenant=tenant, governed_ctes=spliced.governed_ctes,
+    return snowflake_client.validate_and_execute(spliced.sql, tenant=tenant, governed_parts=spliced.part_names,
+                                                 governed_helpers=spliced.helper_names,
                                                  **kwargs)
 
 
@@ -201,7 +211,8 @@ def test_guard_refuses_outer_sql_reading_a_parts_helper_cte(executed):
     sql = spliced.sql.replace("SELECT\n  g.course_role\nFROM governed_1 AS g",
                               "SELECT\n  d.course_role\nFROM governed_1 AS g JOIN governed_1__DS_ENROLLMENTS_V1 AS d ON TRUE")
     assert sql != spliced.sql
-    result = snowflake_client.validate_and_execute(sql, tenant=TENANT_A, governed_ctes=spliced.governed_ctes)
+    result = snowflake_client.validate_and_execute(sql, tenant=TENANT_A, governed_parts=spliced.part_names,
+                                                   governed_helpers=spliced.helper_names)
     assert "governed_1" in result["error"]
     assert executed == []
 

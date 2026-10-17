@@ -397,11 +397,11 @@ ALIAS_LIST_REFUSAL = "Column alias lists on tables are not allowed; alias column
 WHOLE_ROW_REFUSAL = "Refer to columns by name; whole-row references are not allowed."
 
 
-def _whole_row_reference(stmt, inside: frozenset[int] = frozenset(), governed: frozenset[str] = frozenset()) -> bool:
+def _whole_row_reference(stmt, inside: frozenset[int] = frozenset()) -> bool:
     """Whether an unqualified column shares a name with any table, alias or CTE in the statement.
 
     Snowflake may resolve such a name to the whole row, so it is refused even when a column has that name.
-    Nodes whose ids are in inside (governed bodies) and the governed CTE names are ignored.
+    Nodes whose ids are in inside (governed bodies) are ignored.
     """
     import sqlglot.expressions as exp
 
@@ -409,40 +409,41 @@ def _whole_row_reference(stmt, inside: frozenset[int] = frozenset(), governed: f
                  if isinstance(a.this, exp.Identifier) and id(a) not in inside}
     row_names |= {_folded(t.this) for t in stmt.find_all(exp.Table)
                   if isinstance(t.this, exp.Identifier) and id(t) not in inside}
-    row_names -= governed
     return any(isinstance(c.this, exp.Identifier) and not c.args.get("table") and _folded(c.this) in row_names
                for c in stmt.find_all(exp.Column) if id(c) not in inside)
 
 
-def _governed_parts(stmt, governed: frozenset[str]) -> tuple[list, frozenset[int]] | str:
-    """(the part CTEs, ids of every node inside a governed body), or a refusal.
+def _governed_bodies(stmt, parts: frozenset[str], helpers: frozenset[str]) -> tuple[list, frozenset[int]] | str:
+    """(the part CTEs, ids of every node inside a part or helper body), or a refusal.
 
-    Each governed name must be a top-level CTE defined nowhere else. A governed CTE that another governed body
-    reads is a part's helper; the rest of the statement may read only the parts.
+    Each name must be a top-level CTE defined nowhere else; the rest of the statement may read only the parts.
     """
     import sqlglot.expressions as exp
+    from semantic_layer.governed_sql import unqualified_table
 
+    governed = parts | helpers
     with_ = stmt.args.get("with") or stmt.args.get("with_")
     top = {_folded(cte.args["alias"].this): cte for cte in (with_.expressions if with_ is not None else [])}
     defined = [cte for cte in stmt.find_all(exp.CTE) if _folded(cte.args["alias"].this) in governed]
-    if not governed <= top.keys() or len(defined) != len(governed):
+    if parts & helpers or not governed <= top.keys() or len(defined) != len(governed):
         return "Governed parts must each be defined once, at the top of the statement."
-    ctes = [top[name] for name in governed]
-    inside = frozenset(id(node) for cte in ctes for node in cte.walk())
-
-    def unqualified(table):
-        return isinstance(table.this, exp.Identifier) and not table.args.get("db") and not table.args.get("catalog")
-
-    helpers = {_folded(t.this) for cte in ctes for t in cte.this.find_all(exp.Table) if unqualified(t)} & governed
+    inside = frozenset(id(node) for name in governed for node in top[name].walk())
     for table in stmt.find_all(exp.Table):
-        if id(table) not in inside and unqualified(table) and _folded(table.this) in helpers:
+        if id(table) not in inside and unqualified_table(table) and _folded(table.this) in helpers:
             return f"{table.name} is internal to a governed part; select from the part itself."
-    return [top[name] for name in governed - helpers], inside
+    part_ctes = [top[name] for name in parts]
+    for cte in part_ctes:
+        select = cte.this if isinstance(cte.this, exp.Select) else cte.this.find(exp.Select)
+        if select is None or any(not isinstance(star.parent, exp.Count)
+                                 for e in select.expressions for star in e.find_all(exp.Star)):
+            return f"Governed part {cte.alias} must name its columns."
+    return part_ctes, inside
 
 
 def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None, compiled: bool = False,
                          allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset(),
-                         governed_ctes: frozenset[str] = frozenset()) -> dict:
+                         governed_parts: frozenset[str] = frozenset(),
+                         governed_helpers: frozenset[str] = frozenset()) -> dict:
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
     Allowed statement types: SELECT, WITH (CTE), UNION.
@@ -455,9 +456,10 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     freehand SQL. Freehand SQL's structural refusals (star, positional, IDENTIFIER, alias-list,
     whole-row) and every other check still apply to every role. extra_pii adds dataset-declared PII
     column names to the check; freehand SQL also treats columns the CDM or LEARN dictionary flags,
-    and LEARN columns it does not list, as PII. governed_ctes names the spliced governed parts of freehand
-    SQL and their helper CTEs: their bodies get the compiled PII rule (a part's own projection is its
-    outermost), the rest of the statement the freehand rules, and every other check covers the whole statement.
+    and LEARN columns it does not list, as PII. governed_parts and governed_helpers name the spliced
+    governed parts of freehand SQL and their helper CTEs: their bodies get the compiled PII rule (a
+    part's own projection is its outermost), only parts may read helpers, a part must name its columns,
+    the rest of the statement gets the freehand rules, and every other check covers the whole statement.
 
     Returns:
         {"columns": [...], "rows": [...]} on success
@@ -565,16 +567,16 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     scopes: list = []
     freehand: list = []  # the columns the dictionary check also covers
     if compiled:
-        if governed_ctes:
+        if governed_parts or governed_helpers:
             return {"error": "Governed parts can only be spliced into freehand SQL."}
         if not allow_identity:
             outer = stmt.find(exp.Select)
             scopes = [(col, sel) for sel in (outer.expressions if outer else []) for col in sel.find_all(exp.Column)]
     else:
         parts, inside = [], frozenset()
-        governed = frozenset(name.upper() for name in governed_ctes)
-        if governed:
-            found = _governed_parts(stmt, governed)
+        if governed_parts or governed_helpers:
+            found = _governed_bodies(stmt, frozenset(n.upper() for n in governed_parts),
+                                     frozenset(n.upper() for n in governed_helpers))
             if isinstance(found, str):
                 return {"error": found}
             parts, inside = found
@@ -592,7 +594,7 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
                for a in stmt.find_all(exp.TableAlias)):
             return {"error": ALIAS_LIST_REFUSAL}
         try:
-            whole_row = _whole_row_reference(stmt, inside, governed)
+            whole_row = _whole_row_reference(stmt, inside)
         except Exception:
             logger.exception("Whole-row reference check failed; refusing")
             whole_row = True

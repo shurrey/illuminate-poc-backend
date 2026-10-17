@@ -35,7 +35,8 @@ class Part:
 class Spliced:
     sql: str
     parts: dict[str, Part]
-    governed_ctes: frozenset[str]  # part CTE names and their hoisted helpers, for the guard
+    part_names: frozenset[str]
+    helper_names: frozenset[str]  # the parts' hoisted CTEs; only the parts may read them
 
 
 def _folded(identifier: exp.Identifier) -> str:
@@ -46,7 +47,7 @@ def _with(node: exp.Expression) -> exp.With | None:
     return node.args.get("with") or node.args.get("with_")
 
 
-def _unqualified(table: exp.Table) -> bool:
+def unqualified_table(table: exp.Table) -> bool:
     return isinstance(table.this, exp.Identifier) and not table.args.get("db") and not table.args.get("catalog")
 
 
@@ -65,7 +66,7 @@ def _check_outer(outer: exp.Query, names: list[str]) -> None:
         if cte.alias.lower().startswith("governed_"):
             raise SpliceError(f"The SQL defines {cte.alias}; governed_* names are reserved for governed parts.")
     referenced = {_folded(t.this) for t in outer.find_all(exp.Table)
-                  if _unqualified(t) and _folded(t.this).upper().startswith("GOVERNED_")}
+                  if unqualified_table(t) and _folded(t.this).upper().startswith("GOVERNED_")}
     for name in names:
         if name.upper() not in referenced:
             raise SpliceError(f"{name} is declared but the SQL never selects from it.")
@@ -93,7 +94,7 @@ def _rename_references(root: exp.Expression, renames: dict[str, str]) -> None:
     A renamed table keeps its old name as its alias, so column qualifiers such as g1.x still bind.
     """
     for table in list(root.find_all(exp.Table)):
-        if not _unqualified(table):
+        if not unqualified_table(table):
             continue
         old = _folded(table.this)
         if old not in renames or _shadowed(table, old, root):
@@ -125,6 +126,8 @@ def _outputs(contract: QueryContract, catalog: Catalog, compiled: CompiledQuery)
     out = {}
     for projection in select.expressions:
         identifier = projection.args["alias"] if isinstance(projection, exp.Alias) else projection.this
+        if identifier.name.lower() not in refs:
+            raise SpliceError(f"Output {identifier.name} does not map to a definition in the contract.")
         out[_folded(identifier)] = refs[identifier.name.lower()]
     return out
 
@@ -151,7 +154,7 @@ def splice(outer_sql: str, governed: dict[str, QueryContract], catalog: Catalog,
         ctes += hoisted
         parts[name] = Part(contract=contract, compiled=compiled, outputs=_outputs(contract, catalog, compiled))
 
-    governed_ctes = frozenset(cte.alias for cte in ctes)
+    helper_names = frozenset(cte.alias for cte in ctes) - parts.keys()
     outer_with = _with(outer)
     outer.set("with", exp.With(expressions=ctes + (list(outer_with.expressions) if outer_with else []),
                                recursive=bool(outer_with and outer_with.args.get("recursive"))))
@@ -160,4 +163,4 @@ def splice(outer_sql: str, governed: dict[str, QueryContract], catalog: Catalog,
         sqlglot.parse_one(sql, dialect="snowflake")
     except Exception as e:
         raise SpliceError(f"The spliced SQL does not parse: {e}") from e
-    return Spliced(sql=sql, parts=parts, governed_ctes=governed_ctes)
+    return Spliced(sql=sql, parts=parts, part_names=frozenset(parts), helper_names=helper_names)
