@@ -137,22 +137,30 @@ def invalidate(tenant_id: str):
 
 
 class WarehouseError(Exception):
-    """A Snowflake failure whose message has had its quoted literals masked."""
+    """A Snowflake failure whose message is cut at its first quote."""
 
 
-def _quoted(q: str) -> str:
-    # An apostrophe inside a word (Can't, O'Brien) neither opens nor closes a literal; a literal with no closing
-    # quote runs to the end of the message.
-    return rf"(?<!\w){q}(?:[^{q}\\]|\\.|{q}{q}|{q}(?=\w))*(?:{q}(?!\w)|$)"
+_QUOTE_LIKE = re.compile("['\"`\u2018\u2019\u201c\u201d]")
 
 
-_QUOTED = re.compile(_quoted("'") + "|" + _quoted('"'), re.DOTALL)
+def before_first_quote(message: str) -> str:
+    """message up to its first quote-like character, then "…". Snowflake echoes row values in errors, and how it
+    quotes them cannot be parsed reliably, so nothing from the first quote on is kept."""
+    match = _QUOTE_LIKE.search(message)
+    return message if match is None else message[:match.start()] + "…"
 
 
-def mask_literals(message: str) -> str:
-    """message with every single- or double-quoted literal replaced by '***' (or "***"); Snowflake echoes
-    row values in its errors (Numeric value 'Alice' is not recognized)."""
-    return _QUOTED.sub(lambda m: m.group(0)[0] + "***" + m.group(0)[0], message)
+def _error_code(exc: Exception) -> str | None:
+    code = getattr(exc, "errno", None) or getattr(exc, "sqlstate", None)
+    return str(code) if code else None
+
+
+def _warehouse_message(exc: Exception, allow_identity: bool) -> str:
+    """What a caller sees: the code alone without identity rights, else the text before the first quote."""
+    if allow_identity:
+        return before_first_quote(str(exc))
+    code = _error_code(exc)
+    return f"The warehouse could not run this query (error {code})." if code else "The warehouse could not run this query."
 
 
 def query_preview(schema: str, table: str, limit: int = 20, *, tenant: Tenant | None) -> dict:
@@ -171,7 +179,7 @@ def query_preview(schema: str, table: str, limit: int = 20, *, tenant: Tenant | 
     except TenantNotReady:
         raise
     except Exception as exc:
-        raise WarehouseError(mask_literals(str(exc))) from None
+        raise WarehouseError(before_first_quote(str(exc))) from None
 
 
 def _in_filter(node) -> bool:
@@ -694,8 +702,8 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     except TenantNotReady:
         raise
     except Exception as exc:
-        message = mask_literals(str(exc))
-        logger.error("Snowflake execution error: %s", message)
+        message = _warehouse_message(exc, allow_identity)
+        logger.error("Snowflake execution error %s: %s", _error_code(exc), before_first_quote(str(exc)))
         # warehouse_error separates Snowflake failures (internal detail) from guard rejections.
         return {"error": message, "warehouse_error": True}
 

@@ -41,6 +41,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("API-PROXY")
+# The connector logs statement text and server messages at DEBUG and INFO, and those can carry row values.
+logging.getLogger("snowflake.connector").setLevel(logging.WARNING)
 
 
 # =============================================================================

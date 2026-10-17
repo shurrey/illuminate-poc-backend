@@ -10,39 +10,55 @@ from semantic_layer.catalog import load_catalog
 from semantic_layer.chat_tools import ChatTools
 from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
-NUMERIC = "100038 (22018): 01b2c3d4: Numeric value 'Alice' is not recognized"
-VIEWER_SQL = "SELECT COUNT(TO_NUMBER(p.FIRST_NAME)) AS n FROM CDM_LMS.PERSON p"
+VIEWER_SQL = "SELECT COUNT(TO_NUMBER(CONCAT('x'' ', p.FIRST_NAME))) AS n FROM CDM_LMS.PERSON p"
+ECHOES = [
+    "Numeric value 'x' Alice' is not recognized",
+    "Numeric value x'Alice' is not recognized",
+    "Numeric value N'Alice' is not recognized",
+    "Numeric value ‘Alice’ is not recognized",
+    "Numeric value “Alice” is not recognized",
+    "Numeric value `Alice` is not recognized",
+    'Error parsing JSON: unknown keyword "Alice", pos 6',
+]
 
 
-@pytest.fixture
-def warehouse_fails(monkeypatch):
+class SnowflakeError(Exception):
+    def __init__(self, message, errno=100038, sqlstate="22018"):
+        super().__init__(message)
+        self.errno, self.sqlstate = errno, sqlstate
+
+
+@pytest.fixture(params=ECHOES)
+def warehouse_fails(request, monkeypatch):
     def fail(sql, params=None, **k):
-        raise RuntimeError(NUMERIC)
+        raise SnowflakeError(f"100038 (22018): 01b2c3d4: {request.param}")
 
     monkeypatch.setattr(snowflake_client, "query_sql", fail)
     monkeypatch.setattr(snowflake_client, "_run", fail)
+    return request.param
 
 
-@pytest.mark.parametrize("raw, masked", [
-    ("Numeric value 'Alice' is not recognized", "Numeric value '***' is not recognized"),
-    ("String 'O''Brien' is too long", "String '***' is too long"),
-    (r"String 'O\'Brien' is too long", "String '***' is too long"),
-    ("Can't parse 'Alice' as timestamp with format 'AUTO'", "Can't parse '***' as timestamp with format '***'"),
-    ("String 'O'Brien' is too long", "String '***' is too long"),
-    ('Error parsing JSON: unknown keyword "Alice", pos 6', 'Error parsing JSON: unknown keyword "***", pos 6'),
-    ("Date 'Alice is not recognized", "Date '***'"),
-    ("Division by zero", "Division by zero"),
-])
-def test_mask_literals_hides_every_quoted_value(raw, masked):
-    assert snowflake_client.mask_literals(raw) == masked
-
-
-def test_a_warehouse_error_is_returned_and_logged_with_its_literals_masked(warehouse_fails, caplog):
+def test_a_viewers_warehouse_error_is_only_the_code_and_the_log_never_has_the_value(warehouse_fails, caplog):
     caplog.set_level(logging.DEBUG)
     result = snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A)
-    assert result["warehouse_error"] is True
-    assert "Alice" not in result["error"] and "is not recognized" in result["error"]
-    assert "Alice" not in caplog.text
+    assert result == {"error": "The warehouse could not run this query (error 100038).", "warehouse_error": True}
+    assert "Alice" not in caplog.text and "100038" in caplog.text
+
+
+def test_an_admins_warehouse_error_keeps_the_text_before_the_first_quote(warehouse_fails, caplog):
+    caplog.set_level(logging.DEBUG)
+    result = snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A, allow_identity=True)
+    assert "Alice" not in result["error"] and "Alice" not in caplog.text
+    assert result["error"].startswith("100038 (22018): 01b2c3d4: ") and result["error"].endswith("…")
+
+
+@pytest.mark.parametrize("raw, shown", [
+    ("Numeric value 'x' Alice' is not recognized", "Numeric value …"),
+    ("Division by zero", "Division by zero"),
+    ("Can’t parse Alice", "Can…"),
+])
+def test_warehouse_text_is_cut_at_the_first_quote_like_character(raw, shown):
+    assert snowflake_client.before_first_quote(raw) == shown
 
 
 def test_a_viewers_chat_tool_result_and_its_log_line_never_carry_the_value(warehouse_fails, caplog):
@@ -52,7 +68,7 @@ def test_a_viewers_chat_tool_result_and_its_log_line_never_carry_the_value(wareh
            "input": {"sql": VIEWER_SQL, "reason": "no governed metric parses first names"}}
     artifacts = []
     message = chat_engine._run_tool(use, artifacts, ["search_catalog"], tools)
-    assert "is not recognized" in str(message) and "Alice" not in str(message)
+    assert "error 100038" in str(message) and "Alice" not in str(message)
     assert artifacts == [] and "Alice" not in caplog.text
 
 
@@ -66,7 +82,17 @@ def test_a_semantic_query_502_and_its_log_line_never_carry_the_value(monkeypatch
     assert "Alice" not in r.text and "Alice" not in caplog.text
 
 
-def test_a_preview_failure_is_raised_with_its_literals_masked(warehouse_fails):
+def test_a_preview_failure_is_raised_cut_at_the_first_quote(warehouse_fails):
     with pytest.raises(snowflake_client.WarehouseError) as raised:
         snowflake_client.query_preview("CDM_LMS", "PERSON", tenant=TENANT_A)
     assert "Alice" not in str(raised.value) and raised.value.__cause__ is None
+
+
+def test_an_error_without_a_code_still_gets_the_generic_message(monkeypatch):
+    monkeypatch.setattr(snowflake_client, "query_sql", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x 'Alice'")))
+    assert snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A)["error"] == \
+        "The warehouse could not run this query."
+
+
+def test_the_snowflake_connector_never_logs_below_warning():
+    assert logging.getLogger("snowflake.connector").level == logging.WARNING
