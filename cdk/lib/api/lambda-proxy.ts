@@ -11,6 +11,8 @@ export interface LambdaProxyProps {
   conversationTableName: string;
   overlayTableArn: string;
   overlayTableName: string;
+  userItemsTableArn: string;
+  userItemsTableName: string;
   tenantTableArn: string;
   tenantTableName: string;
   userPoolId: string;
@@ -73,6 +75,17 @@ export class LambdaProxy extends Construct {
       resources: [props.overlayTableArn],
     }));
 
+    // Per-user profile items (cards, queries, layout, prefs)
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+        'dynamodb:DeleteItem',
+        'dynamodb:Query',
+      ],
+      resources: [props.userItemsTableArn],
+    }));
+
     // Tenant registry (read only)
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['dynamodb:GetItem'],
@@ -118,7 +131,7 @@ export class LambdaProxy extends Construct {
           command: [
             'bash', '-c', [
               'pip install -q -t /asset-output --platform manylinux2014_x86_64 --implementation cp --python-version 3.11 --only-binary=:all: -r requirements-lambda.txt',
-              'cp lambda_handler.py chat_engine.py conversation_store.py snowflake_client.py overlay_store.py roles.py tenancy.py licenses.py run.sh /asset-output/',
+              'cp lambda_handler.py chat_engine.py conversation_store.py snowflake_client.py overlay_store.py user_items_store.py roles.py tenancy.py licenses.py run.sh /asset-output/',
               // Semantic layer: the package (with its dictionary snapshot) and the canonical definitions
               'cp -r semantic_layer /asset-output/',
               'cp -r canonical /asset-output/',
@@ -133,6 +146,7 @@ export class LambdaProxy extends Construct {
         AWS_LWA_INVOKE_MODE: 'response_stream',
         CONVERSATION_TABLE: props.conversationTableName,
         OVERLAY_TABLE: props.overlayTableName,
+        USER_ITEMS_TABLE: props.userItemsTableName,
         TENANT_TABLE: props.tenantTableName,
         BEDROCK_MODEL_ID: 'us.anthropic.claude-sonnet-4-6',
         USER_POOL_ID: props.userPoolId,
