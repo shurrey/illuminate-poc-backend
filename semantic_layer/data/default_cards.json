@@ -1,0 +1,86 @@
+[
+  {
+    "id": "active-students",
+    "label": "Active Students",
+    "description": "Students with course activity in the course window",
+    "longDescription": "Students with an available, enabled enrollment and course activity inside the course window, in courses that have an instructor and have not been deleted.",
+    "prompt": "How many active students do we have, broken down by term? Which terms stand out?",
+    "contract": {
+      "metrics": [
+        "metric.active_students.v1"
+      ]
+    },
+    "format": "number",
+    "reportLink": "/reporting?area=leading"
+  },
+  {
+    "id": "student-engagement",
+    "label": "Student Engagement",
+    "description": "Share of student enrollments with course activity",
+    "longDescription": "Share of student enrollments with course activity in the course window.",
+    "prompt": "What is the student engagement rate by term and by course design mode? Where is it lowest?",
+    "contract": {
+      "metrics": [
+        "metric.student_engagement_rate.v1"
+      ]
+    },
+    "format": "ratio",
+    "reportLink": "/reporting?area=learning"
+  },
+  {
+    "id": "weekly-engagement",
+    "label": "Active in the Last 7 Days",
+    "description": "Share of students in ongoing courses who accessed them this week",
+    "longDescription": "Share of students with an active enrollment in an ongoing course whose last course access was in the last 7 days.",
+    "prompt": "What share of students in ongoing courses were active in the last 7 days, by course? Which courses have the lowest share?",
+    "contract": {
+      "metrics": [
+        "metric.weekly_engagement_rate.v1"
+      ]
+    },
+    "format": "ratio",
+    "reportLink": "/reporting?area=learning"
+  },
+  {
+    "id": "courses-with-activity",
+    "label": "Courses with Student Activity",
+    "description": "Reportable courses where students have been active",
+    "longDescription": "Reportable courses where at least one student has had course activity in the course window.",
+    "prompt": "How many courses have student activity, by term? What share of reportable courses is that?",
+    "contract": {
+      "metrics": [
+        "metric.courses_with_student_activity.v1"
+      ]
+    },
+    "format": "number",
+    "reportLink": "/reporting?area=teaching"
+  },
+  {
+    "id": "classic-courses",
+    "label": "Classic Courses",
+    "description": "Top-level courses still in the Original course view",
+    "longDescription": "Top-level courses still in the Original (Classic) course view.",
+    "prompt": "How many courses are still in the Classic course view, by term? How does that compare to Ultra?",
+    "contract": {
+      "metrics": [
+        "metric.classic_courses.v1"
+      ]
+    },
+    "format": "number",
+    "reportLink": "/reporting?area=migration"
+  },
+  {
+    "id": "average-grade",
+    "label": "Average Grade",
+    "description": "Average course grade across graded enrollments",
+    "longDescription": "Average course grade percentage across graded student enrollments in reportable courses.",
+    "prompt": "What is the average grade by term and by grade band? Which terms have the most failing students?",
+    "contract": {
+      "metrics": [
+        "metric.average_grade.v1"
+      ]
+    },
+    "format": "percent",
+    "reportLink": "/reporting?area=learning"
+  }
+]

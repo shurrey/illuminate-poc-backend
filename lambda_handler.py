@@ -9,12 +9,14 @@ Request flow:
         -> chat_engine (Bedrock Converse) -> Snowflake / MCP tools
 """
 import asyncio
+import functools
 import os
 import json
 import math
 import logging
 import re
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Header, Request
@@ -454,6 +456,226 @@ async def get_me(authorization: Optional[str] = Header(None)):
         "roles": user_roles,
         "is_admin": ADMIN_GROUP in groups,
     }
+
+
+CARD_FORMATS = ("number", "ratio", "percent")
+MAX_CUSTOM_CARDS = 100
+_CARD_ID = re.compile(r"c_[0-9a-f]{12}")
+
+
+@functools.lru_cache(maxsize=1)
+def _default_cards() -> list[dict]:
+    path = Path(__file__).resolve().parent / "semantic_layer" / "data" / "default_cards.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _bad_request(*errors: str) -> HTTPException:
+    return HTTPException(status_code=400, detail={"errors": list(errors)})
+
+
+def _card_body(payload) -> dict:
+    """The validated card fields, or a 400 listing every problem."""
+    from pydantic import ValidationError
+
+    if not isinstance(payload, dict):
+        raise _bad_request("body must be an object")
+    errors = []
+    for field, limit in (("label", 200), ("description", 4000), ("longDescription", 4000), ("prompt", 4000)):
+        value = payload.get(field)
+        if not isinstance(value, str):
+            errors.append(f"{field} is required")
+        elif field == "label" and not value.strip():
+            errors.append("label is required")
+        elif len(value) > limit:
+            errors.append(f"{field} must be at most {limit} characters")
+    if payload.get("format") not in CARD_FORMATS:
+        errors.append(f"format must be one of {', '.join(CARD_FORMATS)}")
+    link = payload.get("reportLink")
+    if link is not None and (not isinstance(link, str) or len(link) > 500):
+        errors.append("reportLink must be a string of at most 500 characters")
+    contract = payload.get("contract")
+    if not isinstance(contract, dict):
+        errors.append("contract must be an object")
+    else:
+        try:
+            QueryContract.model_validate(contract)
+        except ValidationError as e:
+            errors += [f"contract: {err['msg']}" for err in e.errors()]
+    if errors:
+        raise _bad_request(*errors)
+    body = {k: payload[k] for k in ("label", "description", "longDescription", "prompt", "contract", "format")}
+    if link is not None:
+        body["reportLink"] = link
+    return body
+
+
+def _custom_card(item: dict) -> dict:
+    return {**{k: v for k, v in item.items() if k not in ("version", "updated_at")}, "isBuiltIn": False, "enabled": True}
+
+
+def _load_layout(tenant_id: str, sub: str) -> tuple[dict, int]:
+    import user_items_store
+
+    item = user_items_store.get(tenant_id, sub, "layout")
+    if item is None:
+        return {"order": [], "disabled": [], "hidden": []}, 0
+    return {k: list(item.get(k, [])) for k in ("order", "disabled", "hidden")}, item["version"]
+
+
+def _save_layout(tenant_id: str, sub: str, layout: dict, version: int) -> None:
+    import user_items_store
+
+    try:
+        user_items_store.put(tenant_id, sub, "layout", None, layout, expected_version=version or None)
+    except user_items_store.Conflict:
+        raise HTTPException(status_code=409, detail="Your cards changed elsewhere; reload and try again")
+
+
+def _cards_view(tenant_id: str, sub: str) -> dict:
+    """Built-ins merged with the user's custom cards in layout order; an unlisted built-in or card is appended."""
+    import user_items_store
+
+    layout, version = _load_layout(tenant_id, sub)
+    by_id = {c["id"]: {**c, "isBuiltIn": True} for c in _default_cards() if c["id"] not in layout["hidden"]}
+    for item in user_items_store.list_kind(tenant_id, sub, "card"):
+        by_id[item["id"]] = _custom_card(item)
+    ordered = [i for i in dict.fromkeys(layout["order"]) if i in by_id]
+    ordered += [i for i in by_id if i not in ordered]
+    return {"cards": [{**by_id[i], "enabled": i not in layout["disabled"]} for i in ordered], "version": version}
+
+
+def _cards_caller(authorization: Optional[str]) -> tuple[str, str]:
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return tenant_for(user).tenant_id, user["sub"]
+
+
+async def _blocking(fn, *args):
+    return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+
+
+@app.get("/api/v1/me/cards")
+async def get_my_cards(authorization: Optional[str] = Header(None)) -> dict:
+    """The caller's home cards in layout order, built-ins included."""
+    tenant_id, sub = _cards_caller(authorization)
+    return await _blocking(_cards_view, tenant_id, sub)
+
+
+@app.put("/api/v1/me/cards/layout")
+async def put_my_card_layout(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
+    """Replace order, disabled and hidden; 400 on ids that are not built-in or the caller's own, 409 if stale."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+    version = payload.get("expected_version")
+    lists = {k: payload.get(k) for k in ("order", "disabled", "hidden")}
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise _bad_request("expected_version must be a non-negative integer")
+    if any(not isinstance(v, list) or any(not isinstance(i, str) for i in v) for v in lists.values()):
+        raise _bad_request("order, disabled and hidden must be lists of card ids")
+
+    def save() -> dict:
+        builtin = {c["id"] for c in _default_cards()}
+        own = {i["id"] for i in user_items_store.list_kind(tenant_id, sub, "card")}
+        unknown = sorted({i for v in lists.values() for i in v} - builtin - own)
+        not_builtin = sorted(set(lists["hidden"]) - builtin)
+        if unknown or not_builtin:
+            raise _bad_request(*[f"unknown card id {i}" for i in unknown],
+                               *[f"only built-in cards can be hidden: {i}" for i in not_builtin if i not in unknown])
+        _save_layout(tenant_id, sub, lists, version)
+        return _cards_view(tenant_id, sub)
+
+    return await _blocking(save)
+
+
+@app.post("/api/v1/me/cards/reset")
+async def reset_my_cards(authorization: Optional[str] = Header(None)) -> dict:
+    """Unhide and enable the built-ins in their original order, followed by the caller's custom cards."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+
+    def reset() -> dict:
+        layout, version = _load_layout(tenant_id, sub)
+        builtin = [c["id"] for c in _default_cards()]
+        custom = [i["id"] for i in user_items_store.list_kind(tenant_id, sub, "card")]
+        order = builtin + [i for i in dict.fromkeys(layout["order"]) if i in custom]
+        order += [i for i in custom if i not in order]
+        _save_layout(tenant_id, sub, {"order": order, "disabled": [i for i in layout["disabled"] if i in custom],
+                                      "hidden": []}, version)
+        return _cards_view(tenant_id, sub)
+
+    return await _blocking(reset)
+
+
+@app.post("/api/v1/me/cards")
+async def create_my_card(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
+    """Create a custom card with a server-generated id and append it to the layout; 400 at 100 cards."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+    body = _card_body(payload)
+
+    def create() -> dict:
+        if user_items_store.count(tenant_id, sub, "card") >= MAX_CUSTOM_CARDS:
+            raise _bad_request(f"You can have at most {MAX_CUSTOM_CARDS} custom cards")
+        card_id = f"c_{uuid.uuid4().hex[:12]}"
+        saved = user_items_store.put(tenant_id, sub, "card", card_id, body)
+        layout, version = _load_layout(tenant_id, sub)
+        if not version:
+            layout["order"] = [c["id"] for c in _default_cards()]
+        layout["order"].append(card_id)
+        _save_layout(tenant_id, sub, layout, version)
+        return _custom_card(saved)
+
+    return await _blocking(create)
+
+
+@app.put("/api/v1/me/cards/{card_id}")
+async def update_my_card(card_id: str, payload: dict, authorization: Optional[str] = Header(None)) -> dict:
+    """Update one of the caller's own custom cards: 400 for a built-in, 404 for any other id."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+    if card_id in {c["id"] for c in _default_cards()}:
+        raise _bad_request("Built-in cards cannot be edited")
+    body = _card_body(payload)
+
+    def update() -> dict:
+        existing = user_items_store.get(tenant_id, sub, "card", card_id) if _CARD_ID.fullmatch(card_id) else None
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Card not found")
+        try:
+            return _custom_card(user_items_store.put(
+                tenant_id, sub, "card", card_id, body, expected_version=existing["version"]))
+        except user_items_store.Conflict:
+            raise HTTPException(status_code=409, detail="This card changed elsewhere; reload and try again")
+
+    return await _blocking(update)
+
+
+@app.delete("/api/v1/me/cards/{card_id}")
+async def delete_my_card(card_id: str, authorization: Optional[str] = Header(None)) -> dict:
+    """Delete a custom card, or hide a built-in; 404 for any other id."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+
+    def remove() -> dict:
+        layout, version = _load_layout(tenant_id, sub)
+        if card_id in {c["id"] for c in _default_cards()}:
+            if card_id not in layout["hidden"]:
+                layout["hidden"].append(card_id)
+                _save_layout(tenant_id, sub, layout, version)
+        elif _CARD_ID.fullmatch(card_id) and user_items_store.delete(tenant_id, sub, "card", card_id):
+            if version:
+                _save_layout(tenant_id, sub, {k: [i for i in v if i != card_id] for k, v in layout.items()}, version)
+        else:
+            raise HTTPException(status_code=404, detail="Card not found")
+        return _cards_view(tenant_id, sub)
+
+    return await _blocking(remove)
 
 
 @app.post("/api/chat", response_model=ChatResponse)
