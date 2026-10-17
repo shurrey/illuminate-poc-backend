@@ -480,3 +480,30 @@ def test_a_join_set_operation_or_other_source_modifies_the_rows(outer, governed)
 def test_one_part_filtered_grouped_or_limited_keeps_governed_rows(outer):
     result = _label(outer, ["COURSE_ROLE"])
     assert (result["governance"], result["rows"]) == ("full", "governed")
+
+
+def _real_catalog():
+    from semantic_layer.catalog import default_catalog
+    return default_catalog()
+
+
+_REAL = _real_catalog()
+
+
+def _real_part(ds, **contract) -> QueryContract:
+    window = {"time_range": {"dimension": ds.required_time_range, "start": "2026-01-01"}} if ds.required_time_range else {}
+    return QueryContract(**contract, **window)
+
+
+_REAL_PARTS = ([(m, _real_part(_REAL.datasets[_REAL.metrics[m].measure.partition(":")[0]], metrics=[m]),
+                 _REAL.metrics[m].short_name) for m in sorted(_REAL.metrics)]
+               + [(f"{ds.id}:{ds.measures[0].name}", _real_part(ds, measures=[f"{ds.id}:{ds.measures[0].name}"]),
+                   ds.measures[0].name) for ds in _REAL.datasets.values() if ds.measures])
+
+
+@pytest.mark.parametrize("ref, contract, column", _REAL_PARTS, ids=[ref for ref, _, _ in _REAL_PARTS])
+def test_every_real_metric_and_measure_splices_as_a_part_that_passes_a_viewers_guard(ref, contract, column, executed):
+    spliced = splice(f"SELECT {column} FROM governed_1", {"governed_1": contract}, _REAL, DB, allow_identity=False)
+    sqlglot.parse_one(spliced.sql, dialect="snowflake")
+    assert _guard(spliced) == {"columns": [], "rows": []}
+    assert executed == [spliced.sql.strip()]
