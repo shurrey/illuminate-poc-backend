@@ -553,7 +553,8 @@ def _mutate_layout(tenant_id: str, sub: str, mutate) -> None:
 
 
 def _cards_view(tenant_id: str, sub: str) -> dict:
-    """Built-ins merged with the user's custom cards in layout order; an unlisted built-in or card is appended."""
+    """Built-ins merged with the user's custom cards in layout order; an unlisted built-in or card is appended.
+    hidden lists the hidden built-ins in default order and disabled the disabled cards in layout order."""
     import user_items_store
 
     layout, version = _load_layout(tenant_id, sub)
@@ -562,7 +563,12 @@ def _cards_view(tenant_id: str, sub: str) -> dict:
         by_id[item["id"]] = _custom_card(item)
     ordered = [i for i in dict.fromkeys(layout["order"]) if i in by_id]
     ordered += [i for i in by_id if i not in ordered]
-    return {"cards": [{**by_id[i], "enabled": i not in layout["disabled"]} for i in ordered], "version": version}
+    return {
+        "cards": [{**by_id[i], "enabled": i not in layout["disabled"]} for i in ordered],
+        "hidden": [c["id"] for c in _default_cards() if c["id"] in layout["hidden"]],
+        "disabled": [i for i in ordered if i in layout["disabled"]],
+        "version": version,
+    }
 
 
 def _cards_caller(authorization: Optional[str]) -> tuple[str, str]:

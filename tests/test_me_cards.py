@@ -242,3 +242,34 @@ def test_delete_and_reset_retry_a_layout_conflict(as_user, monkeypatch):
     _conflict_layout_writes(monkeypatch, 2)
     r = c.post("/api/v1/me/cards/reset", headers=AUTH)
     assert r.status_code == 200 and ids(r) == BUILTIN
+
+
+def test_cards_view_lists_hidden_and_disabled(as_user):
+    c = as_user()
+    first = c.get("/api/v1/me/cards", headers=AUTH).json()
+    assert first["hidden"] == [] and first["disabled"] == []
+    put = c.put("/api/v1/me/cards/layout", headers=AUTH, json={
+        "order": [], "disabled": ["classic-courses", "active-students"],
+        "hidden": ["average-grade", "student-engagement"], "expected_version": 0}).json()
+    assert put["hidden"] == ["student-engagement", "average-grade"]
+    assert put["disabled"] == ["active-students", "classic-courses"]
+    assert c.get("/api/v1/me/cards", headers=AUTH).json() == put
+
+
+def test_every_cards_view_route_returns_hidden(as_user):
+    c = as_user()
+    cid = c.post("/api/v1/me/cards", headers=AUTH, json=NEW).json()["id"]
+    hidden = c.delete("/api/v1/me/cards/average-grade", headers=AUTH).json()
+    assert hidden["hidden"] == ["average-grade"]
+    assert c.delete(f"/api/v1/me/cards/{cid}", headers=AUTH).json()["hidden"] == ["average-grade"]
+    reset = c.post("/api/v1/me/cards/reset", headers=AUTH).json()
+    assert reset["hidden"] == [] and reset["disabled"] == []
+
+
+def test_hidden_omits_ids_that_are_no_longer_built_in(as_user, monkeypatch):
+    c = as_user()
+    c.put("/api/v1/me/cards/layout", headers=AUTH, json={
+        "order": [], "disabled": [], "hidden": ["classic-courses"], "expected_version": 0})
+    defaults = [d for d in lambda_handler._default_cards() if d["id"] != "classic-courses"]
+    monkeypatch.setattr(lambda_handler, "_default_cards", lambda: defaults)
+    assert c.get("/api/v1/me/cards", headers=AUTH).json()["hidden"] == []
