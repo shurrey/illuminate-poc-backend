@@ -237,7 +237,7 @@ def _label(outer, columns, governed=None):
 
 def test_a_passed_through_column_is_governed_with_its_definition():
     result = _label("SELECT course_role, student_enrollments FROM governed_1", ["COURSE_ROLE", "STUDENT_ENROLLMENTS"])
-    assert result == {"governance": "full", "columns": {
+    assert result == {"governance": "full", "rows": "governed", "columns": {
         "COURSE_ROLE": {"governed": True, "definition": "dimension:course_role"},
         "STUDENT_ENROLLMENTS": {"governed": True, "definition": "metric.student_enrollments.v1"}}}
 
@@ -259,7 +259,7 @@ def test_a_governed_column_passed_through_an_outer_cte_is_governed():
 
 def test_an_aggregate_over_a_governed_column_is_ungoverned():
     result = _label("SELECT SUM(student_enrollments) AS total FROM governed_1", ["TOTAL"])
-    assert result == {"governance": "none", "columns": {"TOTAL": {"governed": False, "reason": REASON}}}
+    assert result == {"governance": "none", "rows": "governed", "columns": {"TOTAL": {"governed": False, "reason": REASON}}}
 
 
 @pytest.mark.parametrize("expression", ["student_enrollments + 1", "CAST(student_enrollments AS VARCHAR)",
@@ -326,6 +326,59 @@ def test_a_lineage_failure_leaves_every_column_ungoverned_with_the_untraced_reas
         raise RuntimeError("boom")
     monkeypatch.setattr(governed_sql, "lineage", boom)
     result = _label("SELECT course_role, student_enrollments FROM governed_1", ["COURSE_ROLE", "STUDENT_ENROLLMENTS"])
-    assert result == {"governance": "none", "columns": {
+    assert result == {"governance": "none", "rows": "modified", "columns": {
         c: {"governed": False, "reason": "Column origin could not be traced"}
         for c in ("COURSE_ROLE", "STUDENT_ENROLLMENTS")}}
+
+
+@pytest.mark.parametrize("results", [["a", "A"], ["A", "a"]])
+def test_selects_whose_names_differ_only_by_case_are_all_ungoverned(results):
+    result = _label('SELECT COUNT(*) AS "a", course_role AS "A" FROM governed_1 GROUP BY course_role', results)
+    assert result["governance"] == "none"
+    assert not any(c["governed"] for c in result["columns"].values())
+
+
+def test_an_exact_case_quoted_alias_is_matched():
+    result = _label('SELECT course_role AS "Role" FROM governed_1', ["Role"])
+    assert result["columns"]["Role"]["governed"] is True
+
+
+def test_a_join_to_a_raw_table_with_only_governed_columns_selected_is_partial_with_rows_modified():
+    result = _label(f"SELECT g.course_role FROM governed_1 g JOIN {RAW} r ON TRUE", ["COURSE_ROLE"])
+    assert result["columns"]["COURSE_ROLE"]["governed"] is True
+    assert (result["governance"], result["rows"]) == ("partial", "modified")
+
+
+def test_a_where_in_subquery_over_a_raw_table_is_partial_with_rows_modified():
+    result = _label(f"SELECT course_role FROM governed_1 WHERE course_role IN (SELECT note FROM {RAW})",
+                    ["COURSE_ROLE"])
+    assert (result["governance"], result["rows"]) == ("partial", "modified")
+
+
+def test_a_join_to_a_non_governed_cte_is_rows_modified():
+    result = _label(f"WITH x AS (SELECT note FROM {RAW}) SELECT g.course_role FROM governed_1 g JOIN x ON TRUE",
+                    ["COURSE_ROLE"])
+    assert (result["governance"], result["rows"]) == ("partial", "modified")
+
+
+def test_filters_distinct_and_limit_over_governed_parts_keep_full():
+    result = _label("SELECT DISTINCT g.course_role FROM governed_1 g WHERE g.course_role = 'v' LIMIT 5",
+                    ["COURSE_ROLE"])
+    assert (result["governance"], result["rows"]) == ("full", "governed")
+
+
+def test_a_scalar_subquery_returning_a_governed_column_is_ungoverned():
+    result = _label("SELECT (SELECT MAX(course_role) FROM governed_1) AS m FROM governed_1", ["M"])
+    assert result["columns"]["M"]["governed"] is False
+
+
+def test_a_window_over_a_governed_column_is_ungoverned():
+    result = _label("SELECT MAX(student_enrollments) OVER (PARTITION BY course_role) AS m FROM governed_1", ["M"])
+    assert result["columns"]["M"]["governed"] is False
+
+
+def test_group_by_a_governed_dimension_with_count_elsewhere_is_partial():
+    result = _label("SELECT g.course_role, COUNT(*) AS n FROM governed_1 g GROUP BY g.course_role",
+                    ["COURSE_ROLE", "N"])
+    assert result["governance"] == "partial"
+    assert result["columns"]["COURSE_ROLE"]["governed"] is True

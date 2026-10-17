@@ -202,24 +202,42 @@ def _origin(root: Node, spliced: Spliced) -> tuple[str, str] | None:
     return (part, column) if part in spliced.part_names and column in spliced.parts[part].outputs else None
 
 
+def _rows_modified(tree: exp.Query, spliced: Spliced) -> bool:
+    """Whether the outer query reads anything but governed parts (a raw table, an outer CTE, a table function)."""
+    tables = (t for t in tree.find_all(exp.Table)
+              if not (unqualified_table(t) and t.name.lower() in spliced.part_names))
+    return any(True for _ in tables) or any(True for _ in tree.find_all(exp.Lateral, exp.Unnest))
+
+
 def label(spliced: Spliced, result_columns: list[str], *, reason: str) -> dict:
     """Mark each result column governed when it is one governed part column passed through unchanged
-    (aliasing allowed), else ungoverned with reason. Never raises; a tracing failure leaves all ungoverned."""
+    (aliasing allowed), else ungoverned with reason. Never raises; a tracing failure leaves all ungoverned.
+    `rows` is "modified" when the outer query reads a non-governed source, which also caps governance at partial."""
     ungoverned = {"governed": False, "reason": reason}
     try:
         schema = {name: {column: "VARCHAR" for column in part.outputs} for name, part in spliced.parts.items()}
-        tree = qualify(_trace_tree(spliced), schema=schema, dialect="snowflake", validate_qualify_columns=False)
-        outputs = {name.upper(): name for name in tree.named_selects}
+        trace = _trace_tree(spliced)
+        modified = _rows_modified(trace, spliced)
+        tree = qualify(trace, schema=schema, dialect="snowflake", validate_qualify_columns=False)
+        folded: dict[str, list[str]] = {}
+        for name in tree.named_selects:
+            folded.setdefault(name.upper(), []).append(name)
         columns = {}
         for column in result_columns:
-            actual = outputs.get(column.upper())
-            root = lineage(exp.to_identifier(actual, quoted=True).sql(), tree, schema=schema, dialect="snowflake") \
-                if actual is not None else None
-            origin = _origin(root, spliced) if root is not None else None
+            names = folded.get(column.upper(), [])
+            # Selects whose names differ only by case cannot be told apart in the result, so none is claimed.
+            origin = None
+            if len(names) == 1:
+                root = lineage(exp.to_identifier(names[0], quoted=True).sql(), tree, schema=schema,
+                               dialect="snowflake")
+                origin = _origin(root, spliced)
             columns[column] = ({"governed": True, "definition": spliced.parts[origin[0]].outputs[origin[1]]}
                                if origin else dict(ungoverned))
     except Exception:
+        modified = True
         columns = {c: {"governed": False, "reason": UNTRACED} for c in result_columns}
     governed = sum(1 for c in columns.values() if c["governed"])
-    return {"governance": "none" if governed == 0 else "full" if governed == len(columns) else "partial",
-            "columns": columns}
+    level = "none" if governed == 0 else "full" if governed == len(columns) else "partial"
+    if modified and level == "full":
+        level = "partial"
+    return {"governance": level, "rows": "modified" if modified else "governed", "columns": columns}
