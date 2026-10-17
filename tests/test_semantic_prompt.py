@@ -66,3 +66,13 @@ def test_core_prompt_never_mentions_learn():
 def test_premium_prompt_mentions_learn():
     assert "`LEARN` schema" in PREMIUM_PROMPT
     assert "PROD_DB.LEARN.<table>" in PREMIUM_PROMPT
+
+
+def test_viewer_prompt_forbids_returning_identity():
+    assert "Never try to return names, emails" in PROMPT
+
+
+def test_identity_prompt_allows_identity_on_request_only():
+    prompt = build_system_prompt(CATALOG, "PROD_DB", learn=False, allow_identity=True)
+    assert "Never try to return names, emails" not in prompt
+    assert "only when the user asks" in prompt and "never volunteer" in prompt

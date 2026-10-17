@@ -321,7 +321,8 @@ def _engine_kwargs(tenant: Tenant, user: dict) -> dict:
     tools = ChatTools(catalog, database, tenant=tenant, overlays=overlays,
                       allow_identity=allow_identity, identity_audit=audit)
     return {"tools": tools,
-            "system_prompt": build_system_prompt(catalog, database, learn=allows_learn(tenant))}
+            "system_prompt": build_system_prompt(catalog, database, learn=allows_learn(tenant),
+                                            allow_identity=allow_identity)}
 
 
 async def send_message(

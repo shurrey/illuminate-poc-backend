@@ -21,8 +21,7 @@ _RULES = """## How to answer
    reproduce whole result tables in your answer.
 
 ## Privacy (FERPA)
-- Dimensions marked "filter only" are personally identifiable: you may filter on them, never group by them.
-- Never try to return names, emails or other identifiers of individual people. Report counts and rates.
+{privacy}
 
 ## Style
 - Lead with the finding, then the supporting numbers. Round percentages to one decimal place.
@@ -39,12 +38,19 @@ def _dimension(d: dict) -> str:
     return d["name"]
 
 
+_VIEWER_PRIVACY = (
+    '- Dimensions marked "filter only" are personally identifiable: you may filter on them, never group by them.\n'
+    "- Never try to return names, emails or other identifiers of individual people. Report counts and rates.")
+_IDENTITY_PRIVACY = (
+    "- This user may see identity. Return names, emails or ids of individual people only when the user asks "
+    "for them, only the columns needed, and never volunteer them. Otherwise report counts and rates.")
+
 _LEARN_RULE = (" and the `LEARN` schema. Name LEARN tables with their schema (`{database}.LEARN.<table>`) "
                "in `execute_sql`")
 
 
-def build_system_prompt(catalog: Catalog, database: str, *, learn: bool) -> str:
-    view = public_catalog(catalog)
+def build_system_prompt(catalog: Catalog, database: str, *, learn: bool, allow_identity: bool = False) -> str:
+    view = public_catalog(catalog, allow_identity=allow_identity)
     lines = [
         "You are Illuminate, an analytics assistant for educational institutions. You answer questions "
         "about courses, students, engagement and grades from a governed semantic layer.",
@@ -70,5 +76,5 @@ def build_system_prompt(catalog: Catalog, database: str, *, learn: bool) -> str:
             lines.append("Also uses dimensions from: " + ", ".join(f"`{j}`" for j in ds["joins"]))
         if ds["filters"]:
             lines.append("Named filters (used by metrics): " + ", ".join(f["name"] for f in ds["filters"]))
-    lines += ["", _RULES.format(database=database, learn=_LEARN_RULE.format(database=database) if learn else "")]
+    lines += ["", _RULES.format(database=database, privacy=_IDENTITY_PRIVACY if allow_identity else _VIEWER_PRIVACY, learn=_LEARN_RULE.format(database=database) if learn else "")]
     return "\n".join(lines)
