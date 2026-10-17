@@ -4,6 +4,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { LambdaProxy } from './lambda-proxy';
 import { ConversationTable } from './conversation-table';
 import { OverlayTable } from './overlay-table';
+import { UserItemsTable } from './user-items-table';
 import { TenantTable } from './tenant-table';
 import { Discovery } from '../base/discovery';
 
@@ -29,6 +30,10 @@ export class ApiStack extends cdk.Stack {
       environment: props.environment,
     });
 
+    const userItemsTable = new UserItemsTable(this, 'UserItemsTable', {
+      environment: props.environment,
+    });
+
     const tenantTable = new TenantTable(this, 'TenantTable', {
       environment: props.environment,
     });
@@ -39,6 +44,8 @@ export class ApiStack extends cdk.Stack {
       conversationTableName: conversationTable.tableName,
       overlayTableArn: overlayTable.table.tableArn,
       overlayTableName: overlayTable.tableName,
+      userItemsTableArn: userItemsTable.table.tableArn,
+      userItemsTableName: userItemsTable.tableName,
       tenantTableArn: tenantTable.table.tableArn,
       tenantTableName: tenantTable.tableName,
       userPoolId: props.userPoolId,
