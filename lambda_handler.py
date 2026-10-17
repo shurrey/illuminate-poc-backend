@@ -473,10 +473,20 @@ def _bad_request(*errors: str) -> HTTPException:
     return HTTPException(status_code=400, detail={"errors": list(errors)})
 
 
-def _card_body(payload) -> dict:
-    """The validated card fields, or a 400 listing every problem."""
+def _contract_errors(contract) -> list[str]:
     from pydantic import ValidationError
 
+    if not isinstance(contract, dict):
+        return ["contract must be an object"]
+    try:
+        QueryContract.model_validate(contract)
+    except ValidationError as e:
+        return [f"contract: {err['msg']}" for err in e.errors()]
+    return []
+
+
+def _card_body(payload) -> dict:
+    """The validated card fields, or a 400 listing every problem."""
     if not isinstance(payload, dict):
         raise _bad_request("body must be an object")
     errors = []
@@ -494,14 +504,7 @@ def _card_body(payload) -> dict:
     if link is not None and (not isinstance(link, str) or len(link) > 500 or not link.startswith("/")
                              or link.startswith("//") or "\\" in link):
         errors.append("reportLink must be an app-relative path starting with a single / (at most 500 characters)")
-    contract = payload.get("contract")
-    if not isinstance(contract, dict):
-        errors.append("contract must be an object")
-    else:
-        try:
-            QueryContract.model_validate(contract)
-        except ValidationError as e:
-            errors += [f"contract: {err['msg']}" for err in e.errors()]
+    errors += _contract_errors(payload.get("contract"))
     if errors:
         raise _bad_request(*errors)
     body = {k: payload[k] for k in ("label", "description", "longDescription", "prompt", "contract", "format")}
@@ -710,6 +713,350 @@ async def delete_my_card(card_id: str, authorization: Optional[str] = Header(Non
         return _cards_view(tenant_id, sub)
 
     return await _blocking(remove)
+
+
+MAX_QUERIES = 500
+MAX_PREF_IDS = 200
+MAX_RECENT_REPORTS = 5
+WIDGETS = ("ai", "kpis", "feed", "quickaccess")
+_QUERY_ID = re.compile(r"q_[0-9a-f]{12}")
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _iso_or(value, default):
+    from datetime import datetime
+
+    if isinstance(value, str) and len(value) <= 64:
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return value
+        except ValueError:
+            pass
+    return default
+
+
+def _query_body(payload) -> dict:
+    """The validated saved-query fields, or a 400 listing every problem."""
+    if not isinstance(payload, dict):
+        raise _bad_request("body must be an object")
+    errors = []
+    for field, limit in (("name", 200), ("prompt", 4000), ("description", 4000)):
+        value = payload.get(field)
+        if not isinstance(value, str):
+            errors.append(f"{field} is required")
+        elif field == "name" and not value.strip():
+            errors.append("name is required")
+        elif len(value) > limit:
+            errors.append(f"{field} must be at most {limit} characters")
+    errors += _contract_errors(payload.get("contract"))
+    if errors:
+        raise _bad_request(*errors)
+    return {k: payload[k] for k in ("name", "prompt", "description", "contract")}
+
+
+def _query_view(item: dict) -> dict:
+    return {k: v for k, v in item.items() if k not in ("version", "updated_at")}
+
+
+def _query_item(tenant_id: str, sub: str, query_id: str) -> dict:
+    import user_items_store
+
+    item = user_items_store.get(tenant_id, sub, "query", query_id) if _QUERY_ID.fullmatch(query_id) else None
+    if item is None:
+        raise HTTPException(status_code=404, detail="Query not found")
+    return item
+
+
+def _replace_query(tenant_id: str, sub: str, query_id: str, change) -> dict:
+    """Apply change(body) to the stored query, re-reading on a concurrent write (up to 3 attempts)."""
+    import user_items_store
+
+    for attempt in range(3):
+        item = _query_item(tenant_id, sub, query_id)
+        body = {k: v for k, v in item.items() if k not in ("id", "version", "updated_at")}
+        change(body)
+        try:
+            return _query_view(user_items_store.put(
+                tenant_id, sub, "query", query_id, body, expected_version=item["version"]))
+        except user_items_store.Conflict:
+            if attempt == 2:
+                raise HTTPException(status_code=409, detail="This query changed elsewhere; reload and try again")
+
+
+@app.get("/api/v1/me/queries")
+async def get_my_queries(authorization: Optional[str] = Header(None)) -> dict:
+    """The caller's saved queries, newest first."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+
+    def load() -> dict:
+        items = user_items_store.list_kind(tenant_id, sub, "query")
+        items.sort(key=lambda i: i.get("createdAt") or "", reverse=True)
+        return {"queries": [_query_view(i) for i in items]}
+
+    return await _blocking(load)
+
+
+@app.post("/api/v1/me/queries")
+async def create_my_query(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
+    """Save a governed query with a server-generated id; 400 at 500 queries."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+    body = {**_query_body(payload), "kind": "governed", "createdAt": _now_iso(), "lastUsedAt": None}
+
+    def create() -> dict:
+        if user_items_store.count(tenant_id, sub, "query") >= MAX_QUERIES:
+            raise _bad_request(f"You can save at most {MAX_QUERIES} queries")
+        return _query_view(user_items_store.put(tenant_id, sub, "query", f"q_{uuid.uuid4().hex[:12]}", body))
+
+    return await _blocking(create)
+
+
+@app.put("/api/v1/me/queries/{query_id}")
+async def update_my_query(query_id: str, payload: dict, authorization: Optional[str] = Header(None)) -> dict:
+    """Update name, description, prompt and contract of one of the caller's queries."""
+    tenant_id, sub = _cards_caller(authorization)
+    body = _query_body(payload)
+    return await _blocking(_replace_query, tenant_id, sub, query_id, lambda b: b.update(body))
+
+
+@app.post("/api/v1/me/queries/{query_id}/used")
+async def mark_my_query_used(query_id: str, authorization: Optional[str] = Header(None)) -> dict:
+    """Set lastUsedAt to now."""
+    tenant_id, sub = _cards_caller(authorization)
+    now = _now_iso()
+    return await _blocking(_replace_query, tenant_id, sub, query_id, lambda b: b.update(lastUsedAt=now))
+
+
+@app.delete("/api/v1/me/queries/{query_id}")
+async def delete_my_query(query_id: str, authorization: Optional[str] = Header(None)) -> dict:
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+
+    def remove() -> dict:
+        if not (_QUERY_ID.fullmatch(query_id) and user_items_store.delete(tenant_id, sub, "query", query_id)):
+            raise HTTPException(status_code=404, detail="Query not found")
+        return {"deleted": query_id}
+
+    return await _blocking(remove)
+
+
+_PREF_LISTS = ("favorites", "recentReports", "readNotifications")
+_PREF_LIMITS = {"favorites": MAX_PREF_IDS, "recentReports": MAX_RECENT_REPORTS, "readNotifications": MAX_PREF_IDS}
+_PREFS_CONFLICT = "Your preferences changed elsewhere; reload and try again"
+
+
+def _default_prefs() -> dict:
+    return {"favorites": [], "recentReports": [], "readNotifications": [], "visibleWidgets": list(WIDGETS)}
+
+
+def _prefs_view(tenant_id: str, sub: str) -> dict:
+    import user_items_store
+
+    item = user_items_store.get(tenant_id, sub, "prefs")
+    if item is None:
+        return {**_default_prefs(), "version": 0}
+    return {**{k: item.get(k, v) for k, v in _default_prefs().items()}, "version": item["version"]}
+
+
+def _prefs_body(payload) -> dict:
+    errors = []
+    body = {}
+    for field in (*_PREF_LISTS, "visibleWidgets"):
+        value = payload.get(field)
+        if not isinstance(value, list) or any(not isinstance(i, str) or len(i) > 200 for i in value):
+            errors.append(f"{field} must be a list of strings (at most 200 characters each)")
+            continue
+        value = list(dict.fromkeys(value))
+        if field == "visibleWidgets":
+            unknown = [i for i in value if i not in WIDGETS]
+            if unknown:
+                errors.append(f"unknown widgets: {', '.join(unknown)}")
+        elif len(value) > _PREF_LIMITS[field]:
+            errors.append(f"{field} can hold at most {_PREF_LIMITS[field]} entries")
+        body[field] = value
+    if errors:
+        raise _bad_request(*errors)
+    return body
+
+
+@app.get("/api/v1/me/prefs")
+async def get_my_prefs(authorization: Optional[str] = Header(None)) -> dict:
+    tenant_id, sub = _cards_caller(authorization)
+    return await _blocking(_prefs_view, tenant_id, sub)
+
+
+@app.put("/api/v1/me/prefs")
+async def put_my_prefs(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
+    """Replace the four preference lists; 409 when expected_version is stale."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+    version = payload.get("expected_version")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 0:
+        raise _bad_request("expected_version must be a non-negative integer")
+    body = _prefs_body(payload)
+
+    def save() -> dict:
+        try:
+            user_items_store.put(tenant_id, sub, "prefs", None, body, expected_version=version or None)
+        except user_items_store.Conflict:
+            raise HTTPException(status_code=409, detail=_PREFS_CONFLICT)
+        return _prefs_view(tenant_id, sub)
+
+    return await _blocking(save)
+
+
+MAX_IMPORT_CARDS = 1000
+MAX_IMPORT_QUERIES = 2000
+
+
+def _import_id(prefix: str, sub: str, kind: str, source_id) -> str:
+    import hashlib
+
+    return prefix + hashlib.sha256(f"{sub}:{kind}:{source_id}".encode()).hexdigest()[:12]
+
+
+def _skip_reason(exc: HTTPException) -> str:
+    detail = exc.detail
+    return "; ".join(detail["errors"]) if isinstance(detail, dict) else str(detail)
+
+
+def _name_of(item, field: str) -> str:
+    value = item.get(field) if isinstance(item, dict) else None
+    return value[:200] if isinstance(value, str) else ""
+
+
+def _import_cards(tenant_id: str, sub: str, cards: list, skipped: list) -> int:
+    """Create the custom cards, then apply order and enabled state for all cards in one layout write."""
+    import user_items_store
+
+    builtin = {c["id"] for c in _default_cards()}
+    room = MAX_CUSTOM_CARDS - user_items_store.count(tenant_id, sub, "card")
+    order, disabled, created = [], [], 0
+    for card in cards:
+        if not isinstance(card, dict) or not isinstance(card.get("id"), str) or len(card["id"]) > 200:
+            skipped.append({"kind": "card", "name": _name_of(card, "label"), "reason": "card needs a string id"})
+            continue
+        if card["id"] in builtin:
+            target = card["id"]
+        elif card.get("isBuiltIn") is True:
+            continue
+        else:
+            try:
+                body = _card_body(card)
+            except HTTPException as e:
+                skipped.append({"kind": "card", "name": _name_of(card, "label"), "reason": _skip_reason(e)})
+                continue
+            target = _import_id("c_", sub, "card", card["id"])
+            try:
+                if room <= 0:
+                    raise _bad_request(f"You can have at most {MAX_CUSTOM_CARDS} custom cards")
+                user_items_store.put(tenant_id, sub, "card", target, body)
+                room -= 1
+                created += 1
+            except HTTPException as e:
+                skipped.append({"kind": "card", "name": _name_of(card, "label"), "reason": _skip_reason(e)})
+                continue
+            except user_items_store.Conflict:
+                pass
+        order.append(target)
+        if card.get("enabled") is False:
+            disabled.append(target)
+
+    if order:
+        def apply(layout: dict, version: int) -> None:
+            existing = layout["order"] if version else [c["id"] for c in _default_cards()]
+            layout["order"] = list(dict.fromkeys(order + existing))
+            layout["disabled"] = list(dict.fromkeys(layout["disabled"] + disabled))
+
+        _mutate_layout(tenant_id, sub, apply)
+    return created
+
+
+def _import_queries(tenant_id: str, sub: str, queries: list, skipped: list) -> int:
+    import user_items_store
+
+    room = MAX_QUERIES - user_items_store.count(tenant_id, sub, "query")
+    created = 0
+    for i, query in enumerate(queries):
+        name = _name_of(query, "name")
+        try:
+            body = _query_body(query)
+            if room <= 0:
+                raise _bad_request(f"You can save at most {MAX_QUERIES} queries")
+        except HTTPException as e:
+            skipped.append({"kind": "query", "name": name, "reason": _skip_reason(e)})
+            continue
+        source_id = query.get("id") if isinstance(query.get("id"), str) else f"index-{i}"
+        body.update(kind="governed", createdAt=_iso_or(query.get("createdAt"), _now_iso()),
+                    lastUsedAt=_iso_or(query.get("lastUsedAt"), None))
+        try:
+            user_items_store.put(tenant_id, sub, "query", _import_id("q_", sub, "query", source_id), body)
+            room -= 1
+            created += 1
+        except user_items_store.Conflict:
+            pass
+    return created
+
+
+def _import_prefs(tenant_id: str, sub: str, prefs, skipped: list) -> None:
+    """Only when the user has no stored prefs; over-long lists are truncated and unknown widgets dropped."""
+    import user_items_store
+
+    if prefs is None or user_items_store.get(tenant_id, sub, "prefs") is not None:
+        return
+    if not isinstance(prefs, dict):
+        skipped.append({"kind": "prefs", "name": "", "reason": "prefs must be an object"})
+        return
+    cleaned = {}
+    for field in _PREF_LISTS:
+        value = prefs.get(field, [])
+        cleaned[field] = [i for i in value if isinstance(i, str) and len(i) <= 200][:_PREF_LIMITS[field]] \
+            if isinstance(value, list) else []
+    widgets = prefs.get("visibleWidgets")
+    cleaned["visibleWidgets"] = [w for w in dict.fromkeys(widgets) if w in WIDGETS] \
+        if isinstance(widgets, list) and all(isinstance(w, str) for w in widgets) else list(WIDGETS)
+    try:
+        user_items_store.put(tenant_id, sub, "prefs", None, cleaned)
+    except user_items_store.Conflict:
+        pass
+
+
+@app.post("/api/v1/me/import")
+async def import_my_items(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
+    """One-time import of a browser's saved cards, queries and preferences; later calls are no-ops."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+    cards, queries, prefs = payload.get("cards", []), payload.get("queries", []), payload.get("prefs")
+    if not isinstance(cards, list) or len(cards) > MAX_IMPORT_CARDS:
+        raise _bad_request(f"cards must be a list of at most {MAX_IMPORT_CARDS}")
+    if not isinstance(queries, list) or len(queries) > MAX_IMPORT_QUERIES:
+        raise _bad_request(f"queries must be a list of at most {MAX_IMPORT_QUERIES}")
+
+    def run() -> dict:
+        if user_items_store.get(tenant_id, sub, "imported") is not None:
+            return {"status": "already_imported"}
+        skipped: list = []
+        n_cards = _import_cards(tenant_id, sub, cards, skipped)
+        n_queries = _import_queries(tenant_id, sub, queries, skipped)
+        _import_prefs(tenant_id, sub, prefs, skipped)
+        try:
+            user_items_store.put(tenant_id, sub, "imported", None, {"at": _now_iso()})
+        except user_items_store.Conflict:
+            return {"status": "already_imported"}
+        return {"status": "imported", "cards": n_cards, "queries": n_queries, "skipped": skipped}
+
+    return await _blocking(run)
 
 
 @app.post("/api/chat", response_model=ChatResponse)

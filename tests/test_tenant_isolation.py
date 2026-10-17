@@ -46,6 +46,8 @@ MEASURE = "measure:dataset.student_grade.v1:average_grade_percentage"
 FILTER = "filter:dataset.student_grade.v1:alpha_honours"
 CARD = {"label": f"{MARK_A} card", "description": "d", "longDescription": "ld", "prompt": "p",
         "contract": CONTRACT, "format": "number"}
+QUERY = {"name": f"{MARK_A} query", "prompt": "p", "description": "d", "contract": CONTRACT}
+PREFS = {"favorites": [f"{MARK_A}-fav"], "recentReports": [], "readNotifications": [], "visibleWidgets": ["ai"]}
 REPORT, VISUAL = "report.assessment_grades.v1", "ungraded"
 PREVIEW = "/api/v1/dictionary/preview?schema=CDM_LMS&table=COURSE"
 
@@ -369,6 +371,56 @@ def test_cards_never_cross(world):
     assert user_items_store.get(B, "u1", "layout") is None
 
 
+def test_queries_never_cross(world):
+    c = world.client
+    made = c.post("/api/v1/me/queries", headers=AS_A, json=QUERY)
+    assert made.status_code == 200
+    qid = made.json()["id"]
+    assert MARK_A in c.get("/api/v1/me/queries", headers=AS_A).text
+
+    seen = c.get("/api/v1/me/queries", headers=AS_B)
+    assert seen.status_code == 200 and seen.json() == {"queries": []}
+    _clean(seen.text)
+    put = c.put(f"/api/v1/me/queries/{qid}", headers=AS_B, json=QUERY)
+    used = c.post(f"/api/v1/me/queries/{qid}/used", headers=AS_B)
+    deleted = c.delete(f"/api/v1/me/queries/{qid}", headers=AS_B)
+    assert put.status_code == used.status_code == deleted.status_code == 404
+    _clean(put.text + used.text + deleted.text)
+    assert len(c.get("/api/v1/me/queries", headers=AS_A).json()["queries"]) == 1
+    assert user_items_store.list_kind(B, "u1", "query") == []
+
+
+def test_prefs_never_cross(world):
+    c = world.client
+    saved = c.put("/api/v1/me/prefs", headers=AS_A, json={**PREFS, "expected_version": 0})
+    assert saved.status_code == 200
+    assert MARK_A in c.get("/api/v1/me/prefs", headers=AS_A).text
+
+    seen = c.get("/api/v1/me/prefs", headers=AS_B)
+    assert seen.status_code == 200 and seen.json()["version"] == 0 and seen.json()["favorites"] == []
+    _clean(seen.text)
+    assert c.put("/api/v1/me/prefs", headers=AS_B, json={**PREFS, "expected_version": 1}).status_code == 409
+    assert c.get("/api/v1/me/prefs", headers=AS_A).json()["version"] == 1
+    assert user_items_store.get(B, "u1", "prefs") is None
+
+
+def test_import_never_crosses(world):
+    c = world.client
+    first = c.post("/api/v1/me/import", headers=AS_A, json={"cards": [{**CARD, "id": "local-1"}], "queries": [QUERY], "prefs": PREFS})
+    assert first.json()["status"] == "imported" and first.json()["cards"] == 1
+    assert user_items_store.get(A, "u1", "imported") is not None
+    assert user_items_store.get(B, "u1", "imported") is None
+
+    # Same sub, same source ids, other tenant: its own import must run and stay in B.
+    second = c.post("/api/v1/me/import", headers=AS_B, json={"cards": [{**CARD, "id": "local-1"}], "queries": [QUERY], "prefs": None})
+    assert second.json()["status"] == "imported" and second.json()["cards"] == 1
+    b_cards, a_cards = user_items_store.list_kind(B, "u1", "card"), user_items_store.list_kind(A, "u1", "card")
+    assert len(b_cards) == len(a_cards) == 1
+    assert user_items_store.get(B, "u1", "prefs") is None
+    assert c.post("/api/v1/me/import", headers=AS_A, json={}).json() == {"status": "already_imported"}
+    assert len(user_items_store.list_kind(A, "u1", "query")) == 1
+
+
 def test_conversations_never_cross(world):
     c = world.client
     _save_a_conversation()
@@ -485,6 +537,14 @@ NO_SECRET_ROUTES = [
     ("PUT", "/api/v1/me/cards/c_000000000000", {"json": CARD}),
     ("DELETE", "/api/v1/me/cards/c_000000000000", {}),
     ("POST", "/api/v1/me/cards/reset", {}),
+    ("GET", "/api/v1/me/queries", {}),
+    ("POST", "/api/v1/me/queries", {"json": QUERY}),
+    ("PUT", "/api/v1/me/queries/q_000000000000", {"json": QUERY}),
+    ("POST", "/api/v1/me/queries/q_000000000000/used", {}),
+    ("DELETE", "/api/v1/me/queries/q_000000000000", {}),
+    ("GET", "/api/v1/me/prefs", {}),
+    ("PUT", "/api/v1/me/prefs", {"json": {**PREFS, "expected_version": 0}}),
+    ("POST", "/api/v1/me/import", {"json": {"cards": [{**CARD, "id": "local-1"}], "queries": [QUERY], "prefs": PREFS}}),
     ("GET", "/api/conversations", {}),
     ("GET", "/api/conversations/c1", {}),
     ("DELETE", "/api/conversations/c1", {}),
