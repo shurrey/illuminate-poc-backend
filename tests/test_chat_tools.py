@@ -294,8 +294,8 @@ def test_execute_sql_with_a_governed_part_runs_the_spliced_sql_and_labels_each_c
     wh = FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}])
     out = _mixed(wh)
     assert len(wh.sql) == 1 and "governed_1 AS (" in wh.sql[0] and "DS_COURSE_FILTERS_V1" in wh.sql[0]
-    assert wh.guard == {"governed_parts": frozenset({"governed_1"}),
-                        "governed_helpers": frozenset({"governed_1__DS_COURSE_FILTERS_V1"})}
+    assert set(wh.guard) == {"spliced"} and wh.guard["spliced"].sql == wh.sql[0]
+    assert wh.guard["spliced"].part_names == frozenset({"governed_1"})
     provenance = out.content["provenance"]
     assert provenance == {
         "governed": False, "governance": "partial", "rows": "modified", "reason": MIXED_REASON,
@@ -396,7 +396,7 @@ def test_governed_parts_compile_and_run_with_the_callers_identity_rights(monkeyp
                       identity_audit=lambda kind, subject: audited.append(kind))
     assert "error" not in admin.dispatch("execute_sql", request, called=SEARCHED).content
     assert seen[0]["allow_identity"] is True and seen[0]["tenant"] == TENANT_A and not seen[0]["compiled"]
-    assert seen[0]["governed_parts"] == frozenset({"governed_1"}) and isinstance(seen[0]["extra_pii"], frozenset)
+    assert seen[0]["spliced"].part_names == frozenset({"governed_1"}) and isinstance(seen[0]["extra_pii"], frozenset)
     assert audited == ["governed", "freehand"]
 
 

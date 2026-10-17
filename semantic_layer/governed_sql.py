@@ -121,6 +121,12 @@ def _hoist(name: str, compiled: CompiledQuery) -> list[exp.CTE]:
     return helpers + [exp.CTE(this=tree, alias=exp.TableAlias(this=exp.to_identifier(name)))]
 
 
+def governed_ctes(spliced: Spliced) -> dict[str, exp.CTE]:
+    """Every part and helper CTE as splice builds it from the parts' compiled SQL, by Snowflake-folded name."""
+    return {_folded(cte.args["alias"].this): cte
+            for name, part in spliced.parts.items() for cte in _hoist(name, part.compiled)}
+
+
 def _outputs(contract: QueryContract, catalog: Catalog, compiled: CompiledQuery) -> dict[str, str]:
     refs = {_output_name(d).lower(): f"dimension:{d}" for d in contract.dimensions}
     refs |= {catalog.metrics[m].short_name.lower(): m for m in contract.metrics}

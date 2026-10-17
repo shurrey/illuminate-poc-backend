@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+from typing import TYPE_CHECKING
 
 import boto3
 from botocore.exceptions import ClientError
@@ -21,6 +22,9 @@ from semantic_layer.compiler import is_bounded_generator_call
 from semantic_layer.learn import learn_columns, learn_pii
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
 from tenancy import Tenant, TenantNotReady
+
+if TYPE_CHECKING:
+    from semantic_layer.governed_sql import Spliced
 
 logger = logging.getLogger("API-PROXY")
 
@@ -438,21 +442,39 @@ def _whole_row_reference(stmt, inside: frozenset[int] = frozenset()) -> bool:
                for c in stmt.find_all(exp.Column) if id(c) not in inside)
 
 
-def _governed_bodies(stmt, parts: frozenset[str], helpers: frozenset[str]) -> tuple[list, frozenset[int]] | str:
+def _normalized(cte):
+    """cte, alias and column list included, round-tripped through SQL with identifiers folded as Snowflake does."""
+    import sqlglot
+    import sqlglot.expressions as exp
+    from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
+
+    holder = exp.select("1")
+    holder.set("with", exp.With(expressions=[cte.copy()]))
+    return normalize_identifiers(sqlglot.parse_one(holder.sql(dialect="snowflake"), dialect="snowflake"),
+                                 dialect="snowflake")
+
+
+def _governed_bodies(stmt, spliced) -> tuple[list, frozenset[int]] | str:
     """(the part CTEs, ids of every node inside a part or helper body), or a refusal.
 
-    Each name must be a top-level CTE defined nowhere else; the rest of the statement may read only the parts.
+    Each governed CTE must be defined once, at the top, exactly as splice built it from the compiled SQL; no other
+    governed_* CTE may exist, and the rest of the statement may read only the parts.
     """
     import sqlglot.expressions as exp
-    from semantic_layer.governed_sql import unqualified_table
+    from semantic_layer.governed_sql import governed_ctes, unqualified_table
 
-    governed = parts | helpers
+    expected = governed_ctes(spliced)
+    parts = frozenset(name.upper() for name in spliced.parts)
+    helpers = frozenset(expected) - parts
     with_ = stmt.args.get("with") or stmt.args.get("with_")
     top = {_folded(cte.args["alias"].this): cte for cte in (with_.expressions if with_ is not None else [])}
-    defined = [cte for cte in stmt.find_all(exp.CTE) if _folded(cte.args["alias"].this) in governed]
-    if parts & helpers or not governed <= top.keys() or len(defined) != len(governed):
-        return "Governed parts must each be defined once, at the top of the statement."
-    inside = frozenset(id(node) for name in governed for node in top[name].walk())
+    defined = [cte for cte in stmt.find_all(exp.CTE) if _folded(cte.args["alias"].this).upper().startswith("GOVERNED_")]
+    if not parts or not expected.keys() <= top.keys() or len(defined) != len(expected):
+        return "Governed parts must each be defined once, at the top of the statement, and no other CTE may be named governed_*."
+    for name, cte in expected.items():
+        if _normalized(top[name]) != _normalized(cte):
+            return f"{top[name].alias} does not match the governed part the server compiled."
+    inside = frozenset(id(node) for name in expected for node in top[name].walk())
     for table in stmt.find_all(exp.Table):
         if id(table) not in inside and unqualified_table(table) and _folded(table.this) in helpers:
             return f"{table.name} is internal to a governed part; select from the part itself."
@@ -467,8 +489,7 @@ def _governed_bodies(stmt, parts: frozenset[str], helpers: frozenset[str]) -> tu
 
 def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None, compiled: bool = False,
                          allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset(),
-                         governed_parts: frozenset[str] = frozenset(),
-                         governed_helpers: frozenset[str] = frozenset()) -> dict:
+                         spliced: "Spliced | None" = None) -> dict:
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
     Allowed statement types: SELECT, WITH (CTE), UNION.
@@ -481,8 +502,8 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     freehand SQL. Freehand SQL's structural refusals (star, positional, IDENTIFIER, alias-list,
     whole-row) and every other check still apply to every role. extra_pii adds dataset-declared PII
     column names to the check; freehand SQL also treats columns the CDM or LEARN dictionary flags,
-    and LEARN columns it does not list, as PII. governed_parts and governed_helpers name the spliced
-    governed parts of freehand SQL and their helper CTEs: their bodies get the compiled PII rule (a
+    and LEARN columns it does not list, as PII. spliced: the splice freehand SQL was built from; each of its
+    part and helper CTEs must appear in sql exactly as splice built it. Those bodies get the compiled PII rule (a
     part's own projection is its outermost), only parts may read helpers, a part must name its columns,
     the rest of the statement gets the freehand rules, and every other check covers the whole statement.
 
@@ -592,16 +613,19 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     scopes: list = []
     freehand: list = []  # the columns the dictionary check also covers
     if compiled:
-        if governed_parts or governed_helpers:
+        if spliced is not None:
             return {"error": "Governed parts can only be spliced into freehand SQL."}
         if not allow_identity:
             outer = stmt.find(exp.Select)
             scopes = [(col, sel) for sel in (outer.expressions if outer else []) for col in sel.find_all(exp.Column)]
     else:
         parts, inside = [], frozenset()
-        if governed_parts or governed_helpers:
-            found = _governed_bodies(stmt, frozenset(n.upper() for n in governed_parts),
-                                     frozenset(n.upper() for n in governed_helpers))
+        if spliced is not None:
+            try:
+                found = _governed_bodies(stmt, spliced)
+            except Exception:
+                logger.exception("Governed part check failed; refusing")
+                found = "The governed parts could not be checked."
             if isinstance(found, str):
                 return {"error": found}
             parts, inside = found

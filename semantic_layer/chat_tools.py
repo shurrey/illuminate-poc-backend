@@ -189,13 +189,13 @@ class ChatTools:
         self.allow_identity, self.identity_audit = allow_identity, identity_audit
 
     def _execute_for_tenant(self, sql: str, params: Optional[dict] = None, compiled: bool = False,
-                            **governed) -> dict:
-        """governed: governed_parts and governed_helpers of spliced SQL, passed to the guard."""
+                            spliced: Optional[Spliced] = None) -> dict:
+        """spliced: the splice sql was built from, which the guard checks the governed bodies against."""
         from snowflake_client import validate_and_execute
 
         extra_pii = frozenset(c.upper() for ds in self.catalog.datasets.values() for c in ds.pii_columns)
         return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled,
-                                    allow_identity=self.allow_identity, extra_pii=extra_pii, **governed)
+                                    allow_identity=self.allow_identity, extra_pii=extra_pii, spliced=spliced)
 
     @property
     def specs(self) -> list[dict]:
@@ -303,8 +303,7 @@ class ChatTools:
             if self.allow_identity and self.identity_audit:
                 for part in spliced.parts.values():
                     self.identity_audit("governed", part.contract)
-            result = self.execute(spliced.sql, None, governed_parts=spliced.part_names,
-                                  governed_helpers=spliced.helper_names)
+            result = self.execute(spliced.sql, None, spliced=spliced)
         else:
             result = self.execute(sql, None)
         # Logged only once the guard accepted the statement; a warehouse failure still means it was accepted.

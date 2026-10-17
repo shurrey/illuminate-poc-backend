@@ -172,9 +172,7 @@ def executed(monkeypatch):
 
 
 def _guard(spliced, tenant=TENANT_A, **kwargs):
-    return snowflake_client.validate_and_execute(spliced.sql, tenant=tenant, governed_parts=spliced.part_names,
-                                                 governed_helpers=spliced.helper_names,
-                                                 **kwargs)
+    return snowflake_client.validate_and_execute(spliced.sql, tenant=tenant, spliced=spliced, **kwargs)
 
 
 def test_guard_accepts_governed_bodies_with_stars_and_inner_pii_that_freehand_rules_refuse(executed):
@@ -212,10 +210,26 @@ def test_guard_refuses_outer_sql_reading_a_parts_helper_cte(executed):
     sql = spliced.sql.replace("SELECT\n  g.course_role\nFROM governed_1 AS g",
                               "SELECT\n  d.course_role\nFROM governed_1 AS g JOIN governed_1__DS_ENROLLMENTS_V1 AS d ON TRUE")
     assert sql != spliced.sql
-    result = snowflake_client.validate_and_execute(sql, tenant=TENANT_A, governed_parts=spliced.part_names,
-                                                   governed_helpers=spliced.helper_names)
+    result = snowflake_client.validate_and_execute(sql, tenant=TENANT_A, spliced=spliced)
     assert "governed_1" in result["error"]
     assert executed == []
+
+
+def test_the_reviewers_probe_is_refused_for_a_viewer_under_a_genuine_splice(executed):
+    spliced = _splice("SELECT course_role, people FROM governed_1", {"governed_1": PEOPLE})
+    probe = ("WITH governed_1 AS (SELECT n FROM (SELECT p.EMAIL AS n FROM CDM_LMS.PERSON p) t)"
+             " SELECT n FROM governed_1")
+    assert "error" in snowflake_client.validate_and_execute(probe, tenant=TENANT_A, spliced=spliced)
+    assert executed == []
+
+
+def test_a_genuine_splice_passes_and_its_helper_tampered_does_not(executed):
+    spliced = _splice("SELECT course_role, people FROM governed_1", {"governed_1": PEOPLE})
+    assert "error" not in _guard(spliced)
+    tampered = spliced.sql.replace("CDM_LMS.PERSON AS p", "CDM_LMS.PERSON AS p TABLESAMPLE (10)")
+    assert tampered != spliced.sql
+    assert "error" in snowflake_client.validate_and_execute(tampered, tenant=TENANT_A, spliced=spliced)
+    assert len(executed) == 1
 
 
 def test_a_core_tenants_outer_sql_naming_learn_is_refused(monkeypatch, executed):
