@@ -320,13 +320,23 @@ class ChatTools:
         else:
             provenance = {"governed": False, "governance": "none", "rows": "modified", "reason": reason,
                           "columns": {c: {"governed": False, "reason": reason} for c in columns}}
+        # The warehouse returns at most MAX_ROWS; a cut result is not the governed row set.
+        cut = result.get("truncated") is True
+        if cut:
+            provenance |= {"truncated": True, "rows": "modified", "governed": False,
+                           "governance": "partial" if provenance["governance"] == "full" else provenance["governance"]}
+            extra["truncated"] = True
         title = tool_input.get("title") or {
             "full": "Governed query result", "partial": "Partly governed query result",
         }.get(provenance["governance"], "Ungoverned query result")
         content = {
             "columns": columns, "rows": rows[:MODEL_ROW_LIMIT], "row_count": len(rows),
-            "truncated": len(rows) > MODEL_ROW_LIMIT, "provenance": provenance,
+            "truncated": cut or len(rows) > MODEL_ROW_LIMIT, "provenance": provenance,
         }
+        if cut:
+            from snowflake_client import MAX_ROWS
+            content["note"] = (f"The warehouse returned only the first {MAX_ROWS} rows; tell the user the result "
+                               f"was cut to {MAX_ROWS} rows.")
         return ToolResult(content, [
             _artifact("table", title, {"columns": columns, "rows": rows}, provenance=provenance, **extra),
             _artifact("sql", title, sql, provenance=provenance, **extra),

@@ -422,3 +422,32 @@ def test_artifacts_say_which_tool_kind_produced_them():
     mixed = _mixed(FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}]))
     assert {a["kind"] for a in semantic.artifacts} == {"semantic"}
     assert {a["kind"] for a in raw.artifacts} == {a["kind"] for a in mixed.artifacts} == {"sql"}
+
+
+class TruncatingWarehouse(FakeWarehouse):
+    def __call__(self, sql, params=None, compiled=False, **guard):
+        return {**super().__call__(sql, params, compiled, **guard), "truncated": True}
+
+
+def test_a_warehouse_truncated_single_part_result_is_partial_with_rows_modified_and_says_so():
+    wh = TruncatingWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3}])
+    out = _mixed(wh, sql="SELECT term_name, reportable_courses FROM governed_1")
+    provenance = out.content["provenance"]
+    assert (provenance["governance"], provenance["rows"], provenance["governed"]) == ("partial", "modified", False)
+    assert provenance["truncated"] is True and out.content["truncated"] is True
+    assert "1000 rows" in out.content["note"]
+    assert all(a["truncated"] is True and a["provenance"]["truncated"] is True for a in out.artifacts)
+
+
+def test_a_warehouse_truncated_ungoverned_result_says_so():
+    out = _tools(TruncatingWarehouse()).dispatch("execute_sql", {"sql": "SELECT 1", "reason": MIXED_REASON},
+                                                 called=SEARCHED)
+    assert out.content["truncated"] is True and out.content["provenance"]["truncated"] is True
+    assert "1000 rows" in out.content["note"]
+
+
+def test_an_untruncated_single_part_result_stays_full():
+    out = _mixed(FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3}]),
+                 sql="SELECT term_name, reportable_courses FROM governed_1")
+    assert out.content["provenance"]["governance"] == "full" and "truncated" not in out.content["provenance"]
+    assert "note" not in out.content
