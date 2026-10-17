@@ -972,11 +972,12 @@ def _write_failures() -> tuple:
     return ClientError, ValueError
 
 
-def _write_failed(kind: str, exc: Exception) -> str:
-    """Log a failed import write (never the item, which is user content) and return the reason for skipped."""
+def _write_failed(skipped: list, kind: str, name: str, exc: Exception) -> None:
+    """Skip an item whose write failed, logging the error but never the item, which is user content.
+    A store error is marked for retry, so the import ends `partial` without its marker; a ValueError would recur."""
     code = getattr(exc, "response", {}).get("Error", {}).get("Code") or type(exc).__name__
     logger.warning("profile import: a %s write failed (%s)", kind, code)
-    return "could not be saved"
+    skipped.append({"kind": kind, "name": name, "reason": "could not be saved", "_retry": not isinstance(exc, ValueError)})
 
 
 def _name_of(item, field: str) -> str:
@@ -1018,7 +1019,7 @@ def _import_cards(tenant_id: str, sub: str, cards: list, skipped: list) -> int:
             except user_items_store.Conflict:
                 pass
             except _write_failures() as e:
-                skipped.append({"kind": "card", "name": _name_of(card, "label"), "reason": _write_failed("card", e)})
+                _write_failed(skipped, "card", _name_of(card, "label"), e)
                 continue
         order.append(target)
         if card.get("enabled") is False:
@@ -1035,7 +1036,7 @@ def _import_cards(tenant_id: str, sub: str, cards: list, skipped: list) -> int:
         except HTTPException as e:
             skipped.append({"kind": "layout", "name": "", "reason": _skip_reason(e)})
         except _write_failures() as e:
-            skipped.append({"kind": "layout", "name": "", "reason": _write_failed("layout", e)})
+            _write_failed(skipped, "layout", "", e)
     return created
 
 
@@ -1063,7 +1064,7 @@ def _import_queries(tenant_id: str, sub: str, queries: list, skipped: list) -> i
         except user_items_store.Conflict:
             pass
         except _write_failures() as e:
-            skipped.append({"kind": "query", "name": name, "reason": _write_failed("query", e)})
+            _write_failed(skipped, "query", name, e)
     return created
 
 
@@ -1093,12 +1094,13 @@ def _import_prefs(tenant_id: str, sub: str, prefs, skipped: list) -> None:
     except user_items_store.Conflict:
         pass
     except _write_failures() as e:
-        skipped.append({"kind": "prefs", "name": "", "reason": _write_failed("prefs", e)})
+        _write_failed(skipped, "prefs", "", e)
 
 
 @app.post("/api/v1/me/import")
 async def import_my_items(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
-    """One-time import of a browser's saved cards, queries and preferences; later calls are no-ops."""
+    """One-time import of a browser's saved cards, queries and preferences; later calls are no-ops.
+    `partial` (no marker written) when a store error skipped an item, so the browser keeps its copy and retries."""
     import user_items_store
 
     tenant_id, sub = _cards_caller(authorization)
@@ -1115,6 +1117,9 @@ async def import_my_items(payload: dict, authorization: Optional[str] = Header(N
         n_cards = _import_cards(tenant_id, sub, cards, skipped)
         n_queries = _import_queries(tenant_id, sub, queries, skipped)
         _import_prefs(tenant_id, sub, prefs, skipped)
+        retry = [s.pop("_retry", False) for s in skipped]
+        if any(retry):
+            return {"status": "partial", "cards": n_cards, "queries": n_queries, "skipped": skipped}
         try:
             user_items_store.put(tenant_id, sub, "imported", None, {"at": _now_iso()})
         except user_items_store.Conflict:

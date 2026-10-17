@@ -174,21 +174,43 @@ def _failing_put(monkeypatch, fails):
     monkeypatch.setattr(user_items_store, "put", put)
 
 
-def test_a_store_error_on_one_item_is_skipped_and_the_import_finishes(as_user, monkeypatch, caplog):
+def test_a_store_error_on_one_item_is_partial_and_writes_no_marker(as_user, monkeypatch, caplog):
     c = as_user()
     _failing_put(monkeypatch, lambda kind, body: body.get("name") == "q bad" or body.get("label") == "card bad")
     r = run(c, cards=[card("bad"), card("ok")], queries=[query("bad"), query("ok")],
             prefs={"favorites": ["x"], "recentReports": [], "readNotifications": [], "visibleWidgets": ["ai"]})
     assert r.status_code == 200
     body = r.json()
-    assert body["status"] == "imported" and body["cards"] == 1 and body["queries"] == 1
-    assert {(s["kind"], s["name"]) for s in body["skipped"]} == {("card", "card bad"), ("query", "q bad")}
-    assert user_items_store.get(TENANT_A.tenant_id, SUB, "imported") is not None
+    assert body["status"] == "partial" and body["cards"] == 1 and body["queries"] == 1
+    assert {(s["kind"], s["name"], s["reason"]) for s in body["skipped"]} == {
+        ("card", "card bad", "could not be saved"), ("query", "q bad", "could not be saved")}
+    assert user_items_store.get(TENANT_A.tenant_id, SUB, "imported") is None
     assert c.get("/api/v1/me/prefs", headers=AUTH).json()["favorites"] == ["x"]
     assert "q bad" not in caplog.text and "card bad" not in caplog.text
 
 
-def test_a_value_error_on_one_item_is_skipped(as_user, monkeypatch):
+def test_a_retry_after_partial_imports_the_rest_and_writes_the_marker(as_user, monkeypatch):
+    c = as_user()
+    payload = {"cards": [card("bad"), card("ok")], "queries": [query("bad"), query("ok")]}
+    real_put = user_items_store.put
+    _failing_put(monkeypatch, lambda kind, body: body.get("name") == "q bad" or body.get("label") == "card bad")
+    assert run(c, **payload).json()["status"] == "partial"
+    monkeypatch.setattr(user_items_store, "put", real_put)
+    r = run(c, **payload).json()
+    assert r == {"status": "imported", "cards": 1, "queries": 1, "skipped": []}
+    assert user_items_store.get(TENANT_A.tenant_id, SUB, "imported") is not None
+    assert len(user_items_store.list_kind(TENANT_A.tenant_id, SUB, "card")) == 2
+    assert len(user_items_store.list_kind(TENANT_A.tenant_id, SUB, "query")) == 2
+
+
+def test_validation_skips_alone_still_write_the_marker(as_user):
+    body = run(as_user(), queries=[query("bad", contract="x"), query("ok")]).json()
+    assert body["status"] == "imported" and len(body["skipped"]) == 1
+    assert user_items_store.get(TENANT_A.tenant_id, SUB, "imported") is not None
+
+
+def test_a_value_error_on_one_item_is_skipped_without_blocking_the_marker(as_user, monkeypatch):
+    # A ValueError comes from key validation, so a retry would fail the same way.
     real_put = user_items_store.put
 
     def put(tenant, sub, kind, id, body, **kw):
@@ -202,12 +224,13 @@ def test_a_value_error_on_one_item_is_skipped(as_user, monkeypatch):
     assert [s["name"] for s in body["skipped"]] == ["q bad"]
 
 
-def test_failed_layout_and_prefs_writes_are_skipped(as_user, monkeypatch):
+def test_failed_layout_and_prefs_writes_are_partial(as_user, monkeypatch):
     _failing_put(monkeypatch, lambda kind, body: kind in ("layout", "prefs"))
     body = run(as_user(), cards=[card("a")],
                prefs={"favorites": ["x"], "recentReports": [], "readNotifications": [], "visibleWidgets": ["ai"]}).json()
-    assert body["status"] == "imported" and body["cards"] == 1
+    assert body["status"] == "partial" and body["cards"] == 1
     assert sorted(s["kind"] for s in body["skipped"]) == ["layout", "prefs"]
+    assert user_items_store.get(TENANT_A.tenant_id, SUB, "imported") is None
 
 
 def test_a_failed_marker_write_is_a_server_error(as_user, monkeypatch):
