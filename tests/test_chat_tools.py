@@ -407,3 +407,10 @@ def test_execute_sql_spec_describes_governed_parts_for_every_licence():
         governed = spec["inputSchema"]["json"]["properties"]["governed"]
         assert governed["type"] == "object"
         assert "metrics" in governed["additionalProperties"]["properties"]
+
+
+def test_a_parts_explicit_default_sized_limit_is_kept_for_the_follow_up():
+    part = {**COURSES_BY_TERM, "limit": 100, "order_by": [{"field": "reportable_courses"}]}
+    out = _mixed(FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}]), governed={"governed_1": part})
+    assert out.artifacts[0]["governed_parts"]["governed_1"]["limit"] == 100
+    assert out.content["provenance"]["rows"] == "modified"

@@ -382,3 +382,36 @@ def test_group_by_a_governed_dimension_with_count_elsewhere_is_partial():
                     ["COURSE_ROLE", "N"])
     assert result["governance"] == "partial"
     assert result["columns"]["COURSE_ROLE"]["governed"] is True
+
+
+# Part limits: a part compiles without a LIMIT unless its contract sets one.
+
+def _part_limits(sql, name="governed_1"):
+    return list(_cte(sql, name).find_all(exp.Limit))
+
+
+def test_a_part_without_an_explicit_limit_compiles_without_one():
+    spliced = _splice("SELECT course_role, student_enrollments FROM governed_1", {"governed_1": STUDENTS})
+    assert _part_limits(spliced.sql) == []
+    assert label(spliced, ["COURSE_ROLE", "STUDENT_ENROLLMENTS"], reason=REASON)["rows"] == "governed"
+
+
+def test_a_part_with_an_explicit_limit_and_no_order_is_refused():
+    contract = QueryContract(metrics=["metric.student_enrollments.v1"], dimensions=["course_role"], limit=5)
+    with pytest.raises(SpliceError, match="A governed part with a limit needs an order"):
+        _splice("SELECT course_role FROM governed_1", {"governed_1": contract})
+
+
+def test_an_explicit_default_sized_limit_still_counts_as_set():
+    contract = QueryContract(metrics=["metric.student_enrollments.v1"], dimensions=["course_role"], limit=100)
+    with pytest.raises(SpliceError, match="needs an order"):
+        _splice("SELECT course_role FROM governed_1", {"governed_1": contract})
+
+
+def test_a_part_with_a_limit_and_an_order_keeps_its_limit_and_modifies_the_rows():
+    contract = QueryContract(metrics=["metric.student_enrollments.v1"], dimensions=["course_role"], limit=5,
+                             order_by=[{"field": "student_enrollments"}])
+    spliced = _splice("SELECT course_role, student_enrollments FROM governed_1", {"governed_1": contract})
+    assert [lim.expression.name for lim in _part_limits(spliced.sql)] == ["5"]
+    result = label(spliced, ["COURSE_ROLE", "STUDENT_ENROLLMENTS"], reason=REASON)
+    assert (result["governance"], result["rows"]) == ("partial", "modified")

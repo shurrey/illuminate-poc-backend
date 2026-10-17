@@ -121,7 +121,8 @@ SPECS = [
                 "title": {"type": "string"},
                 "governed": {
                     "type": "object",
-                    "description": "Governed parts by name (governed_1, governed_2, ...) that the SQL selects from",
+                    "description": ("Governed parts by name (governed_1, governed_2, ...) that the SQL selects from. "
+                                    "A part returns all its rows unless it sets a limit, which needs an order_by."),
                     "additionalProperties": {"type": "object", "properties": _CONTRACT_PROPERTIES},
                 },
             },
@@ -316,7 +317,7 @@ class ChatTools:
         if spliced:
             provenance = self._governed_provenance(spliced, columns, reason)
             extra |= {"executed_sql": spliced.sql, "governed_parts": {
-                name: part.contract.model_dump(mode="json", exclude_defaults=True) for name, part in spliced.parts.items()}}
+                name: part.contract.model_dump(mode="json", exclude_unset=True) for name, part in spliced.parts.items()}}
         else:
             provenance = {"governed": False, "governance": "none", "rows": "modified", "reason": reason,
                           "columns": {c: {"governed": False, "reason": reason} for c in columns}}
