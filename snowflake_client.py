@@ -527,12 +527,13 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     # outermost projection. Freehand SQL is checked everywhere except filter conditions, since
     # UNPIVOT, FLATTEN, PIVOT and MATCH_RECOGNIZE move PII values out of the projections.
     pii_names = PII_COLUMN_NAMES | {name.upper() for name in extra_pii}
-    if compiled and allow_identity:
-        scopes = []
-    elif compiled:
-        outer = stmt.find(exp.Select)
-        scopes = [(col, sel) for sel in (outer.expressions if outer else []) for col in sel.find_all(exp.Column)]
+    scopes: list = []
+    if compiled:
+        if not allow_identity:
+            outer = stmt.find(exp.Select)
+            scopes = [(col, sel) for sel in (outer.expressions if outer else []) for col in sel.find_all(exp.Column)]
     else:
+        # Structural checks apply to every role: they stop a statement from naming columns the PII scan cannot see.
         for star in stmt.find_all(exp.Star):
             if not isinstance(star.parent, exp.Count):
                 return {"error": "Star projections are not allowed in freehand SQL; name the columns you need."}
@@ -551,22 +552,24 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
             whole_row = True
         if whole_row:
             return {"error": WHOLE_ROW_REFUSAL}
-        scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
-    try:
-        dictionary_pii_ids = set() if compiled else _dictionary_pii_columns(stmt, [col for col, _ in scopes])
-    except Exception:
-        logger.exception("Dictionary PII resolution failed; treating every column as PII")
-        dictionary_pii_ids = {id(col) for col, _ in scopes}
-    for col_node, scope in scopes:
-        col_name = col_node.name.upper().strip('"').strip("'")
-        if (col_name in pii_names or id(col_node) in dictionary_pii_ids) and not inside_counting_aggregate(col_node, scope):
-            return {
-                "error": (
-                    f"Column '{col_name}' contains personally identifiable information (PII). "
-                    "FERPA rules allow PII columns only inside COUNT, COUNT_IF or "
-                    "APPROX_COUNT_DISTINCT. Please revise your query to count this data."
-                )
-            }
+        if not allow_identity:
+            scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
+    if scopes:
+        try:
+            dictionary_pii_ids = set() if compiled else _dictionary_pii_columns(stmt, [col for col, _ in scopes])
+        except Exception:
+            logger.exception("Dictionary PII resolution failed; treating every column as PII")
+            dictionary_pii_ids = {id(col) for col, _ in scopes}
+        for col_node, scope in scopes:
+            col_name = col_node.name.upper().strip('"').strip("'")
+            if (col_name in pii_names or id(col_node) in dictionary_pii_ids) and not inside_counting_aggregate(col_node, scope):
+                return {
+                    "error": (
+                        f"Column '{col_name}' contains personally identifiable information (PII). "
+                        "FERPA rules allow PII columns only inside COUNT, COUNT_IF or "
+                        "APPROX_COUNT_DISTINCT. Please revise your query to count this data."
+                    )
+                }
 
     # Enforce LIMIT <= 1000
     for limit_node in stmt.find_all(exp.Limit):

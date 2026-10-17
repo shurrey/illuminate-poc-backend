@@ -37,6 +37,8 @@ USERS = {
     "Bearer b": {"sub": "u1", "custom:tenant_id": B, "cognito:groups": [ADMIN]},
     "Bearer c": {"sub": "u1", "custom:tenant_id": C, "cognito:groups": [ADMIN]},
     "Bearer c2": {"sub": "u1", "custom:tenant_id": C2, "cognito:groups": [ADMIN]},
+    "Bearer av": {"sub": "u2", "custom:tenant_id": A, "cognito:groups": []},
+    "Bearer bv": {"sub": "u2", "custom:tenant_id": B, "cognito:groups": []},
     "Bearer ghost": {"sub": "u1", "custom:tenant_id": "ghost", "cognito:groups": [ADMIN]},
 }
 AS_A, AS_B, AS_C, AS_GHOST = ({"Authorization": f"Bearer {t}"} for t in ("a", "b", "c", "ghost"))
@@ -308,15 +310,44 @@ def test_core_tenant_is_refused_learn_describe_and_preview(world):
     assert world.connects == [] and world.log == []
 
 
-def test_premium_tenant_is_refused_learn_pii_through_chat_raw_sql(world):
-    world.bedrock.tool_script = [
-        ("search_catalog", {"question": "learn activity by user"}),
-        ("execute_sql", {"sql": "SELECT a.USER_PK1 FROM LEARN.ACTIVITY_ACCUMULATOR a", "reason": "no governed metric"}),
-    ]
-    r = _chat(world.client, AS_A)
+PII_SQL = [
+    ("search_catalog", {"question": "learn activity by user"}),
+    ("execute_sql", {"sql": "SELECT a.USER_PK1 FROM LEARN.ACTIVITY_ACCUMULATOR a", "reason": "no governed metric"}),
+]
+IDENTITY_CONTRACT = {"measures": ["dataset.course_student_activity.v1:students"], "dimensions": ["person_email"]}
+
+
+def test_premium_viewer_is_refused_learn_pii_through_chat_raw_sql(world):
+    world.bedrock.tool_script = list(PII_SQL)
+    r = _chat(world.client, {"Authorization": "Bearer av"})
     assert r.status_code == 200
-    assert "personally identifiable" in json.dumps(world.bedrock.calls[-1], default=str)
+    assert "personally identifiable" in json.dumps(world.bedrock.calls[-1]["messages"], default=str)
     assert world.connects == [] and world.log == []
+
+
+def test_premium_admin_runs_learn_pii_through_chat_raw_sql(world):
+    world.bedrock.tool_script = list(PII_SQL)
+    assert _chat(world.client, AS_A).status_code == 200
+    assert "personally identifiable" not in json.dumps(world.bedrock.calls[-1]["messages"], default=str)
+    assert world.connects == [MARK_A]
+
+
+@pytest.mark.parametrize("script", [
+    PII_SQL,
+    [("search_catalog", {"question": "student emails"}), ("query_semantic", IDENTITY_CONTRACT)],
+])
+def test_a_viewer_in_another_tenant_never_gets_pii_through_chat(world, script):
+    world.bedrock.tool_script = list(script)
+    assert _chat(world.client, {"Authorization": "Bearer bv"}).status_code == 200
+    assert "personally identifiable" in json.dumps(world.bedrock.calls[-1]["messages"], default=str)
+    assert world.connects == [] and world.log == []
+
+
+def test_an_admin_runs_a_governed_identity_query_through_chat(world):
+    world.bedrock.tool_script = [("search_catalog", {"question": "student emails"}), ("query_semantic", IDENTITY_CONTRACT)]
+    assert _chat(world.client, AS_B).status_code == 200
+    assert "personally identifiable" not in json.dumps(world.bedrock.calls[-1]["messages"], default=str)
+    assert world.connects == [MARK_B]
 
 
 CROSS_SESSION_SQL = [

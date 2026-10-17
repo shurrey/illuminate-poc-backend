@@ -301,14 +301,26 @@ def _with_queries(text: str, queries: list[dict]) -> str:
     return f"<previous_queries>{json.dumps(queries)}</previous_queries>\n\n{text}"
 
 
-def _engine_kwargs(tenant: Tenant) -> dict:
+def _engine_kwargs(tenant: Tenant, user: dict) -> dict:
     """The chat engine's tools and system prompt over the tenant's overlaid catalog and database."""
     from semantic_layer.chat_tools import ChatTools
     from semantic_layer.prompt import build_system_prompt
 
+    from roles import role_allows_identity
+
     catalog, overlays = _catalog_for(tenant)
     database = _database_for(tenant)
-    return {"tools": ChatTools(catalog, database, tenant=tenant, overlays=overlays),
+    allow_identity = role_allows_identity(user)
+
+    def audit(kind: str, subject) -> None:
+        if kind == "freehand":
+            logger.info("identity_query sub=%s freehand=true", user.get("sub"))
+        elif _selects_identity(subject, catalog):
+            logger.info("identity_query sub=%s contract=%s", user.get("sub"), subject.model_dump_json(exclude_defaults=True))
+
+    tools = ChatTools(catalog, database, tenant=tenant, overlays=overlays,
+                      allow_identity=allow_identity, identity_audit=audit)
+    return {"tools": tools,
             "system_prompt": build_system_prompt(catalog, database, learn=allows_learn(tenant))}
 
 
@@ -1150,7 +1162,7 @@ async def chat(
     logger.info(f"Chat request: message='{message_text[:100]}...', context_id={context_id}")
 
     tenant = tenant_for(user)
-    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant)
+    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant, user)
 
     try:
         result = await send_message(
@@ -1199,7 +1211,7 @@ async def chat_stream(
     )
 
     tenant = tenant_for(user)
-    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant)
+    engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant, user)
 
     if request_id:
         _request_owners[request_id] = _owner(user, tenant)
