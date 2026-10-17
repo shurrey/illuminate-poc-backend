@@ -20,6 +20,7 @@ import licenses
 import overlay_store
 import snowflake_client
 import tenancy
+import user_items_store
 from semantic_layer.catalog import default_catalog
 from semantic_layer.catalog_view import public_catalog
 from semantic_layer.overlays import Overlay
@@ -43,6 +44,8 @@ AS_A, AS_B, AS_C, AS_GHOST = ({"Authorization": f"Bearer {t}"} for t in ("a", "b
 CONTRACT = {"metrics": ["metric.reportable_courses.v1"], "dimensions": ["term_name"]}
 MEASURE = "measure:dataset.student_grade.v1:average_grade_percentage"
 FILTER = "filter:dataset.student_grade.v1:alpha_honours"
+CARD = {"label": f"{MARK_A} card", "description": "d", "longDescription": "ld", "prompt": "p",
+        "contract": CONTRACT, "format": "number"}
 REPORT, VISUAL = "report.assessment_grades.v1", "ungraded"
 PREVIEW = "/api/v1/dictionary/preview?schema=CDM_LMS&table=COURSE"
 
@@ -135,6 +138,7 @@ def world(monkeypatch):
                               {"AttributeName": "updated_at", "KeyType": "RANGE"}],
                 "Projection": {"ProjectionType": "INCLUDE", "NonKeyAttributes": ["title"]},
             }])
+        user_items = _table(ddb, "user-items-test", ["tenant_id", "item_key"])
         sm = boto3.client("secretsmanager", region_name="us-east-1")
         for tid, mark, db in ((A, MARK_A, DB_A), (B, MARK_B, DB_B), (C2, MARK_B, DB_B)):
             sm.create_secret(Name=f"illuminate/tenants/{tid}/snowflake", SecretString=json.dumps({
@@ -151,6 +155,7 @@ def world(monkeypatch):
         monkeypatch.setattr(overlay_store, "_table", overlays)
         monkeypatch.setattr(overlay_store, "list_overlays", REAL_LIST_OVERLAYS)
         monkeypatch.setattr(conversation_store, "_table", conversations)
+        monkeypatch.setattr(user_items_store, "_table", user_items)
         monkeypatch.setattr(snowflake.connector, "connect", connect)
         monkeypatch.setattr(chat_engine, "_bedrock", state.bedrock)
         monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda auth: USERS.get(auth))
@@ -338,6 +343,32 @@ def test_core_tenant_cannot_read_query_history_through_chat_raw_sql(world):
     assert world.connects == [] and world.log == []
 
 
+def test_cards_never_cross(world):
+    c = world.client
+    made = c.post("/api/v1/me/cards", headers=AS_A, json=CARD)
+    assert made.status_code == 200
+    card_id = made.json()["id"]
+    layout = c.put("/api/v1/me/cards/layout", headers=AS_A, json={
+        "order": [card_id], "disabled": [], "hidden": ["average-grade"], "expected_version": 1})
+    assert layout.status_code == 200
+    assert MARK_A in c.get("/api/v1/me/cards", headers=AS_A).text
+
+    seen = c.get("/api/v1/me/cards", headers=AS_B)
+    assert seen.status_code == 200 and seen.json()["version"] == 0
+    assert all(card["isBuiltIn"] for card in seen.json()["cards"]) and len(seen.json()["cards"]) == 6
+    _clean(seen.text)
+    put = c.put(f"/api/v1/me/cards/{card_id}", headers=AS_B, json=CARD)
+    deleted = c.delete(f"/api/v1/me/cards/{card_id}", headers=AS_B)
+    assert put.status_code == 404 and deleted.status_code == 404
+    _clean(put.text + deleted.text)
+    refused = c.put("/api/v1/me/cards/layout", headers=AS_B, json={
+        "order": [card_id], "disabled": [], "hidden": [], "expected_version": 0})
+    assert refused.status_code == 400
+    assert [x["id"] for x in c.get("/api/v1/me/cards", headers=AS_A).json()["cards"]][0] == card_id
+    assert user_items_store.list_kind(B, "u1", "card") == []
+    assert user_items_store.get(B, "u1", "layout") is None
+
+
 def test_conversations_never_cross(world):
     c = world.client
     _save_a_conversation()
@@ -448,6 +479,12 @@ NO_SECRET_ROUTES = [
     ("GET", "/api/v1/semantic/catalog", {}),
     ("GET", "/api/v1/reports", {}),
     ("GET", "/api/v1/me", {}),
+    ("GET", "/api/v1/me/cards", {}),
+    ("PUT", "/api/v1/me/cards/layout", {"json": {"order": [], "disabled": [], "hidden": [], "expected_version": 0}}),
+    ("POST", "/api/v1/me/cards", {"json": CARD}),
+    ("PUT", "/api/v1/me/cards/c_000000000000", {"json": CARD}),
+    ("DELETE", "/api/v1/me/cards/c_000000000000", {}),
+    ("POST", "/api/v1/me/cards/reset", {}),
     ("GET", "/api/conversations", {}),
     ("GET", "/api/conversations/c1", {}),
     ("DELETE", "/api/conversations/c1", {}),
