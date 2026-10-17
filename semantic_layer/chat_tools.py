@@ -170,8 +170,8 @@ def _unique(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
-def _artifact(kind: str, title: str, data, **extra) -> dict:
-    return {"id": uuid.uuid4().hex, "type": kind, "title": title, "data": data, **extra}
+def _artifact(artifact_type: str, title: str, data, **extra) -> dict:
+    return {"id": uuid.uuid4().hex, "type": artifact_type, "title": title, "data": data, **extra}
 
 
 class ChatTools:
@@ -234,7 +234,7 @@ class ChatTools:
         provenance = compiled.provenance.model_dump()
         query = contract.model_dump(mode="json", exclude_defaults=True)
         title = tool_input.get("title") or "Query result"
-        common = {"query": query, "sql": compiled.sql, "provenance": provenance}
+        common = {"kind": "semantic", "query": query, "sql": compiled.sql, "provenance": provenance}
         content = {
             "columns": columns, "rows": rows[:MODEL_ROW_LIMIT], "row_count": len(rows),
             "truncated": len(rows) > MODEL_ROW_LIMIT, "provenance": provenance,
@@ -312,7 +312,7 @@ class ChatTools:
         if "error" in result:
             return ToolResult({"error": _model_error(result)})
         rows, columns = result["rows"], result["columns"]
-        extra = {"sql": sql}
+        extra = {"kind": "sql", "sql": sql}
         if spliced:
             provenance = self._governed_provenance(spliced, columns, reason)
             extra |= {"executed_sql": spliced.sql, "governed_parts": {

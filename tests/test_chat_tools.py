@@ -414,3 +414,11 @@ def test_a_parts_explicit_default_sized_limit_is_kept_for_the_follow_up():
     out = _mixed(FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}]), governed={"governed_1": part})
     assert out.artifacts[0]["governed_parts"]["governed_1"]["limit"] == 100
     assert out.content["provenance"]["rows"] == "modified"
+
+
+def test_artifacts_say_which_tool_kind_produced_them():
+    semantic = _tools().dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
+    raw = _tools().dispatch("execute_sql", {"sql": "SELECT 1", "reason": MIXED_REASON}, called=SEARCHED)
+    mixed = _mixed(FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}]))
+    assert {a["kind"] for a in semantic.artifacts} == {"semantic"}
+    assert {a["kind"] for a in raw.artifacts} == {a["kind"] for a in mixed.artifacts} == {"sql"}

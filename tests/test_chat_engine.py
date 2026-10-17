@@ -158,7 +158,7 @@ def test_a_partly_governed_turn_is_replayed_so_a_follow_up_can_resend_its_parts(
     assert result["provenance"]["columns"]["N"]["governed"] is False
 
     queries = lambda_handler._queries_from(artifacts)
-    assert queries == [{"title": "Partly governed query result", "governed": False, "governance": "partial",
+    assert queries == [{"kind": "sql", "title": "Partly governed query result", "governed": False, "governance": "partial",
                         "sql": sql, "governed_parts": parts}]
 
     history = [{"role": "user", "content": "courses vs all"}, {"role": "assistant", "content": text, "queries": queries}]
