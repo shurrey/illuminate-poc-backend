@@ -51,7 +51,7 @@ def test_imports_cards_queries_and_prefs(as_user):
     queries = {q["id"]: q for q in c.get("/api/v1/me/queries", headers=AUTH).json()["queries"]}
     qa = queries[expected_id("q_", "query", "a")]
     assert qa["createdAt"] == "2026-02-01T00:00:00Z" and qa["lastUsedAt"] == "2026-03-01T00:00:00Z"
-    assert qa["kind"] == "governed"
+    assert qa["query_kind"] == "governed" and "kind" not in qa
 
     prefs = c.get("/api/v1/me/prefs", headers=AUTH).json()
     assert prefs["favorites"] == ["x"] and prefs["visibleWidgets"] == ["ai"] and prefs["version"] == 1
@@ -147,3 +147,82 @@ def test_bad_shapes_are_400(as_user):
     c = as_user()
     assert run(c, cards="x").status_code == 400
     assert run(c, queries={}).status_code == 400
+
+
+BIG_CONTRACT = {"metrics": ["metric.reportable_courses.v1"],
+                "filters": [{"dimension": "d", "op": "in", "values": ["v" * 17000]}]}
+
+
+def test_oversized_items_are_skipped(as_user):
+    body = run(as_user(), cards=[card("big", contract=BIG_CONTRACT), card("ok")],
+               queries=[query("big", contract=BIG_CONTRACT), query("ok")]).json()
+    assert body["status"] == "imported" and body["cards"] == 1 and body["queries"] == 1
+    assert sorted(s["kind"] for s in body["skipped"]) == ["card", "query"]
+    assert all("16 KB" in s["reason"] for s in body["skipped"])
+
+
+def _failing_put(monkeypatch, fails):
+    from botocore.exceptions import ClientError
+
+    real_put = user_items_store.put
+
+    def put(tenant, sub, kind, id, body, **kw):
+        if fails(kind, body):
+            raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException", "Message": "slow down"}}, "PutItem")
+        return real_put(tenant, sub, kind, id, body, **kw)
+
+    monkeypatch.setattr(user_items_store, "put", put)
+
+
+def test_a_store_error_on_one_item_is_skipped_and_the_import_finishes(as_user, monkeypatch, caplog):
+    c = as_user()
+    _failing_put(monkeypatch, lambda kind, body: body.get("name") == "q bad" or body.get("label") == "card bad")
+    r = run(c, cards=[card("bad"), card("ok")], queries=[query("bad"), query("ok")],
+            prefs={"favorites": ["x"], "recentReports": [], "readNotifications": [], "visibleWidgets": ["ai"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "imported" and body["cards"] == 1 and body["queries"] == 1
+    assert {(s["kind"], s["name"]) for s in body["skipped"]} == {("card", "card bad"), ("query", "q bad")}
+    assert user_items_store.get(TENANT_A.tenant_id, SUB, "imported") is not None
+    assert c.get("/api/v1/me/prefs", headers=AUTH).json()["favorites"] == ["x"]
+    assert "q bad" not in caplog.text and "card bad" not in caplog.text
+
+
+def test_a_value_error_on_one_item_is_skipped(as_user, monkeypatch):
+    real_put = user_items_store.put
+
+    def put(tenant, sub, kind, id, body, **kw):
+        if body.get("name") == "q bad":
+            raise ValueError("bad id")
+        return real_put(tenant, sub, kind, id, body, **kw)
+
+    monkeypatch.setattr(user_items_store, "put", put)
+    body = run(as_user(), queries=[query("bad"), query("ok")]).json()
+    assert body["status"] == "imported" and body["queries"] == 1
+    assert [s["name"] for s in body["skipped"]] == ["q bad"]
+
+
+def test_failed_layout_and_prefs_writes_are_skipped(as_user, monkeypatch):
+    _failing_put(monkeypatch, lambda kind, body: kind in ("layout", "prefs"))
+    body = run(as_user(), cards=[card("a")],
+               prefs={"favorites": ["x"], "recentReports": [], "readNotifications": [], "visibleWidgets": ["ai"]}).json()
+    assert body["status"] == "imported" and body["cards"] == 1
+    assert sorted(s["kind"] for s in body["skipped"]) == ["layout", "prefs"]
+
+
+def test_a_failed_marker_write_is_a_server_error(as_user, monkeypatch):
+    import pytest
+    from botocore.exceptions import ClientError
+
+    _failing_put(monkeypatch, lambda kind, body: kind == "imported")
+    with pytest.raises(ClientError):
+        run(as_user(), queries=[query("a")])
+
+
+def test_oversized_prefs_are_skipped(as_user):
+    ids = [f"{i:03d}" + "\U0001F600" * 190 for i in range(200)]
+    c = as_user()
+    body = run(c, prefs={"favorites": ids, "recentReports": [], "readNotifications": ids, "visibleWidgets": ["ai"]}).json()
+    assert body["status"] == "imported"
+    assert [(s["kind"], "too large" in s["reason"]) for s in body["skipped"]] == [("prefs", True)]
+    assert c.get("/api/v1/me/prefs", headers=AUTH).json()["version"] == 0

@@ -473,11 +473,24 @@ def _bad_request(*errors: str) -> HTTPException:
     return HTTPException(status_code=400, detail={"errors": list(errors)})
 
 
+MAX_CONTRACT_BYTES = 16 * 1024
+# Well under DynamoDB's 400 KB item limit, so an oversized body is a 400 here rather than a store error.
+MAX_BODY_BYTES = 64 * 1024
+
+
+def _size_errors(body: dict) -> list[str]:
+    if len(json.dumps(body, ensure_ascii=False).encode()) > MAX_BODY_BYTES:
+        return [f"this item is too large to save (at most {MAX_BODY_BYTES // 1024} KB)"]
+    return []
+
+
 def _contract_errors(contract) -> list[str]:
     from pydantic import ValidationError
 
     if not isinstance(contract, dict):
         return ["contract must be an object"]
+    if len(json.dumps(contract)) > MAX_CONTRACT_BYTES:
+        return [f"contract must be at most {MAX_CONTRACT_BYTES // 1024} KB"]
     try:
         QueryContract.model_validate(contract)
     except ValidationError as e:
@@ -510,6 +523,9 @@ def _card_body(payload) -> dict:
     body = {k: payload[k] for k in ("label", "description", "longDescription", "prompt", "contract", "format")}
     if link is not None:
         body["reportLink"] = link
+    errors = _size_errors(body)
+    if errors:
+        raise _bad_request(*errors)
     return body
 
 
@@ -762,11 +778,22 @@ def _query_body(payload) -> dict:
     errors += _contract_errors(payload.get("contract"))
     if errors:
         raise _bad_request(*errors)
-    return {k: payload[k] for k in ("name", "prompt", "description", "contract")}
+    body = {k: payload[k] for k in ("name", "prompt", "description", "contract")}
+    errors = _size_errors(body)
+    if errors:
+        raise _bad_request(*errors)
+    return body
+
+
+def _stored_query(item: dict) -> dict:
+    """The query's body fields; rows saved before the rename carry `kind` instead of `query_kind`."""
+    body = {k: v for k, v in item.items() if k not in ("id", "version", "updated_at", "kind")}
+    body["query_kind"] = item.get("query_kind") or item.get("kind") or "governed"
+    return body
 
 
 def _query_view(item: dict) -> dict:
-    return {k: v for k, v in item.items() if k not in ("version", "updated_at")}
+    return {**_stored_query(item), "id": item["id"]}
 
 
 def _query_item(tenant_id: str, sub: str, query_id: str) -> dict:
@@ -784,7 +811,7 @@ def _replace_query(tenant_id: str, sub: str, query_id: str, change) -> dict:
 
     for attempt in range(3):
         item = _query_item(tenant_id, sub, query_id)
-        body = {k: v for k, v in item.items() if k not in ("id", "version", "updated_at")}
+        body = _stored_query(item)
         change(body)
         try:
             return _query_view(user_items_store.put(
@@ -815,7 +842,7 @@ async def create_my_query(payload: dict, authorization: Optional[str] = Header(N
     import user_items_store
 
     tenant_id, sub = _cards_caller(authorization)
-    body = {**_query_body(payload), "kind": "governed", "createdAt": _now_iso(), "lastUsedAt": None}
+    body = {**_query_body(payload), "query_kind": "governed", "createdAt": _now_iso(), "lastUsedAt": None}
 
     def create() -> dict:
         if user_items_store.count(tenant_id, sub, "query") >= MAX_QUERIES:
@@ -889,6 +916,8 @@ def _prefs_body(payload) -> dict:
         elif len(value) > _PREF_LIMITS[field]:
             errors.append(f"{field} can hold at most {_PREF_LIMITS[field]} entries")
         body[field] = value
+    if not errors:
+        errors = _size_errors(body)
     if errors:
         raise _bad_request(*errors)
     return body
@@ -936,6 +965,20 @@ def _skip_reason(exc: HTTPException) -> str:
     return "; ".join(detail["errors"]) if isinstance(detail, dict) else str(detail)
 
 
+def _write_failures() -> tuple:
+    """Store errors one import write may hit; the item is skipped and the import goes on."""
+    from botocore.exceptions import ClientError
+
+    return ClientError, ValueError
+
+
+def _write_failed(kind: str, exc: Exception) -> str:
+    """Log a failed import write (never the item, which is user content) and return the reason for skipped."""
+    code = getattr(exc, "response", {}).get("Error", {}).get("Code") or type(exc).__name__
+    logger.warning("profile import: a %s write failed (%s)", kind, code)
+    return "could not be saved"
+
+
 def _name_of(item, field: str) -> str:
     value = item.get(field) if isinstance(item, dict) else None
     return value[:200] if isinstance(value, str) else ""
@@ -974,6 +1017,9 @@ def _import_cards(tenant_id: str, sub: str, cards: list, skipped: list) -> int:
                 continue
             except user_items_store.Conflict:
                 pass
+            except _write_failures() as e:
+                skipped.append({"kind": "card", "name": _name_of(card, "label"), "reason": _write_failed("card", e)})
+                continue
         order.append(target)
         if card.get("enabled") is False:
             disabled.append(target)
@@ -984,7 +1030,12 @@ def _import_cards(tenant_id: str, sub: str, cards: list, skipped: list) -> int:
             layout["order"] = list(dict.fromkeys(order + existing))
             layout["disabled"] = list(dict.fromkeys(layout["disabled"] + disabled))
 
-        _mutate_layout(tenant_id, sub, apply)
+        try:
+            _mutate_layout(tenant_id, sub, apply)
+        except HTTPException as e:
+            skipped.append({"kind": "layout", "name": "", "reason": _skip_reason(e)})
+        except _write_failures() as e:
+            skipped.append({"kind": "layout", "name": "", "reason": _write_failed("layout", e)})
     return created
 
 
@@ -1003,7 +1054,7 @@ def _import_queries(tenant_id: str, sub: str, queries: list, skipped: list) -> i
             skipped.append({"kind": "query", "name": name, "reason": _skip_reason(e)})
             continue
         source_id = query.get("id") if isinstance(query.get("id"), str) else f"index-{i}"
-        body.update(kind="governed", createdAt=_iso_or(query.get("createdAt"), _now_iso()),
+        body.update(query_kind="governed", createdAt=_iso_or(query.get("createdAt"), _now_iso()),
                     lastUsedAt=_iso_or(query.get("lastUsedAt"), None))
         try:
             user_items_store.put(tenant_id, sub, "query", _import_id("q_", sub, "query", source_id), body)
@@ -1011,6 +1062,8 @@ def _import_queries(tenant_id: str, sub: str, queries: list, skipped: list) -> i
             created += 1
         except user_items_store.Conflict:
             pass
+        except _write_failures() as e:
+            skipped.append({"kind": "query", "name": name, "reason": _write_failed("query", e)})
     return created
 
 
@@ -1031,10 +1084,16 @@ def _import_prefs(tenant_id: str, sub: str, prefs, skipped: list) -> None:
     widgets = prefs.get("visibleWidgets")
     cleaned["visibleWidgets"] = [w for w in dict.fromkeys(widgets) if w in WIDGETS] \
         if isinstance(widgets, list) and all(isinstance(w, str) for w in widgets) else list(WIDGETS)
+    too_large = _size_errors(cleaned)
+    if too_large:
+        skipped.append({"kind": "prefs", "name": "", "reason": too_large[0]})
+        return
     try:
         user_items_store.put(tenant_id, sub, "prefs", None, cleaned)
     except user_items_store.Conflict:
         pass
+    except _write_failures() as e:
+        skipped.append({"kind": "prefs", "name": "", "reason": _write_failed("prefs", e)})
 
 
 @app.post("/api/v1/me/import")

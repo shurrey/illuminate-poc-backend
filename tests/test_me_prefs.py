@@ -43,3 +43,10 @@ def test_invalid_is_400(as_user, patch, fragment):
     r = as_user().put("/api/v1/me/prefs", headers=AUTH, json={**BODY, **patch})
     assert r.status_code == 400
     assert any(fragment in e for e in r.json()["detail"]["errors"])
+
+
+def test_oversized_prefs_are_400_not_a_store_error(as_user):
+    ids = [f"{i:03d}" + "\U0001F600" * 190 for i in range(200)]
+    r = as_user().put("/api/v1/me/prefs", headers=AUTH, json={
+        "favorites": ids, "recentReports": [], "readNotifications": ids, "visibleWidgets": ["ai"], "expected_version": 0})
+    assert r.status_code == 400 and any("too large" in e for e in r.json()["detail"]["errors"])

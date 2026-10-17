@@ -40,7 +40,9 @@ def _validate_sub(sub: str) -> None:
         raise ValueError("invalid sub")
 
 
-def _key(sub: str, kind: str, id: Optional[str]) -> str:
+def _key(tenant_id: str, sub: str, kind: str, id: Optional[str]) -> str:
+    if not tenant_id:
+        raise ValueError("tenant_id is required")
     _validate_sub(sub)
     if kind in KEYED_KINDS:
         if id is None or not _ID.fullmatch(id):
@@ -83,7 +85,7 @@ def _from_item(item: dict) -> dict:
 
 
 def _query(tenant_id: str, sub: str, kind: str, **extra) -> list[dict]:
-    _key(sub, kind, "x" if kind in KEYED_KINDS else None)
+    _key(tenant_id, sub, kind, "x" if kind in KEYED_KINDS else None)
     # Singleton kinds are listed by their exact key; keyed kinds by prefix, which ends in `#` so `u1` never matches `u10`.
     cond = Key("tenant_id").eq(tenant_id) & (
         Key("item_key").begins_with(f"user#{sub}#{kind}#") if kind in KEYED_KINDS else Key("item_key").eq(f"user#{sub}#{kind}")
@@ -98,7 +100,7 @@ def _query(tenant_id: str, sub: str, kind: str, **extra) -> list[dict]:
 
 
 def get(tenant_id: str, sub: str, kind: str, id: Optional[str] = None) -> Optional[dict]:
-    item = _get_table().get_item(Key={"tenant_id": tenant_id, "item_key": _key(sub, kind, id)}, ConsistentRead=True).get("Item")
+    item = _get_table().get_item(Key={"tenant_id": tenant_id, "item_key": _key(tenant_id, sub, kind, id)}, ConsistentRead=True).get("Item")
     return _from_item(item) if item else None
 
 
@@ -113,7 +115,7 @@ def count(tenant_id: str, sub: str, kind: str) -> int:
 
 def put(tenant_id: str, sub: str, kind: str, id: Optional[str], body: dict, *, expected_version: Optional[int] = None) -> dict:
     """Create (expected_version None, Conflict if it exists) or replace the item when its version matches."""
-    item_key = _key(sub, kind, id)
+    item_key = _key(tenant_id, sub, kind, id)
     version = 1 if expected_version is None else expected_version + 1
     updated_at = datetime.now(timezone.utc).isoformat()
     item = {"tenant_id": tenant_id, "item_key": item_key, "kind": kind, "body": body, "version": version, "updated_at": updated_at}
@@ -134,5 +136,5 @@ def put(tenant_id: str, sub: str, kind: str, id: Optional[str], body: dict, *, e
 
 def delete(tenant_id: str, sub: str, kind: str, id: Optional[str] = None) -> bool:
     """True when an item was removed."""
-    resp = _get_table().delete_item(Key={"tenant_id": tenant_id, "item_key": _key(sub, kind, id)}, ReturnValues="ALL_OLD")
+    resp = _get_table().delete_item(Key={"tenant_id": tenant_id, "item_key": _key(tenant_id, sub, kind, id)}, ReturnValues="ALL_OLD")
     return "Attributes" in resp

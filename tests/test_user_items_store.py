@@ -138,3 +138,16 @@ def test_the_pagination_fixture_really_spans_pages(table):
         store.put("t1", "u1", "card", f"c{n:02d}", {"pad": big})
     first = table.query(KeyConditionExpression=boto3.dynamodb.conditions.Key("tenant_id").eq("t1"), ConsistentRead=True)
     assert "LastEvaluatedKey" in first
+
+
+@pytest.mark.parametrize("tenant", ["", None])
+@pytest.mark.parametrize("call", [
+    lambda t: store.get(t, "u1", "card", "c1"),
+    lambda t: store.put(t, "u1", "card", "c1", {}),
+    lambda t: store.delete(t, "u1", "prefs"),
+    lambda t: store.list_kind(t, "u1", "query"),
+    lambda t: store.count(t, "u1", "card"),
+])
+def test_an_empty_tenant_is_refused(table, tenant, call):
+    with pytest.raises(ValueError):
+        call(tenant)

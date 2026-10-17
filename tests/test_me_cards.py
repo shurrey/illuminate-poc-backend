@@ -273,3 +273,26 @@ def test_hidden_omits_ids_that_are_no_longer_built_in(as_user, monkeypatch):
     defaults = [d for d in lambda_handler._default_cards() if d["id"] != "classic-courses"]
     monkeypatch.setattr(lambda_handler, "_default_cards", lambda: defaults)
     assert c.get("/api/v1/me/cards", headers=AUTH).json()["hidden"] == []
+
+
+BIG_CONTRACT = {"metrics": ["metric.reportable_courses.v1"],
+                "filters": [{"dimension": "d", "op": "in", "values": ["v" * 17000]}]}
+
+
+def test_oversized_contract_is_400(as_user):
+    c = as_user()
+    r = c.post("/api/v1/me/cards", headers=AUTH, json={**NEW, "contract": BIG_CONTRACT})
+    assert r.status_code == 400
+    assert any("contract must be at most 16 KB" in e for e in r.json()["detail"]["errors"])
+    made = c.post("/api/v1/me/cards", headers=AUTH, json=NEW).json()
+    r = c.put(f"/api/v1/me/cards/{made['id']}", headers=AUTH, json={**NEW, "contract": BIG_CONTRACT})
+    assert r.status_code == 400
+
+
+def test_oversized_body_is_400_not_a_store_error(as_user, monkeypatch):
+    monkeypatch.setattr(lambda_handler, "MAX_BODY_BYTES", 2000)
+    c = as_user()
+    r = c.post("/api/v1/me/cards", headers=AUTH, json={**NEW, "description": "\u00e9" * 1000})
+    assert r.status_code == 400
+    assert any("too large" in e for e in r.json()["detail"]["errors"])
+    assert c.post("/api/v1/me/cards", headers=AUTH, json={**NEW, "description": "e" * 1000}).status_code == 200
