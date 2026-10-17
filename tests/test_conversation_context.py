@@ -10,7 +10,7 @@ import lambda_handler
 from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
-SQL_ARTIFACT = {"id": "s1", "type": "sql", "title": "Courses by term", "data": "SELECT 1",
+SQL_ARTIFACT = {"id": "s1", "type": "sql", "kind": "semantic", "title": "Courses by term", "data": "SELECT 1",
                 "query": {"metrics": ["metric.reportable_courses.v1"], "dimensions": ["term_name"]},
                 "provenance": {"governed": True}}
 
@@ -132,21 +132,43 @@ OUTER_SQL = "SELECT term_name, reportable_courses FROM governed_1"
 
 
 def _sql_artifact(governance):
-    return {"id": "s2", "type": "sql", "title": "Courses", "data": OUTER_SQL, "sql": OUTER_SQL,
+    return {"id": "s2", "type": "sql", "kind": "sql", "title": "Courses", "data": OUTER_SQL, "sql": OUTER_SQL,
             "executed_sql": "WITH governed_1 AS (SELECT 1) SELECT term_name FROM governed_1",
             "governed_parts": PARTS, "provenance": {"governed": governance == "full", "governance": governance}}
 
 
 def test_a_fully_governed_sql_answer_keeps_its_outer_sql_and_parts_not_a_query_contract():
     assert lambda_handler._queries_from([_sql_artifact("full")]) == [
-        {"title": "Courses", "governed": True, "governance": "full", "sql": OUTER_SQL, "governed_parts": PARTS}]
+        {"kind": "sql", "title": "Courses", "governed": True, "governance": "full", "sql": OUTER_SQL,
+         "governed_parts": PARTS}]
 
 
 def test_an_ungoverned_sql_answer_is_stored_with_no_parts():
-    artifact = {"id": "s3", "type": "sql", "title": "Raw", "data": "SELECT 1", "sql": "SELECT 1",
+    artifact = {"id": "s3", "type": "sql", "kind": "sql", "title": "Raw", "data": "SELECT 1", "sql": "SELECT 1",
                 "provenance": {"governed": False, "governance": "none"}}
     assert lambda_handler._queries_from([artifact]) == [
-        {"title": "Raw", "governed": False, "governance": "none", "sql": "SELECT 1", "governed_parts": {}}]
+        {"kind": "sql", "title": "Raw", "governed": False, "governance": "none", "sql": "SELECT 1",
+         "governed_parts": {}}]
+
+
+def test_a_semantic_answer_is_stored_with_its_kind_and_contract():
+    assert lambda_handler._queries_from([SQL_ARTIFACT]) == [
+        {"kind": "semantic", "title": "Courses by term", "governed": True, "query": SQL_ARTIFACT["query"]}]
+
+
+def test_a_sql_answer_whose_provenance_lacks_governance_is_still_stored_as_sql():
+    artifact = {**_sql_artifact("full"), "provenance": {"governed": True}}
+    stored = lambda_handler._queries_from([artifact])[0]
+    assert stored["kind"] == "sql" and stored["sql"] == OUTER_SQL and stored["governance"] == "none"
+
+
+def test_old_stored_queries_without_a_kind_replay_with_one():
+    old = [{"title": "t", "governed": True, "query": {"metrics": ["m"]}},
+           {"title": "r", "governed": False, "governance": "none", "sql": "SELECT 1", "governed_parts": {}}]
+    history = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a", "queries": old}]
+    _, text = lambda_handler._model_turns(history, "next")
+    replayed = json.loads(text.split("<previous_queries>")[1].split("</previous_queries>")[0])
+    assert [q["kind"] for q in replayed] == ["semantic", "sql"]
 
 
 def test_a_truthy_non_boolean_governed_flag_is_not_a_governed_query():
@@ -165,7 +187,7 @@ def test_the_stored_conversation_keeps_the_governed_parts_for_the_follow_up(clie
     monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
     client.post("/api/chat/stream", headers=AUTH, json={"message": "mixed", "context_id": "c6"})
     stored = conversation_store.load_history("c6", "tenant-a#bob")[1]["queries"]
-    assert stored == [{"title": "Courses", "governed": False, "governance": "partial", "sql": OUTER_SQL,
+    assert stored == [{"kind": "sql", "title": "Courses", "governed": False, "governance": "partial", "sql": OUTER_SQL,
                        "governed_parts": PARTS}]
     client.post("/api/chat/stream", headers=AUTH, json={"message": "again", "context_id": "c6"})
     assert '"governed_parts": {"governed_1"' in seen[1] and "executed_sql" not in seen[1]

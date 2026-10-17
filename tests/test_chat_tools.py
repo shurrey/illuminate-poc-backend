@@ -294,8 +294,8 @@ def test_execute_sql_with_a_governed_part_runs_the_spliced_sql_and_labels_each_c
     wh = FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}])
     out = _mixed(wh)
     assert len(wh.sql) == 1 and "governed_1 AS (" in wh.sql[0] and "DS_COURSE_FILTERS_V1" in wh.sql[0]
-    assert wh.guard == {"governed_parts": frozenset({"governed_1"}),
-                        "governed_helpers": frozenset({"governed_1__DS_COURSE_FILTERS_V1"})}
+    assert set(wh.guard) == {"spliced"} and wh.guard["spliced"].sql == wh.sql[0]
+    assert wh.guard["spliced"].part_names == frozenset({"governed_1"})
     provenance = out.content["provenance"]
     assert provenance == {
         "governed": False, "governance": "partial", "rows": "modified", "reason": MIXED_REASON,
@@ -396,7 +396,7 @@ def test_governed_parts_compile_and_run_with_the_callers_identity_rights(monkeyp
                       identity_audit=lambda kind, subject: audited.append(kind))
     assert "error" not in admin.dispatch("execute_sql", request, called=SEARCHED).content
     assert seen[0]["allow_identity"] is True and seen[0]["tenant"] == TENANT_A and not seen[0]["compiled"]
-    assert seen[0]["governed_parts"] == frozenset({"governed_1"}) and isinstance(seen[0]["extra_pii"], frozenset)
+    assert seen[0]["spliced"].part_names == frozenset({"governed_1"}) and isinstance(seen[0]["extra_pii"], frozenset)
     assert audited == ["governed", "freehand"]
 
 
@@ -407,3 +407,47 @@ def test_execute_sql_spec_describes_governed_parts_for_every_licence():
         governed = spec["inputSchema"]["json"]["properties"]["governed"]
         assert governed["type"] == "object"
         assert "metrics" in governed["additionalProperties"]["properties"]
+
+
+def test_a_parts_explicit_default_sized_limit_is_kept_for_the_follow_up():
+    part = {**COURSES_BY_TERM, "limit": 100, "order_by": [{"field": "reportable_courses"}]}
+    out = _mixed(FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}]), governed={"governed_1": part})
+    assert out.artifacts[0]["governed_parts"]["governed_1"]["limit"] == 100
+    assert out.content["provenance"]["rows"] == "modified"
+
+
+def test_artifacts_say_which_tool_kind_produced_them():
+    semantic = _tools().dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
+    raw = _tools().dispatch("execute_sql", {"sql": "SELECT 1", "reason": MIXED_REASON}, called=SEARCHED)
+    mixed = _mixed(FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}]))
+    assert {a["kind"] for a in semantic.artifacts} == {"semantic"}
+    assert {a["kind"] for a in raw.artifacts} == {a["kind"] for a in mixed.artifacts} == {"sql"}
+
+
+class TruncatingWarehouse(FakeWarehouse):
+    def __call__(self, sql, params=None, compiled=False, **guard):
+        return {**super().__call__(sql, params, compiled, **guard), "truncated": True}
+
+
+def test_a_warehouse_truncated_single_part_result_is_partial_with_rows_modified_and_says_so():
+    wh = TruncatingWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3}])
+    out = _mixed(wh, sql="SELECT term_name, reportable_courses FROM governed_1")
+    provenance = out.content["provenance"]
+    assert (provenance["governance"], provenance["rows"], provenance["governed"]) == ("partial", "modified", False)
+    assert provenance["truncated"] is True and out.content["truncated"] is True
+    assert "1000 rows" in out.content["note"]
+    assert all(a["truncated"] is True and a["provenance"]["truncated"] is True for a in out.artifacts)
+
+
+def test_a_warehouse_truncated_ungoverned_result_says_so():
+    out = _tools(TruncatingWarehouse()).dispatch("execute_sql", {"sql": "SELECT 1", "reason": MIXED_REASON},
+                                                 called=SEARCHED)
+    assert out.content["truncated"] is True and out.content["provenance"]["truncated"] is True
+    assert "1000 rows" in out.content["note"]
+
+
+def test_an_untruncated_single_part_result_stays_full():
+    out = _mixed(FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3}]),
+                 sql="SELECT term_name, reportable_courses FROM governed_1")
+    assert out.content["provenance"]["governance"] == "full" and "truncated" not in out.content["provenance"]
+    assert "note" not in out.content

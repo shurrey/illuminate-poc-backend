@@ -121,7 +121,8 @@ SPECS = [
                 "title": {"type": "string"},
                 "governed": {
                     "type": "object",
-                    "description": "Governed parts by name (governed_1, governed_2, ...) that the SQL selects from",
+                    "description": ("Governed parts by name (governed_1, governed_2, ...) that the SQL selects from. "
+                                    "A part returns all its rows unless it sets a limit, which needs an order_by."),
                     "additionalProperties": {"type": "object", "properties": _CONTRACT_PROPERTIES},
                 },
             },
@@ -169,8 +170,8 @@ def _unique(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
-def _artifact(kind: str, title: str, data, **extra) -> dict:
-    return {"id": uuid.uuid4().hex, "type": kind, "title": title, "data": data, **extra}
+def _artifact(artifact_type: str, title: str, data, **extra) -> dict:
+    return {"id": uuid.uuid4().hex, "type": artifact_type, "title": title, "data": data, **extra}
 
 
 class ChatTools:
@@ -188,13 +189,13 @@ class ChatTools:
         self.allow_identity, self.identity_audit = allow_identity, identity_audit
 
     def _execute_for_tenant(self, sql: str, params: Optional[dict] = None, compiled: bool = False,
-                            **governed) -> dict:
-        """governed: governed_parts and governed_helpers of spliced SQL, passed to the guard."""
+                            spliced: Optional[Spliced] = None) -> dict:
+        """spliced: the splice sql was built from, which the guard checks the governed bodies against."""
         from snowflake_client import validate_and_execute
 
         extra_pii = frozenset(c.upper() for ds in self.catalog.datasets.values() for c in ds.pii_columns)
         return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled,
-                                    allow_identity=self.allow_identity, extra_pii=extra_pii, **governed)
+                                    allow_identity=self.allow_identity, extra_pii=extra_pii, spliced=spliced)
 
     @property
     def specs(self) -> list[dict]:
@@ -233,7 +234,7 @@ class ChatTools:
         provenance = compiled.provenance.model_dump()
         query = contract.model_dump(mode="json", exclude_defaults=True)
         title = tool_input.get("title") or "Query result"
-        common = {"query": query, "sql": compiled.sql, "provenance": provenance}
+        common = {"kind": "semantic", "query": query, "sql": compiled.sql, "provenance": provenance}
         content = {
             "columns": columns, "rows": rows[:MODEL_ROW_LIMIT], "row_count": len(rows),
             "truncated": len(rows) > MODEL_ROW_LIMIT, "provenance": provenance,
@@ -302,8 +303,7 @@ class ChatTools:
             if self.allow_identity and self.identity_audit:
                 for part in spliced.parts.values():
                     self.identity_audit("governed", part.contract)
-            result = self.execute(spliced.sql, None, governed_parts=spliced.part_names,
-                                  governed_helpers=spliced.helper_names)
+            result = self.execute(spliced.sql, None, spliced=spliced)
         else:
             result = self.execute(sql, None)
         # Logged only once the guard accepted the statement; a warehouse failure still means it was accepted.
@@ -312,21 +312,31 @@ class ChatTools:
         if "error" in result:
             return ToolResult({"error": _model_error(result)})
         rows, columns = result["rows"], result["columns"]
-        extra = {"sql": sql}
+        extra = {"kind": "sql", "sql": sql}
         if spliced:
             provenance = self._governed_provenance(spliced, columns, reason)
             extra |= {"executed_sql": spliced.sql, "governed_parts": {
-                name: part.contract.model_dump(mode="json", exclude_defaults=True) for name, part in spliced.parts.items()}}
+                name: part.contract.model_dump(mode="json", exclude_unset=True) for name, part in spliced.parts.items()}}
         else:
             provenance = {"governed": False, "governance": "none", "rows": "modified", "reason": reason,
                           "columns": {c: {"governed": False, "reason": reason} for c in columns}}
+        # The warehouse returns at most MAX_ROWS; a cut result is not the governed row set.
+        cut = result.get("truncated") is True
+        if cut:
+            provenance |= {"truncated": True, "rows": "modified", "governed": False,
+                           "governance": "partial" if provenance["governance"] == "full" else provenance["governance"]}
+            extra["truncated"] = True
         title = tool_input.get("title") or {
             "full": "Governed query result", "partial": "Partly governed query result",
         }.get(provenance["governance"], "Ungoverned query result")
         content = {
             "columns": columns, "rows": rows[:MODEL_ROW_LIMIT], "row_count": len(rows),
-            "truncated": len(rows) > MODEL_ROW_LIMIT, "provenance": provenance,
+            "truncated": cut or len(rows) > MODEL_ROW_LIMIT, "provenance": provenance,
         }
+        if cut:
+            from snowflake_client import MAX_ROWS
+            content["note"] = (f"The warehouse returned only the first {MAX_ROWS} rows; tell the user the result "
+                               f"was cut to {MAX_ROWS} rows.")
         return ToolResult(content, [
             _artifact("table", title, {"columns": columns, "rows": rows}, provenance=provenance, **extra),
             _artifact("sql", title, sql, provenance=provenance, **extra),

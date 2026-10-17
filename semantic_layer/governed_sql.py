@@ -31,6 +31,7 @@ class Part:
     contract: QueryContract
     compiled: CompiledQuery
     outputs: dict[str, str]  # Snowflake-folded output column name -> definition ref
+    limited: bool = False  # the contract set a limit, so the part returns only its top rows
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,12 @@ def _hoist(name: str, compiled: CompiledQuery) -> list[exp.CTE]:
     return helpers + [exp.CTE(this=tree, alias=exp.TableAlias(this=exp.to_identifier(name)))]
 
 
+def governed_ctes(spliced: Spliced) -> dict[str, exp.CTE]:
+    """Every part and helper CTE as splice builds it from the parts' compiled SQL, by Snowflake-folded name."""
+    return {_folded(cte.args["alias"].this): cte
+            for name, part in spliced.parts.items() for cte in _hoist(name, part.compiled)}
+
+
 def _outputs(contract: QueryContract, catalog: Catalog, compiled: CompiledQuery) -> dict[str, str]:
     refs = {_output_name(d).lower(): f"dimension:{d}" for d in contract.dimensions}
     refs |= {catalog.metrics[m].short_name.lower(): m for m in contract.metrics}
@@ -146,15 +153,22 @@ def splice(outer_sql: str, governed: dict[str, QueryContract], catalog: Catalog,
     outer = _parse_outer(outer_sql)
     _check_outer(outer, list(governed))
 
+    for name, contract in governed.items():
+        if "limit" in contract.model_fields_set and not contract.order_by:
+            raise SpliceError(f"{name}: A governed part with a limit needs an order (order_by).")
+
     parts, ctes = {}, []
     for name, contract in governed.items():
+        # The contract's default limit would silently cut the part; only an explicit one applies.
+        limited = "limit" in contract.model_fields_set
         try:
-            compiled = compile_query(contract, catalog, database, allow_identity=allow_identity)
+            compiled = compile_query(contract, catalog, database, allow_identity=allow_identity, with_limit=limited)
         except CompileError as e:
             raise SpliceError(f"{name}: {e}") from e
         hoisted = _hoist(name, compiled)
         ctes += hoisted
-        parts[name] = Part(contract=contract, compiled=compiled, outputs=_outputs(contract, catalog, compiled))
+        parts[name] = Part(contract=contract, compiled=compiled, outputs=_outputs(contract, catalog, compiled),
+                           limited=limited)
 
     helper_names = frozenset(cte.alias for cte in ctes) - parts.keys()
     outer_with = _with(outer)
@@ -202,22 +216,44 @@ def _origin(root: Node, spliced: Spliced) -> tuple[str, str] | None:
     return (part, column) if part in spliced.part_names and column in spliced.parts[part].outputs else None
 
 
+_ROW_PRESERVING_CLAUSES = frozenset({"expressions", "from", "from_", "where", "group", "qualify", "distinct",
+                                     "order", "limit"})
+
+
 def _rows_modified(tree: exp.Query, spliced: Spliced) -> bool:
-    """Whether the outer query reads anything but governed parts (a raw table, an outer CTE, a table function)."""
-    tables = (t for t in tree.find_all(exp.Table)
-              if not (unqualified_table(t) and t.name.lower() in spliced.part_names))
-    return any(True for _ in tables) or any(True for _ in tree.find_all(exp.Lateral, exp.Unnest))
+    """Whether the outer query does anything to the rows beyond reading one part with WHERE, QUALIFY, GROUP BY on
+    its columns, DISTINCT, ORDER BY and LIMIT. Any other clause, source, join or set operation modifies them."""
+    if not isinstance(tree, exp.Select) or _with(tree) is not None:
+        return True
+    if any(value not in (None, [], False) for key, value in tree.args.items() if key not in _ROW_PRESERVING_CLAUSES):
+        return True
+    source = (tree.args.get("from") or tree.args.get("from_") or exp.From()).this
+    if not (isinstance(source, exp.Table) and unqualified_table(source) and source.name.lower() in spliced.part_names):
+        return True
+    alias = source.args.get("alias")
+    if any(value not in (None, []) for key, value in source.args.items() if key not in ("this", "alias")) or (
+            alias is not None and alias.columns):
+        return True
+    if sum(1 for _ in tree.find_all(exp.Table)) != 1 or any(q is not tree for q in tree.find_all(exp.Query)):
+        return True
+    if tree.find(exp.Lateral, exp.Unnest, exp.Pivot, exp.MatchRecognize, exp.Values) is not None:
+        return True
+    group = tree.args.get("group")
+    return group is not None and (any(value not in (None, [], False) for key, value in group.args.items()
+                                      if key != "expressions")
+                                  or not all(isinstance(e, exp.Column) for e in group.expressions))
 
 
 def label(spliced: Spliced, result_columns: list[str], *, reason: str) -> dict:
     """Mark each result column governed when it is one governed part column passed through unchanged
     (aliasing allowed), else ungoverned with reason. Never raises; a tracing failure leaves all ungoverned.
-    `rows` is "modified" when the outer query reads a non-governed source, which also caps governance at partial."""
+    `rows` is "governed" only when the outer query reads one unlimited part with row-preserving clauses; "modified"
+    also caps governance at partial."""
     ungoverned = {"governed": False, "reason": reason}
     try:
         schema = {name: {column: "VARCHAR" for column in part.outputs} for name, part in spliced.parts.items()}
         trace = _trace_tree(spliced)
-        modified = _rows_modified(trace, spliced)
+        modified = _rows_modified(trace, spliced) or any(part.limited for part in spliced.parts.values())
         tree = qualify(trace, schema=schema, dialect="snowflake", validate_qualify_columns=False)
         folded: dict[str, list[str]] = {}
         for name in tree.named_selects:

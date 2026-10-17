@@ -41,6 +41,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("API-PROXY")
+# The connector logs statement text and server messages at DEBUG and INFO, and those can carry row values.
+logging.getLogger("snowflake.connector").setLevel(logging.WARNING)
 
 
 # =============================================================================
@@ -269,18 +271,18 @@ def _conversation_id(requested: Optional[str], owner: str) -> str:
 
 
 def _queries_from(artifacts: list[dict]) -> list[dict]:
-    """What each answer ran, kept with the turn so follow-ups can modify it."""
+    """What each answer ran, kept with the turn so follow-ups can modify it. An artifact with no kind is stored
+    as SQL, which claims no governance its provenance does not state."""
     out = []
     for a in artifacts:
         if a.get("type") != "sql":
             continue
         provenance = a.get("provenance") or {}
         governed = provenance.get("governed") is True
-        # query_semantic provenance has no `governance`; execute_sql's always does, even when fully governed.
-        if governed and "governance" not in provenance:
-            out.append({"title": a.get("title"), "governed": True, "query": a.get("query")})
+        if a.get("kind") == "semantic":
+            out.append({"kind": "semantic", "title": a.get("title"), "governed": governed, "query": a.get("query")})
         else:
-            out.append({"title": a.get("title"), "governed": governed,
+            out.append({"kind": "sql", "title": a.get("title"), "governed": governed,
                         "governance": provenance.get("governance", "none"), "sql": a.get("data"),
                         "governed_parts": a.get("governed_parts") or {}})
     return out
@@ -303,6 +305,8 @@ def _model_turns(history: list[dict], message_text: str) -> tuple[list[dict], st
 
 
 def _with_queries(text: str, queries: list[dict]) -> str:
+    # Turns stored before queries carried a kind: only semantic ones have a query contract.
+    queries = [q if "kind" in q else {"kind": "semantic" if "query" in q else "sql", **q} for q in queries]
     return f"<previous_queries>{json.dumps(queries)}</previous_queries>\n\n{text}"
 
 

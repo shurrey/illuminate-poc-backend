@@ -640,3 +640,13 @@ def test_person_chooser_labels_are_unique_and_placeholder_attempts_are_not_submi
     assert "COUNT(*) OVER (PARTITION BY" in persons and "PERSON_ID" in persons
     items = build_ctes(cat, ["dataset.student_grade_items.v1"], "DB")["DS_STUDENT_GRADE_ITEMS_V1"]
     assert "> '1970-01-01'" in items
+
+
+def test_compile_query_can_leave_out_the_limit_and_keeps_it_by_default():
+    import sqlglot
+    import sqlglot.expressions as exp
+
+    contract = QueryContract(measures=["dataset.enrollments.v1:enrollments"], dimensions=["course_role"])
+    assert sqlglot.parse_one(compile_query(contract, catalog(), "DB").sql, dialect="snowflake").args.get("limit")
+    unlimited = compile_query(contract, catalog(), "DB", with_limit=False).sql
+    assert not list(sqlglot.parse_one(unlimited, dialect="snowflake").find_all(exp.Limit))

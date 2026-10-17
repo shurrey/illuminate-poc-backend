@@ -475,32 +475,56 @@ def test_premium_schema_refusal_lists_learn_and_core_does_not(executed):
     assert "not in the allowed list" in core and "LEARN" not in core
 
 
-GOVERNED = {"governed_parts": frozenset({"governed_1"}), "governed_helpers": frozenset({"governed_1__DS"})}
-_PART = ("WITH governed_1__DS AS (SELECT * FROM CDM_LMS.PERSON p JOIN CDM_LMS.COURSE c ON TRUE),"
-         " governed_1 AS (SELECT {projection} FROM governed_1__DS GROUP BY 1) ")
+_PART = "WITH DS AS (SELECT * FROM CDM_LMS.PERSON p JOIN CDM_LMS.COURSE c ON TRUE) SELECT {projection} FROM DS GROUP BY 1"
+_ROLE_PEOPLE = "INSTITUTION_ROLE AS role, COUNT(DISTINCT EMAIL) AS people"
 
 
-def _spliced(outer, projection="INSTITUTION_ROLE AS role, COUNT(DISTINCT EMAIL) AS people"):
-    return _PART.format(projection=projection) + outer
+def _governed(outer, compiled_sql):
+    """(the statement, the Spliced it claims to be): outer with governed_1 hoisted from compiled_sql, bypassing
+    the compiler so a part can hold what a test needs."""
+    import sqlglot
+    import sqlglot.expressions as exp
+    from semantic_layer import governed_sql
+    from semantic_layer.contract import CompiledQuery, Provenance, QueryContract
+
+    compiled = CompiledQuery(sql=compiled_sql, provenance=Provenance(datasets=[], metrics=[], measures=[]))
+    ctes = governed_sql._hoist("governed_1", compiled)
+    tree = sqlglot.parse_one(outer, dialect="snowflake")
+    outer_with = tree.args.get("with")
+    tree.set("with", exp.With(expressions=ctes + (list(outer_with.expressions) if outer_with else [])))
+    sql = tree.sql(dialect="snowflake")
+    part = governed_sql.Part(contract=QueryContract(measures=["dataset.x.v1:n"]), compiled=compiled, outputs={})
+    helpers = frozenset(c.alias for c in ctes[:-1])
+    return sql, governed_sql.Spliced(sql=sql, parts={"governed_1": part}, part_names=frozenset({"governed_1"}),
+                                     helper_names=helpers)
+
+
+def _spliced(outer, projection=_ROLE_PEOPLE):
+    return _governed(outer, _PART.format(projection=projection))
+
+
+def _validate_governed(statement, **kwargs):
+    sql, spliced = statement
+    return _validate(sql, spliced=spliced, **kwargs)
 
 
 def test_governed_bodies_follow_the_compiled_rules_and_the_rest_the_freehand_rules(executed):
-    sql = _spliced("SELECT role, people FROM governed_1")
-    assert "Star projections" in _validate(sql)["error"]
-    assert "error" not in _validate(sql, **GOVERNED)
+    statement = _spliced("SELECT role, people FROM governed_1")
+    assert "Star projections" in _validate(statement[0])["error"]
+    assert "error" not in _validate_governed(statement)
     assert len(executed) == 1
 
 
 def test_a_governed_parts_projection_is_its_outermost_projection(executed):
-    sql = _spliced("SELECT role FROM governed_1", projection="EMAIL AS role, COUNT(*) AS people")
-    assert "personally identifiable" in _validate(sql, **GOVERNED)["error"]
-    assert "error" not in _validate(sql, **GOVERNED, allow_identity=True)
+    statement = _spliced("SELECT role FROM governed_1", projection="EMAIL AS role, COUNT(*) AS people")
+    assert "personally identifiable" in _validate_governed(statement)["error"]
+    assert "error" not in _validate_governed(statement, allow_identity=True)
 
 
 def test_extra_pii_applies_to_a_governed_parts_projection(executed):
-    sql = _spliced("SELECT role FROM governed_1", projection="CREATOR_NAME AS role, COUNT(*) AS people")
-    assert "error" not in _validate(sql, **GOVERNED)
-    assert "personally identifiable" in _validate(sql, **GOVERNED, extra_pii={"CREATOR_NAME"})["error"]
+    statement = _spliced("SELECT role FROM governed_1", projection="CREATOR_NAME AS role, COUNT(*) AS people")
+    assert "error" not in _validate_governed(statement)
+    assert "personally identifiable" in _validate_governed(statement, extra_pii={"CREATOR_NAME"})["error"]
 
 
 @pytest.mark.parametrize("outer", [
@@ -519,45 +543,39 @@ def test_extra_pii_applies_to_a_governed_parts_projection(executed):
     "SELECT d.role FROM governed_1 g JOIN governed_1__DS d ON TRUE",
 ])
 def test_freehand_and_structural_rules_still_apply_outside_governed_bodies(outer, executed, own_database):
-    assert "error" in _validate(_spliced(outer), **GOVERNED), outer
+    assert "error" in _validate_governed(_spliced(outer)), outer
     assert executed == []
 
 
 def test_whole_row_check_ignores_names_inside_governed_bodies(executed):
-    sql = _spliced("SELECT course, governed_1.people FROM governed_1",
-                   projection="INSTITUTION_ROLE AS course, COUNT(*) AS people")
-    assert "error" not in _validate(sql, **GOVERNED)
+    statement = _spliced("SELECT course, governed_1.people FROM governed_1",
+                         projection="INSTITUTION_ROLE AS course, COUNT(*) AS people")
+    assert "error" not in _validate_governed(statement)
 
 
 @pytest.mark.parametrize("identity", [False, True])
 def test_a_whole_row_reference_to_a_governed_part_is_refused(identity, executed):
-    sql = _spliced("SELECT governed_1 FROM governed_1")
-    assert _validate(sql, allow_identity=identity, **GOVERNED)["error"] == snowflake_client.WHOLE_ROW_REFUSAL
+    statement = _spliced("SELECT governed_1 FROM governed_1")
+    assert _validate_governed(statement, allow_identity=identity)["error"] == snowflake_client.WHOLE_ROW_REFUSAL
 
 
 @pytest.mark.parametrize("identity", [False, True])
 def test_a_governed_part_whose_projection_has_a_star_is_refused(identity, executed):
-    sql = "WITH governed_1 AS (SELECT * FROM CDM_LMS.PERSON) SELECT g.BIRTH_DATE FROM governed_1 g"
-    assert "error" in _validate(sql, allow_identity=identity, governed_parts=frozenset({"GOVERNED_1"}))
+    statement = _governed("SELECT g.BIRTH_DATE FROM governed_1 g", "SELECT * FROM CDM_LMS.PERSON")
+    assert "name its columns" in _validate_governed(statement, allow_identity=identity)["error"]
     assert executed == []
 
 
 def test_an_outer_read_of_a_helper_no_part_reads_is_refused(executed):
-    sql = ("WITH governed_1__DS AS (SELECT INSTITUTION_ROLE FROM CDM_LMS.PERSON),"
-           " governed_1 AS (SELECT 1 AS n) SELECT d.INSTITUTION_ROLE FROM governed_1 g JOIN governed_1__DS d ON TRUE")
-    assert "internal to a governed part" in _validate(sql, allow_identity=True, **GOVERNED)["error"]
+    statement = _governed("SELECT d.INSTITUTION_ROLE FROM governed_1 g JOIN governed_1__DS d ON TRUE",
+                          "WITH DS AS (SELECT INSTITUTION_ROLE FROM CDM_LMS.PERSON) SELECT 1 AS n")
+    assert "internal to a governed part" in _validate_governed(statement, allow_identity=True)["error"]
     assert executed == []
 
 
-def test_a_name_both_part_and_helper_is_refused(executed):
-    sql = _spliced("SELECT role FROM governed_1")
-    both = frozenset({"governed_1", "governed_1__DS"})
-    assert "error" in _validate(sql, governed_parts=both, governed_helpers=frozenset({"governed_1__DS"}))
-
-
 def test_outer_columns_read_from_a_governed_part_resolve_as_derived_outputs(executed):
-    sql = _spliced("SELECT g.role, g.people, c.NAME FROM governed_1 g JOIN CDM_LMS.COURSE c ON c.NAME = g.role")
-    assert "error" not in _validate(sql, **GOVERNED)
+    statement = _spliced("SELECT g.role, g.people, c.NAME FROM governed_1 g JOIN CDM_LMS.COURSE c ON c.NAME = g.role")
+    assert "error" not in _validate_governed(statement)
 
 
 @pytest.mark.parametrize("sql", [
@@ -566,10 +584,55 @@ def test_outer_columns_read_from_a_governed_part_resolve_as_derived_outputs(exec
     "WITH governed_1__DS AS (SELECT 1 AS n) SELECT n FROM governed_1__DS",
 ])
 def test_governed_ctes_must_each_be_defined_once_at_the_top_level(sql, executed):
-    assert "error" in _validate(sql, **GOVERNED)
+    assert "error" in _validate(sql, spliced=_spliced("SELECT role FROM governed_1")[1])
     assert executed == []
 
 
 def test_governed_ctes_are_not_accepted_with_compiled_sql(executed):
-    assert "error" in _validate(_spliced("SELECT role FROM governed_1"), compiled=True, **GOVERNED)
+    assert "error" in _validate_governed(_spliced("SELECT role FROM governed_1"), compiled=True)
     assert executed == []
+
+
+PROBE = ("WITH governed_1 AS (SELECT n FROM (SELECT p.EMAIL AS n FROM CDM_LMS.PERSON p) t)"
+         " SELECT n FROM governed_1")
+
+
+def test_a_governed_name_over_a_body_the_splice_did_not_produce_is_refused_for_a_viewer(executed):
+    _, spliced = _spliced("SELECT role FROM governed_1")
+    assert "error" in _validate(PROBE, spliced=spliced)
+    assert executed == []
+
+
+def test_a_tampered_helper_body_is_refused(executed):
+    sql, spliced = _spliced("SELECT role, people FROM governed_1")
+    tampered = sql.replace("JOIN CDM_LMS.COURSE AS c ON TRUE", "JOIN CDM_LMS.COURSE AS c ON c.ID = p.ID")
+    assert tampered != sql
+    assert "does not match" in _validate(tampered, spliced=spliced)["error"]
+    assert executed == []
+
+
+def test_a_tampered_part_body_is_refused(executed):
+    sql, spliced = _spliced("SELECT role, people FROM governed_1")
+    tampered = sql.replace("COUNT(DISTINCT EMAIL) AS people", "COUNT(EMAIL) AS people")
+    assert tampered != sql
+    assert "does not match" in _validate(tampered, spliced=spliced)["error"]
+
+
+def test_a_splice_part_missing_from_the_statement_is_refused(executed):
+    _, spliced = _spliced("SELECT role FROM governed_1")
+    assert "error" in _validate("SELECT COUNT(*) AS n FROM CDM_LMS.PERSON", spliced=spliced)
+    assert executed == []
+
+
+def test_a_governed_cte_the_splice_does_not_have_is_refused(executed):
+    sql, spliced = _spliced("WITH governed_2 AS (SELECT COUNT(*) AS n FROM CDM_LMS.PERSON)"
+                            " SELECT g.role, h.n FROM governed_1 g JOIN governed_2 h ON TRUE")
+    assert "error" in _validate(sql, spliced=spliced)
+    assert executed == []
+
+
+def test_a_column_list_that_renames_a_parts_outputs_is_refused(executed):
+    sql, spliced = _spliced("SELECT role, people FROM governed_1")
+    tampered = sql.replace("governed_1 AS (", "governed_1 (people, role) AS (")
+    assert tampered != sql
+    assert "does not match" in _validate(tampered, spliced=spliced)["error"]

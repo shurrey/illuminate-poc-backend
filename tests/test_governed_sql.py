@@ -172,9 +172,7 @@ def executed(monkeypatch):
 
 
 def _guard(spliced, tenant=TENANT_A, **kwargs):
-    return snowflake_client.validate_and_execute(spliced.sql, tenant=tenant, governed_parts=spliced.part_names,
-                                                 governed_helpers=spliced.helper_names,
-                                                 **kwargs)
+    return snowflake_client.validate_and_execute(spliced.sql, tenant=tenant, spliced=spliced, **kwargs)
 
 
 def test_guard_accepts_governed_bodies_with_stars_and_inner_pii_that_freehand_rules_refuse(executed):
@@ -212,10 +210,26 @@ def test_guard_refuses_outer_sql_reading_a_parts_helper_cte(executed):
     sql = spliced.sql.replace("SELECT\n  g.course_role\nFROM governed_1 AS g",
                               "SELECT\n  d.course_role\nFROM governed_1 AS g JOIN governed_1__DS_ENROLLMENTS_V1 AS d ON TRUE")
     assert sql != spliced.sql
-    result = snowflake_client.validate_and_execute(sql, tenant=TENANT_A, governed_parts=spliced.part_names,
-                                                   governed_helpers=spliced.helper_names)
+    result = snowflake_client.validate_and_execute(sql, tenant=TENANT_A, spliced=spliced)
     assert "governed_1" in result["error"]
     assert executed == []
+
+
+def test_the_reviewers_probe_is_refused_for_a_viewer_under_a_genuine_splice(executed):
+    spliced = _splice("SELECT course_role, people FROM governed_1", {"governed_1": PEOPLE})
+    probe = ("WITH governed_1 AS (SELECT n FROM (SELECT p.EMAIL AS n FROM CDM_LMS.PERSON p) t)"
+             " SELECT n FROM governed_1")
+    assert "error" in snowflake_client.validate_and_execute(probe, tenant=TENANT_A, spliced=spliced)
+    assert executed == []
+
+
+def test_a_genuine_splice_passes_and_its_helper_tampered_does_not(executed):
+    spliced = _splice("SELECT course_role, people FROM governed_1", {"governed_1": PEOPLE})
+    assert "error" not in _guard(spliced)
+    tampered = spliced.sql.replace("CDM_LMS.PERSON AS p", "CDM_LMS.PERSON AS p TABLESAMPLE (10)")
+    assert tampered != spliced.sql
+    assert "error" in snowflake_client.validate_and_execute(tampered, tenant=TENANT_A, spliced=spliced)
+    assert len(executed) == 1
 
 
 def test_a_core_tenants_outer_sql_naming_learn_is_refused(monkeypatch, executed):
@@ -318,7 +332,7 @@ def test_two_parts_label_with_their_own_definitions():
                     "ON a.course_role = b.course_role", ["STUDENT_ENROLLMENTS", "PEOPLE"],
                     {"governed_1": STUDENTS, "governed_2": PEOPLE})
     assert result["columns"]["PEOPLE"]["definition"] == "dataset.enrollments.v1:people"
-    assert result["governance"] == "full"
+    assert (result["governance"], result["rows"]) == ("partial", "modified")
 
 
 def test_a_lineage_failure_leaves_every_column_ungoverned_with_the_untraced_reason(monkeypatch):
@@ -382,3 +396,114 @@ def test_group_by_a_governed_dimension_with_count_elsewhere_is_partial():
                     ["COURSE_ROLE", "N"])
     assert result["governance"] == "partial"
     assert result["columns"]["COURSE_ROLE"]["governed"] is True
+
+
+# Part limits: a part compiles without a LIMIT unless its contract sets one.
+
+def _part_limits(sql, name="governed_1"):
+    return list(_cte(sql, name).find_all(exp.Limit))
+
+
+def test_a_part_without_an_explicit_limit_compiles_without_one():
+    spliced = _splice("SELECT course_role, student_enrollments FROM governed_1", {"governed_1": STUDENTS})
+    assert _part_limits(spliced.sql) == []
+    assert label(spliced, ["COURSE_ROLE", "STUDENT_ENROLLMENTS"], reason=REASON)["rows"] == "governed"
+
+
+def test_a_part_with_an_explicit_limit_and_no_order_is_refused():
+    contract = QueryContract(metrics=["metric.student_enrollments.v1"], dimensions=["course_role"], limit=5)
+    with pytest.raises(SpliceError, match="A governed part with a limit needs an order"):
+        _splice("SELECT course_role FROM governed_1", {"governed_1": contract})
+
+
+def test_an_explicit_default_sized_limit_still_counts_as_set():
+    contract = QueryContract(metrics=["metric.student_enrollments.v1"], dimensions=["course_role"], limit=100)
+    with pytest.raises(SpliceError, match="needs an order"):
+        _splice("SELECT course_role FROM governed_1", {"governed_1": contract})
+
+
+def test_a_part_with_a_limit_and_an_order_keeps_its_limit_and_modifies_the_rows():
+    contract = QueryContract(metrics=["metric.student_enrollments.v1"], dimensions=["course_role"], limit=5,
+                             order_by=[{"field": "student_enrollments"}])
+    spliced = _splice("SELECT course_role, student_enrollments FROM governed_1", {"governed_1": contract})
+    assert [lim.expression.name for lim in _part_limits(spliced.sql)] == ["5"]
+    result = label(spliced, ["COURSE_ROLE", "STUDENT_ENROLLMENTS"], reason=REASON)
+    assert (result["governance"], result["rows"]) == ("partial", "modified")
+
+
+# Rows stay governed only for a single FROM <one part> with filters, grouping on its columns, DISTINCT,
+# ordering and limits.
+
+TWO = {"governed_1": STUDENTS, "governed_2": STUDENTS}
+
+
+@pytest.mark.parametrize("outer, governed", [
+    ("SELECT a.course_role FROM governed_1 a CROSS JOIN governed_2 b", TWO),
+    ("SELECT a.course_role FROM governed_1 a, governed_2 b", TWO),
+    ("SELECT a.course_role FROM governed_1 a JOIN governed_2 b ON TRUE", TWO),
+    ("SELECT a.course_role FROM governed_1 a JOIN governed_2 b ON a.course_role = b.course_role", TWO),
+    ("SELECT a.course_role FROM governed_1 a FULL OUTER JOIN governed_2 b ON a.course_role <> b.course_role", TWO),
+    ("SELECT a.course_role FROM governed_1 a JOIN governed_1 b ON TRUE", None),
+    ("SELECT course_role FROM governed_1 UNION ALL SELECT course_role FROM governed_1", None),
+    ("SELECT course_role FROM governed_1 UNION SELECT course_role FROM governed_1", None),
+    ("SELECT course_role FROM governed_1 EXCEPT SELECT course_role FROM governed_1", None),
+    ("SELECT g.course_role FROM governed_1 g JOIN (VALUES (1)) AS v ON TRUE", None),
+    ("SELECT g.course_role FROM governed_1 g JOIN (SELECT 1 AS x) v ON TRUE", None),
+    ("SELECT course_role FROM governed_1 MATCH_RECOGNIZE (ORDER BY course_role MEASURES 1 AS m"
+     " ALL ROWS PER MATCH PATTERN (a) DEFINE a AS TRUE)", None),
+    ("SELECT course_role FROM governed_1 PIVOT (SUM(student_enrollments) FOR course_role IN ('a'))", None),
+    ("SELECT course_role FROM governed_1 UNPIVOT (v FOR k IN (student_enrollments))", None),
+    ("SELECT g.course_role FROM governed_1 g, LATERAL (SELECT 1 AS x) l", None),
+    ("SELECT course_role FROM governed_1 WHERE course_role IN (SELECT course_role FROM governed_1)", None),
+    ("SELECT course_role, (SELECT COUNT(*) FROM governed_1) AS n FROM governed_1", None),
+    ("SELECT course_role FROM governed_1 GROUP BY course_role HAVING COUNT(*) > 1", None),
+    ("SELECT UPPER(course_role) AS course_role FROM governed_1 GROUP BY UPPER(course_role)", None),
+    ("SELECT course_role FROM governed_1 GROUP BY ROLLUP (course_role)", None),
+    ("SELECT course_role FROM governed_1 GROUP BY GROUPING SETS ((course_role), ())", None),
+    ("WITH x AS (SELECT course_role FROM governed_1) SELECT course_role FROM x", None),
+    ("SELECT course_role FROM (SELECT course_role FROM governed_1)", None),
+    ("SELECT course_role FROM governed_1 SAMPLE (10)", None),
+])
+def test_a_join_set_operation_or_other_source_modifies_the_rows(outer, governed):
+    result = _label(outer, ["COURSE_ROLE"], governed)
+    assert result["rows"] == "modified"
+    assert result["governance"] != "full"
+
+
+@pytest.mark.parametrize("outer", [
+    "SELECT course_role FROM governed_1",
+    "SELECT g.course_role FROM governed_1 AS g",
+    "SELECT DISTINCT g.course_role FROM governed_1 g WHERE g.course_role = 'v' ORDER BY g.course_role LIMIT 5",
+    "SELECT course_role FROM governed_1 QUALIFY ROW_NUMBER() OVER (ORDER BY student_enrollments DESC) = 1",
+    "SELECT g.course_role FROM governed_1 g GROUP BY g.course_role",
+])
+def test_one_part_filtered_grouped_or_limited_keeps_governed_rows(outer):
+    result = _label(outer, ["COURSE_ROLE"])
+    assert (result["governance"], result["rows"]) == ("full", "governed")
+
+
+def _real_catalog():
+    from semantic_layer.catalog import default_catalog
+    return default_catalog()
+
+
+_REAL = _real_catalog()
+
+
+def _real_part(ds, **contract) -> QueryContract:
+    window = {"time_range": {"dimension": ds.required_time_range, "start": "2026-01-01"}} if ds.required_time_range else {}
+    return QueryContract(**contract, **window)
+
+
+_REAL_PARTS = ([(m, _real_part(_REAL.datasets[_REAL.metrics[m].measure.partition(":")[0]], metrics=[m]),
+                 _REAL.metrics[m].short_name) for m in sorted(_REAL.metrics)]
+               + [(f"{ds.id}:{ds.measures[0].name}", _real_part(ds, measures=[f"{ds.id}:{ds.measures[0].name}"]),
+                   ds.measures[0].name) for ds in _REAL.datasets.values() if ds.measures])
+
+
+@pytest.mark.parametrize("ref, contract, column", _REAL_PARTS, ids=[ref for ref, _, _ in _REAL_PARTS])
+def test_every_real_metric_and_measure_splices_as_a_part_that_passes_a_viewers_guard(ref, contract, column, executed):
+    spliced = splice(f"SELECT {column} FROM governed_1", {"governed_1": contract}, _REAL, DB, allow_identity=False)
+    sqlglot.parse_one(spliced.sql, dialect="snowflake")
+    assert _guard(spliced) == {"columns": [], "rows": []}
+    assert executed == [spliced.sql.strip()]

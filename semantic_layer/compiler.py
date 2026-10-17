@@ -460,8 +460,10 @@ def filter_dimension(contract: QueryContract, ref: str, catalog: Catalog) -> Opt
     return found
 
 
-def compile_query(contract: QueryContract, catalog: Catalog, database: str, allow_identity: bool = False) -> CompiledQuery:
-    """allow_identity: personally identifiable dimensions may be selected (never for Viewers)."""
+def compile_query(contract: QueryContract, catalog: Catalog, database: str, allow_identity: bool = False,
+                  with_limit: bool = True) -> CompiledQuery:
+    """allow_identity: personally identifiable dimensions may be selected (never for Viewers).
+    with_limit: False leaves out the contract's LIMIT, so every row is returned."""
     selections = _selections(contract, catalog)
     aliases = [_output_name(d) for d in contract.dimensions] + [name for name, _, _, _ in selections]
     if len({a.lower() for a in aliases}) != len(aliases):
@@ -489,7 +491,8 @@ def compile_query(contract: QueryContract, catalog: Catalog, database: str, allo
         if ob.field.lower() not in lowered:
             raise CompileError(f"order_by {ob.field!r} is not one of the selected fields {aliases}")
         query = query.order_by(exp.Ordered(this=exp.column(ob.field), desc=ob.direction == "desc"))
-    query = query.limit(contract.limit)
+    if with_limit:
+        query = query.limit(contract.limit)
 
     sql = "WITH " + ",\n".join(with_parts) + "\n" + query.sql(dialect="snowflake", pretty=True)
     _check_tables(sql, database)
