@@ -124,7 +124,7 @@ _LEARN_SPEC_TEXT = {
     ),
     "execute_sql": (
         "Last resort: run read-only SQL against the CDM schemas and the LEARN schema when search_catalog "
-        "and query_semantic cannot answer. Name every table with its schema, e.g. {database}.LEARN.<table>. "
+        "and query_semantic cannot answer. Name every table with its schema, e.g. LEARN.<table> or <database>.LEARN.<table>. "
         "Results are shown to the user as ungoverned. `reason` must say why no governed definition fits."
     ),
 }
@@ -167,7 +167,8 @@ class ChatTools:
     def _execute_for_tenant(self, sql: str, params: Optional[dict] = None, compiled: bool = False) -> dict:
         from snowflake_client import validate_and_execute
 
-        return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled)
+        extra_pii = frozenset(c.upper() for ds in self.catalog.datasets.values() for c in ds.pii_columns)
+        return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled, extra_pii=extra_pii)
 
     @property
     def specs(self) -> list[dict]:

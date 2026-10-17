@@ -15,8 +15,8 @@ import time
 import boto3
 from botocore.exceptions import ClientError
 
-from licenses import LEARN_REFUSAL, schema_allowed
-from semantic_layer.compiler import is_bounded_generator
+from licenses import LEARN_REFUSAL, allows_learn, schema_allowed
+from semantic_layer.compiler import is_bounded_generator_call
 from semantic_layer.learn import learn_columns, learn_pii
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
 from tenancy import Tenant, TenantNotReady
@@ -35,11 +35,38 @@ def _require(tenant: Tenant | None) -> Tenant:
     return tenant
 
 
+# Secret states an operator has to fix; anything else (throttling, outages) is transient and propagates.
+_UNUSABLE_SECRET_CODES = frozenset({
+    "ResourceNotFoundException", "AccessDeniedException", "InvalidRequestException", "DecryptionFailure"})
+
+
+def _parse_secret(response: dict) -> tuple[dict, str | None]:
+    """The secret's connection fields and None, or ({}, a reason that names no secret value)."""
+    if "SecretString" not in response:
+        return {}, "binary secret (no SecretString)"
+    try:
+        creds = json.loads(response["SecretString"])
+    except ValueError:
+        return {}, "malformed JSON"
+    if not isinstance(creds, dict):
+        return {}, "not a JSON object"
+    missing = [k for k in ("account", "password", "database") if not creds.get(k)]
+    if not (creds.get("user") or creds.get("username")):
+        missing.append("user")
+    return (creds, None) if not missing else ({}, f"missing {', '.join(missing)}")
+
+
+def _not_ready(tenant_id: str, reason: str, cause: Exception | None = None):
+    logger.warning("Snowflake secret for tenant %s is unusable: %s", tenant_id, reason)
+    invalidate(tenant_id)
+    raise TenantNotReady(tenant_id) from cause
+
+
 def _load_credentials(tenant: Tenant) -> dict:
     """The tenant's Snowflake secret, re-read every CREDENTIALS_TTL_SECONDS.
 
-    A changed secret drops the tenant's connection so the next query logs in with the new one;
-    a deleted secret drops it too and raises TenantNotReady.
+    A changed secret drops the tenant's connection so the next query logs in with the new one; a deleted,
+    unreadable or incomplete secret drops it too and raises TenantNotReady.
     """
     tenant_id = tenant.tenant_id
     cached = _credentials.get(tenant_id)
@@ -51,11 +78,13 @@ def _load_credentials(tenant: Tenant) -> dict:
     try:
         response = client.get_secret_value(SecretId=secret_id)
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-            invalidate(tenant_id)
-            raise TenantNotReady(tenant_id) from exc
+        code = exc.response.get("Error", {}).get("Code")
+        if code in _UNUSABLE_SECRET_CODES:
+            _not_ready(tenant_id, code, exc)
         raise
-    creds = json.loads(response["SecretString"])
+    creds, reason = _parse_secret(response)
+    if reason:
+        _not_ready(tenant_id, reason)
     if cached and cached[1] != creds:
         _drop_connection(tenant_id)
         logger.info("Snowflake credentials changed for tenant %s", tenant_id)
@@ -227,25 +256,43 @@ def _resolve(col, scope) -> list | None:
     return None
 
 
-def _learn_pii_columns(stmt, columns) -> set[int]:
-    """ids of the columns, of a statement that reads a LEARN table, that are LEARN PII.
+@functools.lru_cache(maxsize=1)
+def _cdm_pii() -> frozenset[str]:
+    from semantic_layer.validate import load_pii_columns
 
-    A column read from a LEARN table is PII when the dictionary flags it or does not list it. Derived
-    (CTE, subquery) outputs were checked where they read their tables. An unresolvable column is PII
-    unless a referenced CDM table lists it and no referenced LEARN table flags it.
+    return load_pii_columns()
+
+
+def _cdm_flags(table: tuple[str, str], column: str) -> bool:
+    """Whether CDM SCHEMA.TABLE.COLUMN is PII: flagged (or its whole table is), or not in the snapshot."""
+    if column not in _cdm_columns().get(table, ()):
+        return True
+    return f"{table[0]}.{table[1]}.{column}" in _cdm_pii() or f"{table[0]}.{table[1]}" in _cdm_pii()
+
+
+def _dictionary_pii_columns(stmt, columns) -> set[int]:
+    """ids of the columns that read a dictionary-flagged column of a CDM or LEARN table.
+
+    A CDM or LEARN column is also PII when the snapshot does not list it. Derived (CTE, subquery) outputs
+    were checked where they read their tables. An unresolvable column is PII when a referenced table flags
+    its name, when a referenced CDM table is unknown, or when no referenced CDM table lists it.
     """
     import sqlglot.expressions as exp
     from sqlglot.optimizer.scope import traverse_scope
 
-    tables = [_base_table(t) for t in stmt.find_all(exp.Table)]
-    learn_tables = {t[1] for t in tables if t and t[0] == "LEARN"}
-    if not learn_tables:
-        return set()
+    tables = [t for t in (_base_table(t) for t in stmt.find_all(exp.Table)) if t]
+    learn_tables = {t[1] for t in tables if t[0] == "LEARN"}
+    cdm_tables = [t for t in tables if t[0].startswith("CDM_")]
 
     def unresolved_is_pii(name: str) -> bool:
+        listed = [t for t in cdm_tables if name in _cdm_columns().get(t, ())]
+        if any(_cdm_flags(t, name) for t in listed):
+            return True
         if any(name in (learn_columns(t) or ()) and learn_pii(t, name) for t in learn_tables):
             return True
-        return not any(name in _cdm_columns().get(t, ()) for t in filter(None, tables) if t[0] != "LEARN")
+        # A table the snapshot does not know could be the one that has it.
+        unknown = any(t not in _cdm_columns() for t in cdm_tables)
+        return (bool(cdm_tables) or bool(learn_tables)) and (unknown or not listed)
 
     try:
         scope_of, scope_of_select = {}, {}
@@ -272,7 +319,8 @@ def _learn_pii_columns(stmt, columns) -> set[int]:
             continue
         for source in sources:
             table = _base_table(source)
-            if table and table[0] == "LEARN" and learn_pii(table[1], name):
+            if table and (learn_pii(table[1], name) if table[0] == "LEARN"
+                          else table[0].startswith("CDM_") and _cdm_flags(table, name)):
                 flagged.add(id(col))
     return flagged
 
@@ -291,6 +339,55 @@ def _qualified_functions(stmt):
         parts.insert(0, node)
         if all(isinstance(p, exp.Identifier) for p in parts):
             yield parts
+
+
+_INFORMATION_SCHEMA_VIEWS = frozenset({"TABLES", "COLUMNS", "VIEWS", "SCHEMATA", "TABLE_CONSTRAINTS"})
+
+TABLE_FUNCTION_REFUSAL = ("This table function is not allowed. Use FLATTEN, SPLIT_TO_TABLE, STRTOK_SPLIT_TO_TABLE,"
+                          " GENERATOR with a literal ROWCOUNT, or a LATERAL subquery.")
+
+_TABLE_FUNCTIONS = frozenset({"SPLIT_TO_TABLE", "STRTOK_SPLIT_TO_TABLE"})
+
+# Functions that read query history, results, DDL or account state rather than the tenant's tables.
+_REFUSED_FUNCTIONS = frozenset({"RESULT_SCAN", "LAST_QUERY_ID", "GET_DDL", "GET_QUERY_OPERATOR_STATS"})
+_REFUSED_FUNCTION_PREFIXES = ("QUERY_HISTORY", "SYSTEM$", "EXPLAIN")
+_REFUSED_QUALIFIERS = frozenset({"INFORMATION_SCHEMA", "SNOWFLAKE", "ACCOUNT_USAGE"})
+
+
+def _allowed_table_function(fn) -> bool:
+    """Whether a FROM/LATERAL source that is not a named table is a subquery or an allow-listed table function.
+
+    Only unquoted, unqualified names match: a quoted or qualified name may resolve to a UDF.
+    """
+    import sqlglot.expressions as exp
+
+    if isinstance(fn, exp.Subquery) or is_bounded_generator_call(fn):
+        return True
+    if isinstance(fn, exp.Anonymous) and fn.name.upper() == "TABLE" and len(fn.expressions) == 1:
+        fn = fn.expressions[0]
+    if isinstance(fn, exp.Explode):  # sqlglot's Snowflake FLATTEN
+        return True
+    return isinstance(fn, exp.Anonymous) and isinstance(fn.this, str) and fn.this.upper() in _TABLE_FUNCTIONS
+
+
+def _refused_function(stmt) -> str | None:
+    """The name of the first call in the statement to a refused function family, else None."""
+    import sqlglot.expressions as exp
+
+    for fn in stmt.find_all(exp.Func):
+        name = (fn.name if isinstance(fn, exp.Anonymous) else fn.sql_name()).upper()
+        if name in _REFUSED_FUNCTIONS or name.startswith(_REFUSED_FUNCTION_PREFIXES):
+            return name
+    for dot in stmt.find_all(exp.Dot):
+        if isinstance(dot.expression, exp.Func):
+            qualifiers = {i.name.upper() for i in dot.this.find_all(exp.Identifier)}
+            if qualifiers & _REFUSED_QUALIFIERS:
+                return dot.sql(dialect="snowflake").split("(")[0].upper()
+    for table in stmt.find_all(exp.Table):
+        qualifiers = {table.text(part).upper() for part in ("db", "catalog")}
+        if not isinstance(table.this, exp.Identifier) and qualifiers & _REFUSED_QUALIFIERS:
+            return table.sql(dialect="snowflake").split("(")[0].upper()
+    return None
 
 
 POSITIONAL_REFUSAL = "Refer to columns by name; positional ($1) and IDENTIFIER() column references are not allowed."
@@ -318,12 +415,14 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     """Validate a SQL statement with sqlglot AST checks, then execute it.
 
     Allowed statement types: SELECT, WITH (CTE), UNION.
-    Blocked: DML/DDL in any subquery, references outside CDM_*, INFORMATION_SCHEMA and (Premium only) LEARN, INFORMATION_SCHEMA.DATABASES, tables in another database, LIMIT > 1000, and
+    Blocked: DML/DDL in any subquery, references outside CDM_*, INFORMATION_SCHEMA and (Premium only) LEARN,
+    INFORMATION_SCHEMA views other than TABLES, COLUMNS, VIEWS, SCHEMATA and TABLE_CONSTRAINTS, table
+    functions outside the allow-list, query-history and system functions, tables in another database, LIMIT > 1000, and
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
     allow_identity lifts the projection check for compiled SQL only (callers whose role may see
-    identity); extra_pii adds dataset-declared PII column names to the check. Freehand SQL over
-    LEARN also treats columns the LEARN dictionary flags or does not list as PII.
+    identity); extra_pii adds dataset-declared PII column names to the check. Freehand SQL also
+    treats columns the CDM or LEARN dictionary flags, and LEARN columns it does not list, as PII.
 
     Returns:
         {"columns": [...], "rows": [...]} on success
@@ -377,11 +476,15 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
                 )
             }
 
-    # TABLE(...) sources carry no schema, so the whitelist below would pass RESULT_SCAN and friends.
-    for table_node in stmt.find_all(exp.Table):
-        if not isinstance(table_node.this, exp.Identifier) and not is_bounded_generator(table_node):
-            return {"error": "Only the GENERATOR table function, with a literal ROWCOUNT, is allowed."
-                             " Other table functions are not permitted."}
+    # Table functions carry no schema, so the whitelist below would pass RESULT_SCAN and friends.
+    sources = [t.this for t in stmt.find_all(exp.Table) if not isinstance(t.this, exp.Identifier)]
+    sources += [lateral.this for lateral in stmt.find_all(exp.Lateral)]
+    if stmt.find(exp.Unnest) is not None or not all(map(_allowed_table_function, sources)):
+        return {"error": TABLE_FUNCTION_REFUSAL}
+
+    refused = _refused_function(stmt)
+    if refused:
+        return {"error": f"Function {refused} is not allowed."}
 
     # A database-qualified table or function must name the tenant's own database.
     own_database = None
@@ -390,14 +493,16 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     for catalog in filter(None, catalogs):
         if own_database is None:
             own_database = tenant_database(tenant).upper()
-        if catalog.name.upper() != own_database:
+        if _folded(catalog) != own_database:
             return {"error": f"Database '{catalog.name}' is not the tenant's database. Only the tenant's own database is accessible."}
 
-    # INFORMATION_SCHEMA.DATABASES lists every database the role can see.
+    # Other views list databases, roles, grants, stages and load history beyond the tenant's tables.
     for table_node in stmt.find_all(exp.Table):
         db_part = table_node.args.get("db")
-        if db_part and db_part.name.upper() == "INFORMATION_SCHEMA" and table_node.name.upper() == "DATABASES":
-            return {"error": "INFORMATION_SCHEMA.DATABASES is not accessible."}
+        if (db_part and db_part.name.upper() == "INFORMATION_SCHEMA" and isinstance(table_node.this, exp.Identifier)
+                and _folded(table_node.this) not in _INFORMATION_SCHEMA_VIEWS):
+            return {"error": f"INFORMATION_SCHEMA.{table_node.name.upper()} is not accessible. "
+                             "Only TABLES, COLUMNS, VIEWS, SCHEMATA and TABLE_CONSTRAINTS are."}
 
     # Without a schema Snowflake resolves the table in the session's default schema, which may be LEARN.
     for table_node in stmt.find_all(exp.Table):
@@ -412,12 +517,9 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         if not schema_allowed(tenant, schema_name):
             if schema_name.upper() == "LEARN":
                 return {"error": LEARN_REFUSAL}
-            return {
-                "error": (
-                    f"Schema '{schema_name.upper()}' is not in the allowed list. "
-                    "Only CDM_* schemas and INFORMATION_SCHEMA are accessible."
-                )
-            }
+            allowed = "CDM_* schemas, LEARN and INFORMATION_SCHEMA are" if allows_learn(tenant) else \
+                "CDM_* schemas and INFORMATION_SCHEMA are"
+            return {"error": f"Schema '{schema_name.upper()}' is not in the allowed list. Only {allowed} accessible."}
 
     # PII columns must sit inside a counting aggregate. Value-returning aggregates (MIN, ARRAY_AGG,
     # LISTAGG, ANY_VALUE, MEDIAN...) and window functions return raw values, and GROUP BY on a PII
@@ -451,13 +553,13 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
             return {"error": WHOLE_ROW_REFUSAL}
         scopes = [(col, stmt) for col in stmt.find_all(exp.Column) if not _in_filter(col)]
     try:
-        learn_pii_ids = set() if compiled else _learn_pii_columns(stmt, [col for col, _ in scopes])
+        dictionary_pii_ids = set() if compiled else _dictionary_pii_columns(stmt, [col for col, _ in scopes])
     except Exception:
-        logger.exception("LEARN PII resolution failed; treating every column as PII")
-        learn_pii_ids = {id(col) for col, _ in scopes}
+        logger.exception("Dictionary PII resolution failed; treating every column as PII")
+        dictionary_pii_ids = {id(col) for col, _ in scopes}
     for col_node, scope in scopes:
         col_name = col_node.name.upper().strip('"').strip("'")
-        if (col_name in pii_names or id(col_node) in learn_pii_ids) and not inside_counting_aggregate(col_node, scope):
+        if (col_name in pii_names or id(col_node) in dictionary_pii_ids) and not inside_counting_aggregate(col_node, scope):
             return {
                 "error": (
                     f"Column '{col_name}' contains personally identifiable information (PII). "

@@ -1,6 +1,7 @@
 #!/bin/bash
 # set-snowflake-secret.sh <tenant_id> : write the SNOWFLAKE_* values from .env to the tenant's secret,
-# illuminate/tenants/<tenant_id>/snowflake, creating it if missing. Warm Lambdas keep the old credentials until they recycle.
+# illuminate/tenants/<tenant_id>/snowflake, creating it if missing. Warm Lambdas re-read the secret every 300 s
+# (CREDENTIALS_TTL_SECONDS) and reconnect when it has changed.
 set -euo pipefail
 TENANT_ID="${1:?usage: set-snowflake-secret.sh <tenant_id>}"
 if ! [[ "$TENANT_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then

@@ -60,14 +60,55 @@ class SourceSecretMissing(Exception):
     """The deployment's original Snowflake secret is gone and the tenant has no secret of its own."""
 
 
-def _secret_exists(secrets, secret_id: str) -> bool:
+class SecretUnusable(ValueError):
+    """A Snowflake secret that cannot be read or is not a complete connection; the message names no secret value."""
+
+    def __init__(self, secret_id: str, reason: str):
+        super().__init__(f"The secret {secret_id} cannot be used: {reason}.")
+        self.reason = reason
+
+
+_UNREADABLE_SECRET_CODES = ("ResourceNotFoundException", "AccessDeniedException", "InvalidRequestException",
+                            "DecryptionFailure")
+
+
+def _read_connection(secrets, secret_id: str) -> str:
+    """The secret's value when it is a complete Snowflake connection, else SecretUnusable."""
     try:
-        secrets.describe_secret(SecretId=secret_id)
-        return True
+        response = secrets.get_secret_value(SecretId=secret_id)
+    except ClientError as e:
+        if _is_code(e, *_UNREADABLE_SECRET_CODES):
+            raise SecretUnusable(secret_id, e.response["Error"]["Code"]) from e
+        raise
+    if "SecretString" not in response:
+        raise SecretUnusable(secret_id, "binary secret (no SecretString)")
+    try:
+        connection = json.loads(response["SecretString"])
+    except ValueError:
+        raise SecretUnusable(secret_id, "malformed JSON") from None
+    if not isinstance(connection, dict):
+        raise SecretUnusable(secret_id, "not a JSON object")
+    missing = [k for k in REQUIRED_CONNECTION_KEYS if not connection.get(k)]
+    if missing:
+        raise SecretUnusable(secret_id, f"missing {', '.join(missing)}")
+    return response["SecretString"]
+
+
+def _secret_state(secrets, secret_id: str) -> str:
+    """'missing', 'deleting' (scheduled for deletion, so unreadable) or 'present'."""
+    try:
+        described = secrets.describe_secret(SecretId=secret_id)
     except ClientError as e:
         if _is_code(e, "ResourceNotFoundException"):
-            return False
+            return "missing"
+        if _is_code(e, "AccessDeniedException"):
+            raise SecretUnusable(secret_id, "AccessDeniedException") from e
         raise
+    return "deleting" if described.get("DeletedDate") else "present"
+
+
+def _secret_exists(secrets, secret_id: str) -> bool:
+    return _secret_state(secrets, secret_id) == "present"
 
 
 def _find_tenant(dynamodb, env, old_tenant_id) -> str | None:
@@ -86,6 +127,11 @@ def _require_a_secret_to_use(dynamodb, secrets, env, old_tenant_id) -> None:
     source = f"illuminate/{env}/snowflake"
     if not _secret_exists(secrets, source):
         raise SourceSecretMissing(f"The source secret {source} does not exist and the tenant has no secret of its own.")
+    try:
+        _read_connection(secrets, source)
+    except SecretUnusable as e:
+        raise SourceSecretMissing(f"The source secret {source} cannot be used ({e.reason}) "
+                                  "and the tenant has no secret of its own.") from e
 
 
 def _find_or_create_tenant(dynamodb, env, old_tenant_id, name, license, dry_run) -> tuple[str, int]:
@@ -106,15 +152,13 @@ def _find_or_create_tenant(dynamodb, env, old_tenant_id, name, license, dry_run)
 
 def _copy_secret(secrets, env, tenant_id, dry_run) -> int:
     target = f"illuminate/tenants/{tenant_id}/snowflake"
-    try:
-        secrets.describe_secret(SecretId=target)
+    state = _secret_state(secrets, target)
+    if state == "deleting":
+        raise ValueError(f"The secret {target} is scheduled for deletion; restore it or set a new connection first.")
+    if state == "present":
         return 0
-    except ClientError as e:
-        if not _is_code(e, "ResourceNotFoundException"):
-            raise
     if not dry_run:
-        value = secrets.get_secret_value(SecretId=f"illuminate/{env}/snowflake")["SecretString"]
-        secrets.create_secret(Name=target, SecretString=value)
+        secrets.create_secret(Name=target, SecretString=_read_connection(secrets, f"illuminate/{env}/snowflake"))
     return 1
 
 
@@ -266,9 +310,9 @@ def _connection_string(dynamodb, secrets, env, connection: dict | None, copy_con
         return json.dumps(connection)
     _tenant_row(dynamodb, env, copy_connection_from)
     try:
-        return secrets.get_secret_value(SecretId=_secret_id(copy_connection_from))["SecretString"]
-    except ClientError as e:
-        if _is_code(e, "ResourceNotFoundException"):
+        return _read_connection(secrets, _secret_id(copy_connection_from))
+    except SecretUnusable as e:
+        if e.reason == "ResourceNotFoundException":
             raise ValueError(f"Tenant {copy_connection_from} has no Snowflake secret to copy.") from e
         raise
 

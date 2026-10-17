@@ -582,3 +582,64 @@ def test_cli_rejects_a_bad_users_csv_before_any_write(aws, monkeypatch, capsys, 
                             "--users", str(users)]) == 1
     assert "Traceback" not in capsys.readouterr().err
     assert aws.table("tenants").scan()["Items"] == []
+
+
+def _break_secret(aws, secret_id, kind):
+    if kind == "pending-deletion":
+        aws.secrets.delete_secret(SecretId=secret_id, RecoveryWindowInDays=7)
+    elif kind == "malformed-json":
+        aws.secrets.put_secret_value(SecretId=secret_id, SecretString='{"password": "' + PASSWORD + '",')
+    elif kind == "binary":
+        aws.secrets.put_secret_value(SecretId=secret_id, SecretBinary=PASSWORD.encode())
+    elif kind == "missing-key":
+        aws.secrets.put_secret_value(SecretId=secret_id, SecretString=json.dumps({**SECRET, "account": ""}))
+
+
+UNUSABLE = ["pending-deletion", "malformed-json", "binary", "missing-key", "access-denied"]
+
+
+def _deny_reads(monkeypatch, secrets, secret_id):
+    real = secrets.get_secret_value
+
+    def get_secret_value(SecretId, **kw):
+        if SecretId == secret_id:
+            raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "x"}}, "GetSecretValue")
+        return real(SecretId=SecretId, **kw)
+    monkeypatch.setattr(secrets, "get_secret_value", get_secret_value)
+
+
+@pytest.mark.parametrize("kind", UNUSABLE)
+def test_copying_an_unusable_connection_is_refused_before_any_write(aws, monkeypatch, kind):
+    source = _create(aws)["tenant_id"]
+    secret_id = f"illuminate/tenants/{source}/snowflake"
+    if kind == "access-denied":
+        _deny_reads(monkeypatch, aws.secrets, secret_id)
+    else:
+        _break_secret(aws, secret_id, kind)
+    with pytest.raises(ValueError) as caught:
+        _create(aws, connection=None, copy_connection_from=source, name="Beta")
+    assert PASSWORD not in str(caught.value) and source in str(caught.value)
+    assert [r["tenant_id"] for r in aws.table("tenants").scan()["Items"]] == [source]
+
+
+@pytest.mark.parametrize("kind", UNUSABLE)
+def test_migrate_from_an_unusable_source_secret_writes_nothing(aws, monkeypatch, kind):
+    seeded(aws)
+    source = f"illuminate/{ENV}/snowflake"
+    if kind == "access-denied":
+        _deny_reads(monkeypatch, aws.secrets, source)
+    else:
+        _break_secret(aws, source, kind)
+    with pytest.raises(tenant_admin.SourceSecretMissing) as caught:
+        aws.migrate()
+    assert PASSWORD not in str(caught.value) and source in str(caught.value)
+    assert aws.table("tenants").scan()["Items"] == []
+    assert aws.user_tenant("a@x.edu") == OLD
+
+
+def test_migrate_refuses_a_tenant_secret_scheduled_for_deletion(aws):
+    seeded(aws)
+    tid = aws.migrate()["tenant_id"]
+    aws.secrets.delete_secret(SecretId=f"illuminate/tenants/{tid}/snowflake", RecoveryWindowInDays=7)
+    with pytest.raises(ValueError, match="scheduled for deletion"):
+        aws.migrate()

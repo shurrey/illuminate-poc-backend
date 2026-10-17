@@ -238,7 +238,11 @@ _GENERATOR_MAX_ROWS = 1_000_000
 
 def is_bounded_generator(table: exp.Table) -> bool:
     """TABLE(GENERATOR(ROWCOUNT => n)) with a literal n up to _GENERATOR_MAX_ROWS; it reads no data."""
-    fn = table.this
+    return is_bounded_generator_call(table.this)
+
+
+def is_bounded_generator_call(fn: exp.Expression) -> bool:
+    """is_bounded_generator for the TABLE(...) call itself, wherever it appears (FROM or LATERAL)."""
     if not (isinstance(fn, exp.Anonymous) and str(fn.this).upper() == "TABLE" and len(fn.expressions) == 1):
         return False
     gen = fn.expressions[0]

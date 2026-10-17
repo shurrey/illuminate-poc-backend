@@ -312,6 +312,32 @@ def test_premium_tenant_is_refused_learn_pii_through_chat_raw_sql(world):
     assert world.connects == [] and world.log == []
 
 
+CROSS_SESSION_SQL = [
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL RESULT_SCAN(LAST_QUERY_ID(-1)) r",
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL TABLE(RESULT_SCAN(LAST_QUERY_ID(-1))) r",
+    "SELECT q.QUERY_TEXT FROM CDM_LMS.COURSE c, LATERAL INFORMATION_SCHEMA.QUERY_HISTORY() q",
+    "SELECT q.QUERY_TEXT FROM TABLE(SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY()) q",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE WHERE NAME = LAST_QUERY_ID(-1)",
+]
+
+
+@pytest.mark.parametrize("sql", CROSS_SESSION_SQL)
+def test_core_tenant_cannot_read_other_sessions_query_results_or_history(world, sql):
+    result = snowflake_client.validate_and_execute(sql, tenant=tenancy.get_tenant(C2))
+    assert "not allowed" in result["error"] and "warehouse_error" not in result
+    assert world.connects == [] and world.log == []
+
+
+def test_core_tenant_cannot_read_query_history_through_chat_raw_sql(world):
+    world.bedrock.tool_script = [
+        ("search_catalog", {"question": "recent queries"}),
+        ("execute_sql", {"sql": CROSS_SESSION_SQL[0], "reason": "no governed metric covers recent queries"}),
+    ]
+    assert _chat(world.client, {"Authorization": "Bearer c2"}).status_code == 200
+    assert snowflake_client.TABLE_FUNCTION_REFUSAL in json.dumps(world.bedrock.calls[-1], default=str)
+    assert world.connects == [] and world.log == []
+
+
 def test_conversations_never_cross(world):
     c = world.client
     _save_a_conversation()

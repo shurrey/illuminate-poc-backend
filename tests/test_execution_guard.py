@@ -82,7 +82,7 @@ def test_freehand_sql_cannot_reach_pii_through_stars_subqueries_or_unions(sql, e
 
 @pytest.mark.parametrize("sql", [
     "SELECT COUNT(*) FROM CDM_LMS.PERSON",
-    "WITH s AS (SELECT PERSON_ID, COURSE_ID FROM CDM_LMS.PERSON_COURSE) SELECT COUNT(DISTINCT PERSON_ID) FROM s",
+    "WITH s AS (SELECT COURSE_ID FROM CDM_LMS.PERSON_COURSE) SELECT COUNT(DISTINCT COURSE_ID) FROM s",
 ])
 def test_freehand_sql_without_pii_projections_runs(sql, executed):
     assert "error" not in _validate(sql), sql
@@ -161,8 +161,8 @@ def test_freehand_pii_outside_a_count_or_filter_is_blocked_anywhere_in_the_state
 @pytest.mark.parametrize("sql", [
     "SELECT COUNT_IF(EMAIL LIKE '%@example.edu') AS n FROM CDM_LMS.PERSON",
     "SELECT COUNT(*) AS n FROM CDM_LMS.PERSON HAVING MAX(EMAIL) = 'a@b.c'",
-    "SELECT ID FROM CDM_LMS.PERSON QUALIFY ROW_NUMBER() OVER (PARTITION BY EMAIL ORDER BY ID) = 1",
-    "SELECT p.ID FROM CDM_LMS.PERSON p JOIN CDM_LMS.PERSON q ON p.EMAIL = q.EMAIL",
+    "SELECT INSTITUTION_ROLE FROM CDM_LMS.PERSON QUALIFY ROW_NUMBER() OVER (PARTITION BY EMAIL ORDER BY ID) = 1",
+    "SELECT p.INSTITUTION_ROLE FROM CDM_LMS.PERSON p JOIN CDM_LMS.PERSON q ON p.EMAIL = q.EMAIL",
 ])
 def test_freehand_pii_in_a_count_or_filter_is_allowed(sql, executed):
     assert "error" not in _validate(sql)
@@ -203,6 +203,8 @@ def own_database(monkeypatch):
     "SELECT COUNT(*) FROM CDM_LMS.COURSE c JOIN OTHER_DB.CDM_LMS.TERM t ON c.ID = t.ID",
     "WITH x AS (SELECT COUNT(*) AS n FROM OTHER_DB.CDM_LMS.COURSE) SELECT n FROM x",
     "SELECT COUNT(*) FROM MY_DB.CDM_LMS.COURSE WHERE ID IN (SELECT ID FROM OTHER_DB.CDM_LMS.TERM)",
+    'SELECT COUNT(*) FROM "my_db".CDM_LMS.COURSE',
+    'SELECT "my_db".CDM_LMS.F(1) AS n FROM CDM_LMS.COURSE',
 ])
 def test_a_table_in_another_database_is_a_guard_error(sql, executed, own_database):
     result = _validate(sql)
@@ -307,12 +309,35 @@ def test_function_in_disallowed_schema_refused(executed):
 def test_information_schema_databases_refused(monkeypatch, executed, sql):
     from tests.tenant_fakes import install_tenants
     install_tenants(monkeypatch, TENANT_A)
-    assert _validate(sql) == {"error": "INFORMATION_SCHEMA.DATABASES is not accessible."}
+    assert _validate(sql)["error"].startswith("INFORMATION_SCHEMA.DATABASES is not accessible.")
     assert executed == []
 
 
-def test_information_schema_tables_still_allowed(executed):
-    assert "error" not in _validate("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES")
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.ENABLED_ROLES",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.APPLICABLE_ROLES",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.OBJECT_PRIVILEGES",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.LOAD_HISTORY",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.FUNCTIONS",
+    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STAGES",
+    "SELECT COUNT(*) FROM information_schema.usage_privileges",
+    "SELECT COUNT(*) FROM DB_TENANT_A.INFORMATION_SCHEMA.TABLE_PRIVILEGES",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE WHERE NAME IN (SELECT GRANTEE FROM INFORMATION_SCHEMA.OBJECT_PRIVILEGES)",
+    'SELECT COUNT(*) FROM INFORMATION_SCHEMA."tables"',
+])
+def test_information_schema_views_outside_the_allow_list_are_refused(monkeypatch, executed, sql):
+    from tests.tenant_fakes import install_tenants
+    install_tenants(monkeypatch, TENANT_A)
+    assert "is not accessible" in _validate(sql)["error"], sql
+    assert executed == []
+
+
+@pytest.mark.parametrize("view", ["TABLES", "COLUMNS", "VIEWS", "SCHEMATA", "TABLE_CONSTRAINTS", "tables"])
+def test_information_schema_allow_listed_views_run(monkeypatch, executed, view):
+    from tests.tenant_fakes import install_tenants
+    install_tenants(monkeypatch, TENANT_A)
+    assert "error" not in _validate(f"SELECT COUNT(*) FROM INFORMATION_SCHEMA.{view}")
+    assert "error" not in _validate(f"SELECT COUNT(*) FROM DB_TENANT_A.INFORMATION_SCHEMA.{view}")
 
 
 @pytest.mark.parametrize("sql", [
@@ -357,3 +382,64 @@ def test_unqualified_table_message_names_the_table(executed):
 def test_cte_names_and_generator_are_allowed_unqualified(executed, sql):
     assert "error" not in _validate(sql)
     assert len(executed) == 1
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL RESULT_SCAN(LAST_QUERY_ID(-1)) r",
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL TABLE(RESULT_SCAN(LAST_QUERY_ID(-1))) r",
+    "SELECT q.X FROM CDM_LMS.COURSE c, LATERAL INFORMATION_SCHEMA.QUERY_HISTORY() q",
+    "SELECT r.X FROM CDM_LMS.COURSE c JOIN LATERAL RESULT_SCAN(LAST_QUERY_ID()) r ON TRUE",
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL CDM_LMS.MY_FN(c.ID) r",
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL \"split_to_table\"(c.NAME, ',') r",
+    "SELECT r.X FROM CDM_LMS.COURSE c, LATERAL TABLE(GENERATOR(ROWCOUNT => 100000000)) r",
+    "SELECT r.X FROM TABLE(CDM_LMS.MY_FN(1)) r",
+    "SELECT r.X FROM UNNEST(ARRAY_CONSTRUCT(1)) r",
+])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_table_functions_outside_the_allow_list_are_refused_wherever_they_appear(sql, compiled, executed):
+    result = _validate(sql, compiled=compiled)
+    assert "table function" in result["error"], sql
+    assert executed == []
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT f.VALUE AS v FROM CDM_LMS.COURSE c, LATERAL FLATTEN(input => PARSE_JSON(c.NAME)) f",
+    "SELECT f.VALUE AS v FROM CDM_LMS.COURSE c, TABLE(FLATTEN(input => PARSE_JSON(c.NAME))) f",
+    "SELECT s.VALUE AS v FROM CDM_LMS.COURSE c, LATERAL SPLIT_TO_TABLE(c.NAME, ',') s",
+    "SELECT s.VALUE AS v FROM CDM_LMS.COURSE c, LATERAL TABLE(SPLIT_TO_TABLE(c.NAME, ',')) s",
+    "SELECT s.VALUE AS v FROM CDM_LMS.COURSE c, LATERAL STRTOK_SPLIT_TO_TABLE(c.NAME, ',') s",
+    "SELECT x.N FROM CDM_LMS.COURSE c, LATERAL (SELECT c.NAME AS N) x",
+    "SELECT g.N FROM CDM_LMS.COURSE c, LATERAL TABLE(GENERATOR(ROWCOUNT => 5)) g",
+])
+def test_allow_listed_table_functions_run(sql, executed):
+    assert "error" not in _validate(sql), sql
+    assert len(executed) == 1
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT RESULT_SCAN(LAST_QUERY_ID()) AS r",
+    "SELECT LAST_QUERY_ID() AS q",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE WHERE NAME = LAST_QUERY_ID(-2)",
+    "SELECT QUERY_HISTORY_BY_USER() AS q",
+    "SELECT GET_DDL('table', 'CDM_LMS.COURSE') AS d",
+    "SELECT SYSTEM$WHITELIST() AS w",
+    "SELECT system$allowlist() AS w",
+    "SELECT \"SYSTEM$WHITELIST\"() AS w",
+    "SELECT GET_QUERY_OPERATOR_STATS('x') AS s",
+    "SELECT EXPLAIN_JSON('x') AS e",
+    "SELECT SNOWFLAKE.CORTEX.COMPLETE('m', 'p') AS c",
+    "SELECT INFORMATION_SCHEMA.CURRENT_TASK_GRAPHS() AS t",
+    "SELECT COUNT(*) FROM CDM_LMS.COURSE WHERE NAME = ACCOUNT_USAGE.F()",
+])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_metadata_and_system_functions_are_refused_anywhere(sql, compiled, executed):
+    result = _validate(sql, compiled=compiled)
+    assert "is not allowed" in result["error"], sql
+    assert executed == []
+
+
+def test_premium_schema_refusal_lists_learn_and_core_does_not(executed):
+    premium = _validate("SELECT COUNT(*) FROM PUBLIC.T")["error"]
+    core = _validate_as(CORE, "SELECT COUNT(*) FROM PUBLIC.T")["error"]
+    assert "not in the allowed list" in premium and "LEARN" in premium
+    assert "not in the allowed list" in core and "LEARN" not in core

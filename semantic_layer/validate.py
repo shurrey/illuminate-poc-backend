@@ -27,6 +27,7 @@ _DATA = Path(__file__).resolve().parent / "data"
 DICTIONARY_SNAPSHOT = _DATA / "cdm_dictionary.json"
 PII_SNAPSHOT = _DATA / "cdm_pii_columns.json"
 SUPPLEMENT_SNAPSHOT = _DATA / "cdm_dictionary_supplement.json"
+PII_SUPPLEMENT = _DATA / "cdm_pii_supplement.json"
 _DB = "VALIDATION_DB"
 
 
@@ -42,9 +43,9 @@ def load_snapshot(path: Path = DICTIONARY_SNAPSHOT, supplement: Path = SUPPLEMEN
     return {_DB: schemas}
 
 
-def load_pii_columns(path: Path = PII_SNAPSHOT) -> frozenset[str]:
-    """Dictionary-flagged PII columns as SCHEMA.TABLE.COLUMN."""
-    return frozenset(json.loads(path.read_text()))
+def load_pii_columns(path: Path = PII_SNAPSHOT, supplement: Path = PII_SUPPLEMENT) -> frozenset[str]:
+    """Dictionary-flagged PII columns as SCHEMA.TABLE.COLUMN, plus the reviewed supplement the export does not flag."""
+    return frozenset(json.loads(path.read_text())) | frozenset(json.loads(supplement.read_text()))
 
 
 def _columns_in(sql: str) -> set[str]:

@@ -19,6 +19,17 @@ def resources(stack: str, kind: str) -> list[dict]:
     return [r for r in template["Resources"].values() if r["Type"] == kind]
 
 
+def _username(resource: dict):
+    """The Username parameter of a custom resource's Create call: a literal string or a template token."""
+    create = resource["Properties"]["Create"]
+    parts = create["Fn::Join"][1] if isinstance(create, dict) else [create]
+    for i, part in enumerate(parts):
+        if isinstance(part, str) and '"Username":"' in part:
+            tail = part.split('"Username":"', 1)[1]
+            return tail.split('"', 1)[0] if tail else parts[i + 1]
+    return None
+
+
 def check(name: str, ok: bool) -> bool:
     print(("PASS " if ok else "FAIL ") + name)
     return ok
@@ -30,8 +41,12 @@ def main() -> int:
     [pool] = resources("IlluminateBase-dev", "AWS::Cognito::UserPool")
     required = [a for a in pool["Properties"].get("Schema", []) if a.get("Required")]
     groups = [g["Properties"]["GroupName"] for g in resources("IlluminateBase-dev", "AWS::Cognito::UserPoolGroup")]
-    seed = [r for r in resources("IlluminateBase-dev", "Custom::AWS") if "initial-user" in json.dumps(r.get("Properties", {}).get("Create"))]
+    seed = [r for r in resources("IlluminateBase-dev", "Custom::AWS")
+            if "CognitoIdentityServiceProvider" in json.dumps(r.get("Properties", {}))]
     base_text = (OUT / "IlluminateBase-dev.template.json").read_text()
+    base = json.loads(base_text)["Resources"]
+    create_ids = [k for k, r in base.items() if r["Type"] == "Custom::AWS" and "adminCreateUser" in json.dumps(r["Properties"].get("Create"))]
+    acting = [r for r in seed if any(a in json.dumps(r["Properties"].get("Create")) for a in ("adminSetUserPassword", "adminAddUserToGroup"))]
     results = [
         check("user pool client declares its writable attributes", writable is not None),
         check("users cannot write custom:tenant_id", writable is not None and "custom:tenant_id" not in writable),
@@ -44,8 +59,14 @@ def main() -> int:
               any("adminAddUserToGroup" in json.dumps(r) and "UserNotFoundException" in json.dumps(r)
                   for r in resources("IlluminateBase-dev", "Custom::AWS"))),
         check("seed resources exist when the dev map has a tenant id", len(seed) >= 3),
-        check("no seed custom resource defines an Update call (deploys never re-tenant the seed user)",
-              all(not r["Properties"].get("Update") for r in seed)),
+        check("no seed custom resource defines an Update or Delete call (deploys never re-tenant the seed user)",
+              all(not r["Properties"].get("Update") and not r["Properties"].get("Delete") for r in seed)),
+        check("no seed resource updates user attributes (adminCreateUser stamps the tenant)",
+              "adminUpdateUserAttributes" not in base_text and "InitialUserTenantId" not in base_text),
+        check("the seed create fails on an existing user instead of adopting it",
+              len(create_ids) == 1 and "UsernameExistsException" not in json.dumps(base[create_ids[0]])),
+        check("the seed password and group calls act only on the user the create returned",
+              len(acting) == 2 and all(_username(r) == {"Ref": create_ids[0]} for r in acting)),
         check("no VPC or NAT gateway (nothing runs in it)",
               not resources("IlluminateBase-dev", "AWS::EC2::VPC") and not resources("IlluminateBase-dev", "AWS::EC2::NatGateway")),
         check("no unattached WAF web ACL", not resources("IlluminateBase-dev", "AWS::WAFv2::WebACL")),
