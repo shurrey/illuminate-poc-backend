@@ -97,3 +97,54 @@ def test_chat_execute_passes_every_dataset_pii_column(monkeypatch):
         called=("search_catalog",))
     declared = {c.upper() for ds in catalog.datasets.values() for c in ds.pii_columns}
     assert declared and seen and set(seen[0]["extra_pii"]) == declared
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT e.BIRTH_DATE FROM CDM_LMS.NOT_IN_DICTIONARY e",
+    "SELECT e.BIRTH_DATE FROM CDM_NEW.PERSON e",
+    "SELECT BIRTH_DATE FROM CDM_NEW.PERSON",
+    "SELECT c.NOT_A_COLUMN FROM CDM_LMS.COURSE c",
+    "SELECT NOT_A_COLUMN FROM CDM_LMS.COURSE",
+])
+def test_cdm_tables_and_columns_the_snapshot_does_not_know_are_pii(executed, sql):
+    assert _refused_as_pii(_validate(sql)), sql
+    assert executed == []
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT COUNT(DISTINCT e.BIRTH_DATE) AS n FROM CDM_LMS.NOT_IN_DICTIONARY e",
+    "SELECT COUNT(e.BIRTH_DATE) AS n FROM CDM_NEW.PERSON e",
+    "SELECT COUNT(DISTINCT c.NOT_A_COLUMN) AS n FROM CDM_LMS.COURSE c",
+    "SELECT c.NAME, COUNT(*) AS n FROM CDM_LMS.COURSE c GROUP BY 1",
+    "SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS",
+])
+def test_unknown_cdm_columns_are_allowed_inside_count_and_known_columns_still_run(executed, sql):
+    assert "error" not in _validate(sql), sql
+    assert len(executed) == 1
+
+
+@pytest.mark.parametrize("column", [
+    "CDM_CRM.CONTACT.GENDER", "CDM_CRM.CONTACT.RACE", "CDM_CRM.CONTACT.ETHNIC_GROUP",
+    "CDM_CRM.CONTACT.NATIONALITY", "CDM_CRM.CONTACT.RACE_SOURCE_CODE", "CDM_CRM.CONTACT.RACE_SOURCE_DESCRIPTION",
+    "CDM_SIS.ENROLLMENT.STUDENT_ID", "CDM_SIS.PREVIOUS_EDUCATION.STUDENT_ID",
+    "CDM_SIS.CAMPUS.ADDRESS", "CDM_SIS.CAMPUS.EMAIL", "CDM_SIS.CAMPUS.PHONE",
+    "CDM_SIS.ORGANIZATION.ADDRESS", "CDM_SIS.ORGANIZATION.PHONE",
+])
+def test_supplemented_cdm_pii_is_refused_outside_count(executed, column):
+    from semantic_layer.validate import load_pii_columns
+    schema, table, name = column.split(".")
+    assert column in load_pii_columns()
+    assert _refused_as_pii(_validate(f"SELECT t.{name} FROM {schema}.{table} t"))
+    assert "error" not in _validate(f"SELECT COUNT(DISTINCT t.{name}) AS n FROM {schema}.{table} t")
+
+
+def test_pii_supplement_is_sorted_and_names_dictionary_columns():
+    import json
+    from pathlib import Path
+    data = Path(snowflake_client.__file__).parent / "semantic_layer" / "data"
+    supplement = json.loads((data / "cdm_pii_supplement.json").read_text())
+    dictionary = json.loads((data / "cdm_dictionary.json").read_text())
+    assert supplement == sorted(set(supplement))
+    for entry in supplement:
+        schema, table, column = entry.split(".")
+        assert column in dictionary[schema][table], entry

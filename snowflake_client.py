@@ -264,32 +264,35 @@ def _cdm_pii() -> frozenset[str]:
 
 
 def _cdm_flags(table: tuple[str, str], column: str) -> bool:
-    """Whether the CDM dictionary flags SCHEMA.TABLE.COLUMN, or the whole table, as PII."""
+    """Whether CDM SCHEMA.TABLE.COLUMN is PII: flagged (or its whole table is), or not in the snapshot."""
+    if column not in _cdm_columns().get(table, ()):
+        return True
     return f"{table[0]}.{table[1]}.{column}" in _cdm_pii() or f"{table[0]}.{table[1]}" in _cdm_pii()
 
 
 def _dictionary_pii_columns(stmt, columns) -> set[int]:
     """ids of the columns that read a dictionary-flagged column of a CDM or LEARN table.
 
-    A LEARN column is also PII when the dictionary does not list it. Derived (CTE, subquery) outputs
-    were checked where they read their tables. An unresolvable column is PII when a referenced table
-    flags its name, or, in a statement that reads LEARN, unless a referenced CDM table lists it.
+    A CDM or LEARN column is also PII when the snapshot does not list it. Derived (CTE, subquery) outputs
+    were checked where they read their tables. An unresolvable column is PII when a referenced table flags
+    its name, when a referenced CDM table is unknown, or when no referenced CDM table lists it.
     """
     import sqlglot.expressions as exp
     from sqlglot.optimizer.scope import traverse_scope
 
     tables = [t for t in (_base_table(t) for t in stmt.find_all(exp.Table)) if t]
     learn_tables = {t[1] for t in tables if t[0] == "LEARN"}
-    cdm_tables = [t for t in tables if t[0] != "LEARN"]
+    cdm_tables = [t for t in tables if t[0].startswith("CDM_")]
 
     def unresolved_is_pii(name: str) -> bool:
-        if any(_cdm_flags(t, name) for t in cdm_tables):
+        listed = [t for t in cdm_tables if name in _cdm_columns().get(t, ())]
+        if any(_cdm_flags(t, name) for t in listed):
             return True
-        if not learn_tables:
-            return False
         if any(name in (learn_columns(t) or ()) and learn_pii(t, name) for t in learn_tables):
             return True
-        return not any(name in _cdm_columns().get(t, ()) for t in cdm_tables)
+        # A table the snapshot does not know could be the one that has it.
+        unknown = any(t not in _cdm_columns() for t in cdm_tables)
+        return (bool(cdm_tables) or bool(learn_tables)) and (unknown or not listed)
 
     try:
         scope_of, scope_of_select = {}, {}
@@ -316,7 +319,8 @@ def _dictionary_pii_columns(stmt, columns) -> set[int]:
             continue
         for source in sources:
             table = _base_table(source)
-            if table and (learn_pii(table[1], name) if table[0] == "LEARN" else _cdm_flags(table, name)):
+            if table and (learn_pii(table[1], name) if table[0] == "LEARN"
+                          else table[0].startswith("CDM_") and _cdm_flags(table, name)):
                 flagged.add(id(col))
     return flagged
 
