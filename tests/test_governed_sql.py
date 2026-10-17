@@ -318,7 +318,7 @@ def test_two_parts_label_with_their_own_definitions():
                     "ON a.course_role = b.course_role", ["STUDENT_ENROLLMENTS", "PEOPLE"],
                     {"governed_1": STUDENTS, "governed_2": PEOPLE})
     assert result["columns"]["PEOPLE"]["definition"] == "dataset.enrollments.v1:people"
-    assert result["governance"] == "full"
+    assert (result["governance"], result["rows"]) == ("partial", "modified")
 
 
 def test_a_lineage_failure_leaves_every_column_ungoverned_with_the_untraced_reason(monkeypatch):
@@ -415,3 +415,54 @@ def test_a_part_with_a_limit_and_an_order_keeps_its_limit_and_modifies_the_rows(
     assert [lim.expression.name for lim in _part_limits(spliced.sql)] == ["5"]
     result = label(spliced, ["COURSE_ROLE", "STUDENT_ENROLLMENTS"], reason=REASON)
     assert (result["governance"], result["rows"]) == ("partial", "modified")
+
+
+# Rows stay governed only for a single FROM <one part> with filters, grouping on its columns, DISTINCT,
+# ordering and limits.
+
+TWO = {"governed_1": STUDENTS, "governed_2": STUDENTS}
+
+
+@pytest.mark.parametrize("outer, governed", [
+    ("SELECT a.course_role FROM governed_1 a CROSS JOIN governed_2 b", TWO),
+    ("SELECT a.course_role FROM governed_1 a, governed_2 b", TWO),
+    ("SELECT a.course_role FROM governed_1 a JOIN governed_2 b ON TRUE", TWO),
+    ("SELECT a.course_role FROM governed_1 a JOIN governed_2 b ON a.course_role = b.course_role", TWO),
+    ("SELECT a.course_role FROM governed_1 a FULL OUTER JOIN governed_2 b ON a.course_role <> b.course_role", TWO),
+    ("SELECT a.course_role FROM governed_1 a JOIN governed_1 b ON TRUE", None),
+    ("SELECT course_role FROM governed_1 UNION ALL SELECT course_role FROM governed_1", None),
+    ("SELECT course_role FROM governed_1 UNION SELECT course_role FROM governed_1", None),
+    ("SELECT course_role FROM governed_1 EXCEPT SELECT course_role FROM governed_1", None),
+    ("SELECT g.course_role FROM governed_1 g JOIN (VALUES (1)) AS v ON TRUE", None),
+    ("SELECT g.course_role FROM governed_1 g JOIN (SELECT 1 AS x) v ON TRUE", None),
+    ("SELECT course_role FROM governed_1 MATCH_RECOGNIZE (ORDER BY course_role MEASURES 1 AS m"
+     " ALL ROWS PER MATCH PATTERN (a) DEFINE a AS TRUE)", None),
+    ("SELECT course_role FROM governed_1 PIVOT (SUM(student_enrollments) FOR course_role IN ('a'))", None),
+    ("SELECT course_role FROM governed_1 UNPIVOT (v FOR k IN (student_enrollments))", None),
+    ("SELECT g.course_role FROM governed_1 g, LATERAL (SELECT 1 AS x) l", None),
+    ("SELECT course_role FROM governed_1 WHERE course_role IN (SELECT course_role FROM governed_1)", None),
+    ("SELECT course_role, (SELECT COUNT(*) FROM governed_1) AS n FROM governed_1", None),
+    ("SELECT course_role FROM governed_1 GROUP BY course_role HAVING COUNT(*) > 1", None),
+    ("SELECT UPPER(course_role) AS course_role FROM governed_1 GROUP BY UPPER(course_role)", None),
+    ("SELECT course_role FROM governed_1 GROUP BY ROLLUP (course_role)", None),
+    ("SELECT course_role FROM governed_1 GROUP BY GROUPING SETS ((course_role), ())", None),
+    ("WITH x AS (SELECT course_role FROM governed_1) SELECT course_role FROM x", None),
+    ("SELECT course_role FROM (SELECT course_role FROM governed_1)", None),
+    ("SELECT course_role FROM governed_1 SAMPLE (10)", None),
+])
+def test_a_join_set_operation_or_other_source_modifies_the_rows(outer, governed):
+    result = _label(outer, ["COURSE_ROLE"], governed)
+    assert result["rows"] == "modified"
+    assert result["governance"] != "full"
+
+
+@pytest.mark.parametrize("outer", [
+    "SELECT course_role FROM governed_1",
+    "SELECT g.course_role FROM governed_1 AS g",
+    "SELECT DISTINCT g.course_role FROM governed_1 g WHERE g.course_role = 'v' ORDER BY g.course_role LIMIT 5",
+    "SELECT course_role FROM governed_1 QUALIFY ROW_NUMBER() OVER (ORDER BY student_enrollments DESC) = 1",
+    "SELECT g.course_role FROM governed_1 g GROUP BY g.course_role",
+])
+def test_one_part_filtered_grouped_or_limited_keeps_governed_rows(outer):
+    result = _label(outer, ["COURSE_ROLE"])
+    assert (result["governance"], result["rows"]) == ("full", "governed")

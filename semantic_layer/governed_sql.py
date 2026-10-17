@@ -210,18 +210,39 @@ def _origin(root: Node, spliced: Spliced) -> tuple[str, str] | None:
     return (part, column) if part in spliced.part_names and column in spliced.parts[part].outputs else None
 
 
+_ROW_PRESERVING_CLAUSES = frozenset({"expressions", "from", "from_", "where", "group", "qualify", "distinct",
+                                     "order", "limit"})
+
+
 def _rows_modified(tree: exp.Query, spliced: Spliced) -> bool:
-    """Whether the outer query reads anything but governed parts (a raw table, an outer CTE, a table function)."""
-    tables = (t for t in tree.find_all(exp.Table)
-              if not (unqualified_table(t) and t.name.lower() in spliced.part_names))
-    return any(True for _ in tables) or any(True for _ in tree.find_all(exp.Lateral, exp.Unnest))
+    """Whether the outer query does anything to the rows beyond reading one part with WHERE, QUALIFY, GROUP BY on
+    its columns, DISTINCT, ORDER BY and LIMIT. Any other clause, source, join or set operation modifies them."""
+    if not isinstance(tree, exp.Select) or _with(tree) is not None:
+        return True
+    if any(value not in (None, [], False) for key, value in tree.args.items() if key not in _ROW_PRESERVING_CLAUSES):
+        return True
+    source = (tree.args.get("from") or tree.args.get("from_") or exp.From()).this
+    if not (isinstance(source, exp.Table) and unqualified_table(source) and source.name.lower() in spliced.part_names):
+        return True
+    alias = source.args.get("alias")
+    if any(value not in (None, []) for key, value in source.args.items() if key not in ("this", "alias")) or (
+            alias is not None and alias.columns):
+        return True
+    if sum(1 for _ in tree.find_all(exp.Table)) != 1 or any(q is not tree for q in tree.find_all(exp.Query)):
+        return True
+    if tree.find(exp.Lateral, exp.Unnest, exp.Pivot, exp.MatchRecognize, exp.Values) is not None:
+        return True
+    group = tree.args.get("group")
+    return group is not None and (any(value not in (None, [], False) for key, value in group.args.items()
+                                      if key != "expressions")
+                                  or not all(isinstance(e, exp.Column) for e in group.expressions))
 
 
 def label(spliced: Spliced, result_columns: list[str], *, reason: str) -> dict:
     """Mark each result column governed when it is one governed part column passed through unchanged
     (aliasing allowed), else ungoverned with reason. Never raises; a tracing failure leaves all ungoverned.
-    `rows` is "modified" when the outer query reads a non-governed source or a part is limited, which also caps
-    governance at partial."""
+    `rows` is "governed" only when the outer query reads one unlimited part with row-preserving clauses; "modified"
+    also caps governance at partial."""
     ungoverned = {"governed": False, "reason": reason}
     try:
         schema = {name: {column: "VARCHAR" for column in part.outputs} for name, part in spliced.parts.items()}
