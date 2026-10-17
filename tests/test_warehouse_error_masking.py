@@ -56,7 +56,7 @@ def test_an_admins_warehouse_error_keeps_the_text_before_the_first_quote(warehou
     ("Numeric value 'x' Alice' is not recognized", "Numeric value …"),
     ("Division by zero", "Division by zero"),
     ("Can’t parse Alice", "Can…"),
-])
+] + [(f"value {q}Alice", "value …") for q in "«»‹›‚„′″＇＂"])
 def test_warehouse_text_is_cut_at_the_first_quote_like_character(raw, shown):
     assert snowflake_client.before_first_quote(raw) == shown
 
@@ -88,10 +88,36 @@ def test_a_preview_failure_is_raised_cut_at_the_first_quote(warehouse_fails):
     assert "Alice" not in str(raised.value) and raised.value.__cause__ is None
 
 
-def test_an_error_without_a_code_still_gets_the_generic_message(monkeypatch):
-    monkeypatch.setattr(snowflake_client, "query_sql", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x 'Alice'")))
+@pytest.mark.parametrize("error", [RuntimeError("x 'Alice'"), SnowflakeError("x 'Alice'", errno=-1, sqlstate=None)])
+def test_an_error_without_a_code_is_an_unknown_error(monkeypatch, error):
+    def fail(*a, **k):
+        raise error
+
+    monkeypatch.setattr(snowflake_client, "query_sql", fail)
     assert snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A)["error"] == \
-        "The warehouse could not run this query."
+        "The warehouse could not run this query (error unknown)."
+
+
+def test_a_viewers_error_log_line_carries_only_the_code(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+
+    def fail(*a, **k):
+        raise SnowflakeError("100069 (22P02): Error parsing Geo input: Alice. Did you mean something else?")
+
+    monkeypatch.setattr(snowflake_client, "query_sql", fail)
+    snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A)
+    assert "100038" in caplog.text and "Alice" not in caplog.text and "Geo" not in caplog.text
+
+
+def test_an_admins_error_log_line_carries_the_code_and_the_text_before_the_first_quote(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+
+    def fail(*a, **k):
+        raise SnowflakeError("Numeric value 'Alice' is not recognized")
+
+    monkeypatch.setattr(snowflake_client, "query_sql", fail)
+    snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A, allow_identity=True)
+    assert "100038" in caplog.text and "Numeric value …" in caplog.text and "Alice" not in caplog.text
 
 
 def test_the_snowflake_connector_never_logs_below_warning():

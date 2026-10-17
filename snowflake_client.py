@@ -140,7 +140,7 @@ class WarehouseError(Exception):
     """A Snowflake failure whose message is cut at its first quote."""
 
 
-_QUOTE_LIKE = re.compile("['\"`\u2018\u2019\u201c\u201d]")
+_QUOTE_LIKE = re.compile("['\"`\u2018\u2019\u201a\u201c\u201d\u201e\u2032\u2033\u2039\u203a\u00ab\u00bb\uff02\uff07]")
 
 
 def before_first_quote(message: str) -> str:
@@ -150,17 +150,20 @@ def before_first_quote(message: str) -> str:
     return message if match is None else message[:match.start()] + "…"
 
 
-def _error_code(exc: Exception) -> str | None:
-    code = getattr(exc, "errno", None) or getattr(exc, "sqlstate", None)
-    return str(code) if code else None
+def _error_code(exc: Exception) -> str:
+    """Snowflake's errno, else its sqlstate, else "unknown" (the connector uses -1 for no errno)."""
+    errno = getattr(exc, "errno", None)
+    if errno not in (None, -1, 0):
+        return str(errno)
+    return str(getattr(exc, "sqlstate", None) or "unknown")
 
 
 def _warehouse_message(exc: Exception, allow_identity: bool) -> str:
-    """What a caller sees: the code alone without identity rights, else the text before the first quote."""
+    """What a caller sees, and what is logged: the code alone without identity rights, else the text before the
+    first quote."""
     if allow_identity:
         return before_first_quote(str(exc))
-    code = _error_code(exc)
-    return f"The warehouse could not run this query (error {code})." if code else "The warehouse could not run this query."
+    return f"The warehouse could not run this query (error {_error_code(exc)})."
 
 
 def query_preview(schema: str, table: str, limit: int = 20, *, tenant: Tenant | None) -> dict:
@@ -703,7 +706,7 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         raise
     except Exception as exc:
         message = _warehouse_message(exc, allow_identity)
-        logger.error("Snowflake execution error %s: %s", _error_code(exc), before_first_quote(str(exc)))
+        logger.error("Snowflake execution error %s: %s", _error_code(exc), message)
         # warehouse_error separates Snowflake failures (internal detail) from guard rejections.
         return {"error": message, "warehouse_error": True}
 
