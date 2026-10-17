@@ -473,3 +473,77 @@ def test_premium_schema_refusal_lists_learn_and_core_does_not(executed):
     core = _validate_as(CORE, "SELECT COUNT(*) FROM PUBLIC.T")["error"]
     assert "not in the allowed list" in premium and "LEARN" in premium
     assert "not in the allowed list" in core and "LEARN" not in core
+
+
+GOVERNED = frozenset({"governed_1__DS", "governed_1"})
+_PART = ("WITH governed_1__DS AS (SELECT * FROM CDM_LMS.PERSON p JOIN CDM_LMS.COURSE c ON TRUE),"
+         " governed_1 AS (SELECT {projection} FROM governed_1__DS GROUP BY 1) ")
+
+
+def _spliced(outer, projection="INSTITUTION_ROLE AS role, COUNT(DISTINCT EMAIL) AS people"):
+    return _PART.format(projection=projection) + outer
+
+
+def test_governed_bodies_follow_the_compiled_rules_and_the_rest_the_freehand_rules(executed):
+    sql = _spliced("SELECT role, people FROM governed_1")
+    assert "Star projections" in _validate(sql)["error"]
+    assert "error" not in _validate(sql, governed_ctes=GOVERNED)
+    assert len(executed) == 1
+
+
+def test_a_governed_parts_projection_is_its_outermost_projection(executed):
+    sql = _spliced("SELECT role FROM governed_1", projection="EMAIL AS role, COUNT(*) AS people")
+    assert "personally identifiable" in _validate(sql, governed_ctes=GOVERNED)["error"]
+    assert "error" not in _validate(sql, governed_ctes=GOVERNED, allow_identity=True)
+
+
+def test_extra_pii_applies_to_a_governed_parts_projection(executed):
+    sql = _spliced("SELECT role FROM governed_1", projection="CREATOR_NAME AS role, COUNT(*) AS people")
+    assert "error" not in _validate(sql, governed_ctes=GOVERNED)
+    assert "personally identifiable" in _validate(sql, governed_ctes=GOVERNED, extra_pii={"CREATOR_NAME"})["error"]
+
+
+@pytest.mark.parametrize("outer", [
+    "SELECT g.role, p.EMAIL FROM governed_1 g JOIN CDM_LMS.PERSON p ON TRUE",
+    "SELECT g.role, p.CREATOR_NAME FROM governed_1 g JOIN CDM_LMS.PERSON p ON TRUE",
+    "SELECT * FROM governed_1",
+    "SELECT $1 FROM governed_1",
+    "SELECT a.x FROM governed_1 g JOIN CDM_LMS.PERSON AS a (x) ON TRUE",
+    "SELECT role FROM governed_1, CDM_LMS.ROLE",
+    "SELECT role FROM governed_1 JOIN CDM_LMS.PERSON ON TRUE LIMIT 5000",
+    "SELECT role FROM governed_1 JOIN OTHER_DB.CDM_LMS.PERSON ON TRUE",
+    "SELECT role FROM governed_1 JOIN PERSON ON TRUE",
+    "SELECT role FROM governed_1 JOIN PUBLIC.T ON TRUE",
+    "SELECT role, RESULT_SCAN(LAST_QUERY_ID()) AS r FROM governed_1",
+    "SELECT EMAIL FROM governed_1__DS",
+    "SELECT d.role FROM governed_1 g JOIN governed_1__DS d ON TRUE",
+])
+def test_freehand_and_structural_rules_still_apply_outside_governed_bodies(outer, executed, own_database):
+    assert "error" in _validate(_spliced(outer), governed_ctes=GOVERNED), outer
+    assert executed == []
+
+
+def test_whole_row_check_ignores_governed_names_and_names_inside_governed_bodies(executed):
+    sql = _spliced("SELECT course, governed_1.people FROM governed_1",
+                   projection="INSTITUTION_ROLE AS course, COUNT(*) AS people")
+    assert "error" not in _validate(sql, governed_ctes=GOVERNED)
+
+
+def test_outer_columns_read_from_a_governed_part_resolve_as_derived_outputs(executed):
+    sql = _spliced("SELECT g.role, g.people, c.NAME FROM governed_1 g JOIN CDM_LMS.COURSE c ON c.NAME = g.role")
+    assert "error" not in _validate(sql, governed_ctes=GOVERNED)
+
+
+@pytest.mark.parametrize("sql", [
+    "WITH governed_1 AS (SELECT 1 AS n) SELECT n FROM governed_1, (WITH governed_1 AS (SELECT 2 AS n) SELECT n FROM governed_1)",
+    "SELECT n FROM (WITH governed_1 AS (SELECT 1 AS n) SELECT n FROM governed_1)",
+    "WITH governed_1__DS AS (SELECT 1 AS n) SELECT n FROM governed_1__DS",
+])
+def test_governed_ctes_must_each_be_defined_once_at_the_top_level(sql, executed):
+    assert "error" in _validate(sql, governed_ctes=GOVERNED)
+    assert executed == []
+
+
+def test_governed_ctes_are_not_accepted_with_compiled_sql(executed):
+    assert "error" in _validate(_spliced("SELECT role FROM governed_1"), compiled=True, governed_ctes=GOVERNED)
+    assert executed == []
