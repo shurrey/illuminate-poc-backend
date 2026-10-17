@@ -23,7 +23,7 @@
                    (catalog, overlays,        conversation_store.py --> DynamoDB
                     compiler)
                          |
-               snowflake_client.validate_and_execute  (execution guard)
+               snowflake_client.validate, then execute  (execution guard)
                          |
                      Snowflake (credentials from Secrets Manager)
 ```
@@ -56,8 +56,10 @@ forwards invocations to it and streams responses back, which is what makes SSE o
 3. **Compile or chat.**
    - Semantic routes compile the caller's `QueryContract` with `compile_query`.
    - Chat routes run the Bedrock tool loop; the model's `query_semantic` calls compile the same way.
-4. **Guard.** All SQL that reaches Snowflake, compiled or freehand, goes through
-   `validate_and_execute`.
+4. **Guard.** All SQL that reaches Snowflake, compiled or freehand, goes through `validate`, which
+   checks it for a `GuardContext` (tenant, identity rights, catalog, database) in Freehand, Compiled or
+   Spliced mode and makes no warehouse call. Only a `Validated` it returned can be passed to `execute`.
+   Spliced mode compiles the governed parts from their contracts itself.
 5. **Snowflake.** `query_sql` runs the statement and fetches at most 1000 rows, reporting
    `truncated` when more were available.
 6. **Response.** Values are made JSON-safe (decimals to numbers, bytes to hex, NaN to null). Chat
@@ -201,7 +203,7 @@ PII is handled in layers:
 2. **Compile.** A dimension whose column is PII (declared, or a well-known name such as
    `FIRST_NAME`, `EMAIL`, `SSN`) cannot be selected; it can only be filtered on. The public catalog
    marks such dimensions `selectable: false`, and `search_catalog` omits them.
-3. **Execution guard** (`validate_and_execute`). Every statement must be a single `SELECT`, `WITH`
+3. **Execution guard** (`validate`, then `execute`). Every statement must be a single `SELECT`, `WITH`
    or `UNION` (`query_sql` runs nothing else), with no DML or DDL anywhere in the tree, reading only
    `CDM_*` or `INFORMATION_SCHEMA`, with no `TABLE(...)` function other than
    `TABLE(GENERATOR(ROWCOUNT => n))` for a literal n up to 1,000,000, and with no `LIMIT` above 1000.

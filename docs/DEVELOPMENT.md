@@ -73,7 +73,7 @@ print(compile_query(QueryContract(metrics=["metric.ongoing_courses.v1"], dimensi
 |------|----------|
 | `lambda_handler.py` | Routes, auth, tenant catalog cache, overlay admin endpoints |
 | `chat_engine.py` | Bedrock Converse loop |
-| `snowflake_client.py` | Connection, `validate_and_execute` (guard), `query_sql`, `query_preview` |
+| `snowflake_client.py` | Connection, the guard (`GuardContext`, `validate`, `execute`), `query_sql`, `query_preview` |
 | `overlay_store.py`, `conversation_store.py` | DynamoDB access |
 | `semantic_layer/schema.py` | Pydantic models for datasets, metrics and the catalog |
 | `semantic_layer/contract.py` | `QueryContract`, `CompiledQuery`, `Provenance` |
