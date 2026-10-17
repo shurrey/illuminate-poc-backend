@@ -10,6 +10,7 @@ import functools
 import json
 import logging
 import os
+import re
 import time
 
 import boto3
@@ -131,6 +132,25 @@ def invalidate(tenant_id: str):
     logger.info("Snowflake connection and credentials invalidated for tenant %s", tenant_id)
 
 
+class WarehouseError(Exception):
+    """A Snowflake failure whose message has had its quoted literals masked."""
+
+
+def _quoted(q: str) -> str:
+    # An apostrophe inside a word (Can't, O'Brien) neither opens nor closes a literal; a literal with no closing
+    # quote runs to the end of the message.
+    return rf"(?<!\w){q}(?:[^{q}\\]|\\.|{q}{q}|{q}(?=\w))*(?:{q}(?!\w)|$)"
+
+
+_QUOTED = re.compile(_quoted("'") + "|" + _quoted('"'), re.DOTALL)
+
+
+def mask_literals(message: str) -> str:
+    """message with every single- or double-quoted literal replaced by '***' (or "***"); Snowflake echoes
+    row values in its errors (Numeric value 'Alice' is not recognized)."""
+    return _QUOTED.sub(lambda m: m.group(0)[0] + "***" + m.group(0)[0], message)
+
+
 def query_preview(schema: str, table: str, limit: int = 20, *, tenant: Tenant | None) -> dict:
     """Execute SELECT * FROM schema.table LIMIT n and return columns + rows.
 
@@ -142,7 +162,12 @@ def query_preview(schema: str, table: str, limit: int = 20, *, tenant: Tenant | 
     """
     # Identifiers are double-quoted per Snowflake convention.
     # Callers must validate schema/table before calling this function.
-    return _run(f'SELECT * FROM "{schema}"."{table}" LIMIT {limit}', None, tenant)
+    try:
+        return _run(f'SELECT * FROM "{schema}"."{table}" LIMIT {limit}', None, tenant)
+    except TenantNotReady:
+        raise
+    except Exception as exc:
+        raise WarehouseError(mask_literals(str(exc))) from None
 
 
 def _in_filter(node) -> bool:
@@ -645,9 +670,10 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     except TenantNotReady:
         raise
     except Exception as exc:
-        logger.error("Snowflake execution error: %s", exc)
+        message = mask_literals(str(exc))
+        logger.error("Snowflake execution error: %s", message)
         # warehouse_error separates Snowflake failures (internal detail) from guard rejections.
-        return {"error": str(exc), "warehouse_error": True}
+        return {"error": message, "warehouse_error": True}
 
 
 MAX_ROWS = 1000
