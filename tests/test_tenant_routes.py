@@ -33,8 +33,8 @@ def as_user(monkeypatch):
 
 def test_semantic_query_uses_callers_tenant(as_user, monkeypatch):
     seen = []
-    monkeypatch.setattr(snowflake_client, "validate_and_execute",
-                        lambda sql, params=None, **k: seen.append(k["tenant"]) or EMPTY)
+    monkeypatch.setattr(snowflake_client, "execute",
+                        lambda v, ctx: seen.append(ctx.tenant) or snowflake_client.Result(columns=[], rows=[]))
     assert as_user(user_of(TENANT_B)).post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT).status_code == 200
     assert [t.tenant_id for t in seen] == [TENANT_B.tenant_id]
 
@@ -48,12 +48,12 @@ def test_compiled_sql_uses_tenant_database(as_user, monkeypatch):
 
 
 def test_terms_cache_is_per_tenant(as_user, monkeypatch):
-    def fake(sql, params=None, **k):
-        name = f"term-of-{k['tenant'].tenant_id}"
-        return {"columns": ["TERM_NAME", "TERM_START", "TERM_END"],
-                "rows": [{"TERM_NAME": name, "TERM_START": "2026-01-01", "TERM_END": "2026-05-01"}]}
+    def fake(v, ctx):
+        name = f"term-of-{ctx.tenant.tenant_id}"
+        return snowflake_client.Result(columns=["TERM_NAME", "TERM_START", "TERM_END"],
+                                       rows=[{"TERM_NAME": name, "TERM_START": "2026-01-01", "TERM_END": "2026-05-01"}])
 
-    monkeypatch.setattr(snowflake_client, "validate_and_execute", fake)
+    monkeypatch.setattr(snowflake_client, "execute", fake)
     assert [r["term_name"] for r in lambda_handler._current_terms(TENANT_A)] == ["term-of-tenant-a"]
     assert [r["term_name"] for r in lambda_handler._current_terms(TENANT_B)] == ["term-of-tenant-b"]
 
@@ -86,7 +86,7 @@ def test_preview_tenant_not_ready_inside_route_is_403(as_user, monkeypatch):
 
 
 def test_report_run_unknown_tenant_is_403_before_snowflake(as_user, monkeypatch):
-    monkeypatch.setattr(snowflake_client, "validate_and_execute", lambda *a, **k: pytest.fail("reached Snowflake"))
+    monkeypatch.setattr(snowflake_client, "execute", lambda *a, **k: pytest.fail("reached Snowflake"))
     report = next(iter(lambda_handler._reports().values()))
     visual = next(v for p in report.pages for v in p.visuals if v.queries)
     body = {"visual": visual.id, "query": next(iter(visual.queries)), "values": {}}

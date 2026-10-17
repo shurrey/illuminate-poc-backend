@@ -8,6 +8,7 @@ import lambda_handler
 import snowflake_client
 from semantic_layer.catalog import load_catalog
 from semantic_layer.chat_tools import ChatTools
+from tests.guard_fakes import guard
 from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 VIEWER_SQL = "SELECT COUNT(TO_NUMBER(CONCAT('x'' ', p.FIRST_NAME))) AS n FROM CDM_LMS.PERSON p"
@@ -40,14 +41,14 @@ def warehouse_fails(request, monkeypatch):
 
 def test_a_viewers_warehouse_error_is_only_the_code_and_the_log_never_has_the_value(warehouse_fails, caplog):
     caplog.set_level(logging.DEBUG)
-    result = snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A)
+    result = guard(VIEWER_SQL, tenant=TENANT_A)
     assert result == {"error": "The warehouse could not run this query (error 100038).", "warehouse_error": True}
     assert "Alice" not in caplog.text and "100038" in caplog.text
 
 
 def test_an_admins_warehouse_error_keeps_the_text_before_the_first_quote(warehouse_fails, caplog):
     caplog.set_level(logging.DEBUG)
-    result = snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A, allow_identity=True)
+    result = guard(VIEWER_SQL, tenant=TENANT_A, allow_identity=True)
     assert "Alice" not in result["error"] and "Alice" not in caplog.text
     assert result["error"].startswith("100038 (22018): 01b2c3d4: ") and result["error"].endswith("…")
 
@@ -94,7 +95,7 @@ def test_an_error_without_a_code_is_an_unknown_error(monkeypatch, error):
         raise error
 
     monkeypatch.setattr(snowflake_client, "query_sql", fail)
-    assert snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A)["error"] == \
+    assert guard(VIEWER_SQL, tenant=TENANT_A)["error"] == \
         "The warehouse could not run this query (error unknown)."
 
 
@@ -105,7 +106,7 @@ def test_a_viewers_error_log_line_carries_only_the_code(monkeypatch, caplog):
         raise SnowflakeError("100069 (22P02): Error parsing Geo input: Alice. Did you mean something else?")
 
     monkeypatch.setattr(snowflake_client, "query_sql", fail)
-    snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A)
+    guard(VIEWER_SQL, tenant=TENANT_A)
     assert "100038" in caplog.text and "Alice" not in caplog.text and "Geo" not in caplog.text
 
 
@@ -116,7 +117,7 @@ def test_an_admins_error_log_line_carries_the_code_and_the_text_before_the_first
         raise SnowflakeError("Numeric value 'Alice' is not recognized")
 
     monkeypatch.setattr(snowflake_client, "query_sql", fail)
-    snowflake_client.validate_and_execute(VIEWER_SQL, tenant=TENANT_A, allow_identity=True)
+    guard(VIEWER_SQL, tenant=TENANT_A, allow_identity=True)
     assert "100038" in caplog.text and "Numeric value …" in caplog.text and "Alice" not in caplog.text
 
 

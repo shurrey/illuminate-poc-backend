@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import lambda_handler
+import snowflake_client
 from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
 AUTH = {"Authorization": "Bearer test"}
@@ -171,7 +172,7 @@ def test_chat_identity_audit_logs_names_never_filter_values(caplog):
     from semantic_layer.contract import QueryContract
 
     tools = _admin_tools()
-    tools.execute = lambda sql, params=None, compiled=False: {"columns": ["N"], "rows": [{"N": 1}]}
+    tools.execute = lambda v, ctx: snowflake_client.Result(columns=["N"], rows=[{"N": 1}])
     with caplog.at_level("INFO", logger="API-PROXY"):
         tools.dispatch("query_semantic", PII_CONTRACT)
         lambda_handler._compile_for(QueryContract(**PII_CONTRACT), user_of(TENANT_A, ADMIN), TENANT_A)
@@ -180,15 +181,15 @@ def test_chat_identity_audit_logs_names_never_filter_values(caplog):
     assert all("person_email" in line and "jane@example.edu" not in line for line in lines)
 
 
-@pytest.mark.parametrize("result, logged", [
-    ({"columns": ["N"], "rows": [{"N": 1}]}, True),
-    ({"error": "Star projections are not allowed"}, False),
-    ({"error": "boom", "warehouse_error": True}, True),
+@pytest.mark.parametrize("projection, result, logged", [
+    ("EMAIL", snowflake_client.Result(columns=["N"], rows=[{"N": 1}]), True),
+    ("*", None, False),
+    ("EMAIL", snowflake_client.Result(columns=[], rows=[], error="boom"), True),
 ])
-def test_freehand_identity_audit_logs_only_after_the_guard_accepts_and_never_the_sql(caplog, result, logged):
+def test_freehand_identity_audit_logs_only_after_the_guard_accepts_and_never_the_sql(caplog, projection, result, logged):
     tools = _admin_tools()
-    tools.execute = lambda sql, params=None, compiled=False: result
-    sql = "SELECT EMAIL FROM CDM_LMS.PERSON WHERE EMAIL = 'jane@example.edu'"
+    tools.execute = lambda v, ctx: result or pytest.fail("the guard accepted a star projection")
+    sql = f"SELECT {projection} FROM CDM_LMS.PERSON WHERE EMAIL = 'jane@example.edu'"
     with caplog.at_level("INFO", logger="API-PROXY"):
         tools.dispatch("execute_sql", {"sql": sql, "reason": "no governed metric covers this"}, called=("search_catalog",))
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("identity_query")]

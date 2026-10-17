@@ -1613,24 +1613,41 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
     }))
 
 
-async def _execute(compiled, user: dict, tenant: Tenant) -> dict:
-    """Run compiled SQL in the tenant's warehouse through the guard, with the caller's identity rights and
-    every dataset's declared PII columns; the named result, or a 502 carrying the SQL."""
-    import asyncio
+def guard_context(tenant: Tenant, user: dict):
+    """The SQL guard's context for this request: the caller's identity rights over the tenant's overlaid catalog
+    and database, with every dataset's declared PII columns."""
     import snowflake_client
     from roles import role_allows_identity
+
+    return snowflake_client.GuardContext.of(tenant, _catalog_for(tenant)[0], _database_for(tenant),
+                                            allow_identity=role_allows_identity(user))
+
+
+def _guarded(compiled, ctx):
+    """Validate compiled SQL in Compiled mode and run it: the guard's Refusal or the warehouse Result."""
+    import snowflake_client
+
+    checked = snowflake_client.validate(compiled.sql, ctx, snowflake_client.Compiled(compiled))
+    return checked if isinstance(checked, snowflake_client.Refusal) else snowflake_client.execute(checked, ctx)
+
+
+async def _execute(compiled, user: dict, tenant: Tenant) -> dict:
+    """Run compiled SQL in the tenant's warehouse through the guard; the named result, or a 502 carrying the SQL."""
+    import asyncio
+    import snowflake_client
     from semantic_layer.compiler import named_result
 
-    allow_identity = role_allows_identity(user)
-    extra_pii = frozenset(c.upper() for ds in _catalog_for(tenant)[0].datasets.values() for c in ds.pii_columns)
+    ctx = guard_context(tenant, user)
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, lambda: snowflake_client.validate_and_execute(
-        compiled.sql, compiled=True, allow_identity=allow_identity, extra_pii=extra_pii, tenant=tenant))
-    if "error" in result:
-        logger.error("Semantic query failed: %s", result["error"])
-        message = "The warehouse could not run this query." if result.get("warehouse_error") else result["error"]
-        raise HTTPException(status_code=502, detail={"error": message, "sql": compiled.sql})
-    return named_result(result)
+    result = await loop.run_in_executor(None, lambda: _guarded(compiled, ctx))
+    if isinstance(result, snowflake_client.Refusal):
+        logger.error("Semantic query failed: %s", result.message)
+        raise HTTPException(status_code=502, detail={"error": result.message, "sql": compiled.sql})
+    if result.error is not None:
+        logger.error("Semantic query failed: %s", result.error)
+        raise HTTPException(status_code=502, detail={"error": "The warehouse could not run this query.",
+                                                     "sql": compiled.sql})
+    return named_result({"columns": result.columns, "rows": result.rows, "truncated": result.truncated})
 
 
 # =============================================================================
@@ -1656,18 +1673,20 @@ def _current_terms(tenant: Tenant) -> list[dict]:
     import time
     from semantic_layer.catalog import default_catalog
     from semantic_layer.compiler import compile_query, named_result
-    from snowflake_client import validate_and_execute
+    from snowflake_client import GuardContext, Refusal
 
     cached = _terms_cache.get(tenant.tenant_id)
     if cached and time.time() - cached[0] < _TERMS_TTL_SECONDS:
         return cached[1]
     contract = QueryContract(measures=["dataset.terms.v1:terms"], dimensions=["term_name", "term_start", "term_end"], limit=1000)
-    sql = compile_query(contract, default_catalog(), _database_for(tenant)).sql
-    result = validate_and_execute(sql, compiled=True, tenant=tenant)
-    if "error" in result:
-        logger.warning("Could not load terms for report defaults: %s", result["error"])
+    catalog, database = default_catalog(), _database_for(tenant)
+    result = _guarded(compile_query(contract, catalog, database),
+                      GuardContext.of(tenant, catalog, database, allow_identity=False))
+    error = result.message if isinstance(result, Refusal) else result.error
+    if error is not None:
+        logger.warning("Could not load terms for report defaults: %s", error)
         return []
-    rows = named_result(result)["rows"]
+    rows = named_result({"columns": result.columns, "rows": result.rows})["rows"]
     _terms_cache[tenant.tenant_id] = (time.time(), rows)
     return rows
 

@@ -2,6 +2,7 @@ import pytest
 
 import snowflake_client
 from semantic_layer.learn import learn_columns, learn_pii
+from tests.guard_fakes import guard
 from tests.tenant_fakes import TENANT_A
 
 
@@ -13,7 +14,7 @@ def executed(monkeypatch):
 
 
 def _validate(sql):
-    return snowflake_client.validate_and_execute(sql, tenant=TENANT_A)
+    return guard(sql, tenant=TENANT_A)
 
 
 def _refused_as_pii(result):
@@ -132,7 +133,7 @@ def test_guard_refuses_positional_and_identifier_columns(executed, sql):
 
 
 def test_compiled_sql_is_not_checked_for_positional_columns(executed):
-    result = snowflake_client.validate_and_execute("SELECT $1 FROM CDM_LMS.COURSE", tenant=TENANT_A, compiled=True)
+    result = guard("SELECT $1 FROM CDM_LMS.COURSE", tenant=TENANT_A, compiled_sql=True)
     assert "error" not in result
 
 
@@ -201,7 +202,7 @@ def test_cte_column_list_rename_is_caught_at_the_base_read(executed, sql):
 
 
 def test_compiled_sql_is_not_checked_for_alias_lists(executed):
-    result = snowflake_client.validate_and_execute("SELECT C1 FROM CDM_LMS.COURSE AS c (C1)", tenant=TENANT_A, compiled=True)
+    result = guard("SELECT C1 FROM CDM_LMS.COURSE AS c (C1)", tenant=TENANT_A, compiled_sql=True)
     assert "error" not in result
 
 

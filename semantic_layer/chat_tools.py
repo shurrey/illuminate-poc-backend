@@ -13,12 +13,14 @@ from typing import Callable, Iterable, Optional
 
 from pydantic import ValidationError
 
+import snowflake_client
 from licenses import LEARN_REFUSAL, allows_learn
+from snowflake_client import Compiled, Freehand, GuardContext, Refusal, Result, Spliced, Validated, validate
 from tenancy import Tenant
 
 from .compiler import CompileError, compile_query, named_result
 from .dictionary import describe_table
-from .governed_sql import SpliceError, Spliced, label, splice
+from .governed_sql import SpliceError, SplicedSql, label
 from .overlays import overlays_used
 from .contract import QueryContract
 from .schema import Catalog
@@ -153,11 +155,8 @@ class ToolResult:
     artifacts: list[dict] = field(default_factory=list)
 
 
-def _model_error(result: dict) -> str:
-    """The error the model sees: warehouse messages without object or role names."""
-    message = result["error"]
-    if not result.get("warehouse_error"):
-        return message
+def _model_error(message: str) -> str:
+    """A warehouse error as the model sees it: without object or role names."""
     message = re.sub(r"Object '[^']*'", "An object", message)
     return re.sub(r",?\s*role \S+", "", message)
 
@@ -176,26 +175,28 @@ def _artifact(artifact_type: str, title: str, data, **extra) -> dict:
 
 class ChatTools:
     def __init__(self, catalog: Catalog, database: str, *, tenant: Tenant,
-                 execute: Optional[Callable[..., dict]] = None,
+                 execute: Optional[Callable[[Validated, GuardContext], Result]] = None,
                  describe: Callable[[str, str], Optional[list[dict]]] = describe_table,
                  overlays: Iterable = (), allow_identity: bool = False,
                  identity_audit: Optional[Callable[[str, object], None]] = None):
-        """execute: defaults to running against the tenant's warehouse. overlays: applied to catalog, reported in provenance.
+        """execute: runs a statement the guard accepted; defaults to the tenant's warehouse. overlays: applied to catalog, reported in provenance.
         allow_identity: the caller's role may see PII columns (governed and freehand).
-        identity_audit: called with ("governed", contract) before, or ("freehand", None) after the guard accepts, an identity-capable query."""
+        identity_audit: for an identity-capable query, called with ("governed", contract) before a governed query
+        runs, and once the guard accepts execute_sql with ("governed", contract) per part, then ("freehand", None)."""
         self.catalog, self.database, self.tenant, self.describe = catalog, database, tenant, describe
-        self.execute = execute or self._execute_for_tenant
+        self.execute = execute or (lambda v, ctx: snowflake_client.execute(v, ctx))
         self.overlays = list(overlays)
         self.allow_identity, self.identity_audit = allow_identity, identity_audit
+        self.guard = GuardContext.of(tenant, catalog, database, allow_identity=allow_identity)
 
-    def _execute_for_tenant(self, sql: str, params: Optional[dict] = None, compiled: bool = False,
-                            spliced: Optional[Spliced] = None) -> dict:
-        """spliced: the splice sql was built from, which the guard checks the governed bodies against."""
-        from snowflake_client import validate_and_execute
-
-        extra_pii = frozenset(c.upper() for ds in self.catalog.datasets.values() for c in ds.pii_columns)
-        return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled,
-                                    allow_identity=self.allow_identity, extra_pii=extra_pii, spliced=spliced)
+    def _run(self, checked: Validated | Refusal) -> dict:
+        """The guard's refusal, or the warehouse result as a dict of columns, rows and truncated."""
+        if isinstance(checked, Refusal):
+            return {"error": checked.message}
+        result = self.execute(checked, self.guard)
+        if result.error is not None:
+            return {"error": _model_error(result.error)}
+        return {"columns": result.columns, "rows": result.rows, "truncated": result.truncated}
 
     @property
     def specs(self) -> list[dict]:
@@ -224,9 +225,9 @@ class ChatTools:
 
         if self.allow_identity and self.identity_audit:
             self.identity_audit("governed", contract)
-        result = self.execute(compiled.sql, None, compiled=True)
+        result = self._run(validate(compiled.sql, self.guard, Compiled(compiled)))
         if "error" in result:
-            return ToolResult({"error": _model_error(result)})
+            return ToolResult({"error": result["error"]})
 
         result = named_result(result)
         rows, columns = result["rows"], result["columns"]
@@ -264,7 +265,8 @@ class ChatTools:
             return ToolResult({"error": f"No dictionary entry for {schema.upper()}.{table.upper()}"})
         return ToolResult({"table": f"{schema.upper()}.{table.upper()}", "columns": columns})
 
-    def _spliced(self, sql: str, governed) -> Spliced:
+    @staticmethod
+    def _contracts(governed) -> dict[str, QueryContract]:
         """Raises SpliceError for a malformed `governed` input, naming the part at fault."""
         if not isinstance(governed, dict):
             raise SpliceError("governed must be an object mapping governed_1, governed_2, ... to query_semantic inputs")
@@ -276,9 +278,9 @@ class ChatTools:
                 contracts[name] = _contract(part)
             except ValidationError as e:
                 raise SpliceError(f"{name}: {e}") from e
-        return splice(sql, contracts, self.catalog, self.database, allow_identity=self.allow_identity)
+        return contracts
 
-    def _governed_provenance(self, spliced: Spliced, columns: list[str], reason: str) -> dict:
+    def _governed_provenance(self, spliced: SplicedSql, columns: list[str], reason: str) -> dict:
         labels = label(spliced, columns, reason=reason)
         compiled = [part.compiled.provenance for part in spliced.parts.values()]
         return {
@@ -294,23 +296,21 @@ class ChatTools:
         if len(reason) < MIN_REASON_LENGTH:
             return ToolResult({"error": "execute_sql needs a reason (a sentence) saying why no governed definition fits"})
         sql = tool_input.get("sql", "")
-        spliced = None
         if tool_input.get("governed"):
             try:
-                spliced = self._spliced(sql, tool_input["governed"])
+                checked = validate(None, self.guard, Spliced(sql, self._contracts(tool_input["governed"])))
             except SpliceError as e:
                 return ToolResult({"error": str(e)})
-            if self.allow_identity and self.identity_audit:
-                for part in spliced.parts.values():
-                    self.identity_audit("governed", part.contract)
-            result = self.execute(spliced.sql, None, spliced=spliced)
         else:
-            result = self.execute(sql, None)
-        # Logged only once the guard accepted the statement; a warehouse failure still means it was accepted.
-        if self.allow_identity and self.identity_audit and ("error" not in result or "warehouse_error" in result):
+            checked = validate(sql, self.guard, Freehand())
+        spliced = checked.spliced if isinstance(checked, Validated) else None
+        if isinstance(checked, Validated) and self.allow_identity and self.identity_audit:
+            for part in (spliced.parts.values() if spliced else ()):
+                self.identity_audit("governed", part.contract)
             self.identity_audit("freehand", None)
+        result = self._run(checked)
         if "error" in result:
-            return ToolResult({"error": _model_error(result)})
+            return ToolResult({"error": result["error"]})
         rows, columns = result["rows"], result["columns"]
         extra = {"kind": "sql", "sql": sql}
         if spliced:
@@ -321,7 +321,7 @@ class ChatTools:
             provenance = {"governed": False, "governance": "none", "rows": "modified", "reason": reason,
                           "columns": {c: {"governed": False, "reason": reason} for c in columns}}
         # The warehouse returns at most MAX_ROWS; a cut result is not the governed row set.
-        cut = result.get("truncated") is True
+        cut = result["truncated"]
         if cut:
             provenance |= {"truncated": True, "rows": "modified", "governed": False,
                            "governance": "partial" if provenance["governance"] == "full" else provenance["governance"]}

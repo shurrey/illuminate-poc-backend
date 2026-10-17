@@ -1,13 +1,27 @@
+import dataclasses
+from unittest import mock
+
 import pytest
 
 import licenses
 import snowflake_client
 from tenancy import TenantNotReady
+from tests.guard_fakes import compiled as compiled_mode, guard_ctx, run
 from tests.tenant_fakes import TENANT_A, TENANT_CORE
 
 
-def _validate(sql, **kwargs):
-    return snowflake_client.validate_and_execute(sql, tenant=TENANT_A, **kwargs)
+@pytest.fixture(autouse=True)
+def _default_database(monkeypatch):
+    monkeypatch.setattr(snowflake_client, "tenant_database", lambda tenant: "MY_DB")
+
+
+def _validate(sql, *, tenant=TENANT_A, compiled=False, spliced=None, **kwargs):
+    """The guard under the tenant's database; spliced stands in for the splice the guard would build, with sql."""
+    ctx = guard_ctx(tenant, database=snowflake_client.tenant_database(tenant), **kwargs)
+    if spliced is None:
+        return run(sql, ctx, compiled_mode(sql) if compiled else snowflake_client.Freehand())
+    with mock.patch.object(snowflake_client, "splice", lambda *a, **k: dataclasses.replace(spliced, sql=sql)):
+        return run(None, ctx, snowflake_client.Spliced("SELECT 1", {}))
 
 
 @pytest.fixture
@@ -219,11 +233,6 @@ def test_declared_dataset_pii_is_guarded_for_callers_without_identity(monkeypatc
     assert "error" not in _validate(sql, compiled=True, extra_pii={"CREATOR_NAME"}, allow_identity=True)
 
 
-@pytest.fixture
-def own_database(monkeypatch):
-    monkeypatch.setattr(snowflake_client, "tenant_database", lambda tenant: "MY_DB")
-
-
 @pytest.mark.parametrize("sql", [
     "SELECT COUNT(*) FROM OTHER_DB.CDM_LMS.COURSE",
     "SELECT COUNT(*) FROM other_db.cdm_lms.course",
@@ -236,7 +245,7 @@ def own_database(monkeypatch):
     'SELECT COUNT(*) FROM "my_db".CDM_LMS.COURSE',
     'SELECT "my_db".CDM_LMS.F(1) AS n FROM CDM_LMS.COURSE',
 ])
-def test_a_table_in_another_database_is_a_guard_error(sql, executed, own_database):
+def test_a_table_in_another_database_is_a_guard_error(sql, executed):
     result = _validate(sql)
     assert "not the tenant's database" in result["error"], sql
     assert "warehouse_error" not in result
@@ -250,18 +259,20 @@ def test_a_table_in_another_database_is_a_guard_error(sql, executed, own_databas
     "SELECT TABLE_NAME FROM MY_DB.INFORMATION_SCHEMA.TABLES",
     "SELECT COUNT(*) FROM CDM_LMS.COURSE",
 ])
-def test_the_tenants_own_database_is_allowed(sql, executed, own_database):
+def test_the_tenants_own_database_is_allowed(sql, executed):
     assert "error" not in _validate(sql), sql
     assert len(executed) == 1
 
 
-def test_a_database_qualified_table_for_a_tenant_that_is_not_set_up_fails_closed(executed, monkeypatch):
+def test_a_guard_context_for_a_tenant_that_is_not_set_up_fails_closed(executed, monkeypatch):
+    import lambda_handler
+
     def not_ready(tenant):
         raise TenantNotReady(tenant.tenant_id)
 
     monkeypatch.setattr(snowflake_client, "tenant_database", not_ready)
     with pytest.raises(TenantNotReady):
-        _validate("SELECT COUNT(*) FROM MY_DB.CDM_LMS.COURSE")
+        lambda_handler.guard_context(TENANT_A, {"sub": "u1"})
     assert executed == []
 
 
@@ -269,7 +280,7 @@ CORE = TENANT_CORE
 
 
 def _validate_as(tenant, sql):
-    return snowflake_client.validate_and_execute(sql, tenant=tenant)
+    return _validate(sql, tenant=tenant)
 
 
 @pytest.mark.parametrize("sql", [
@@ -495,7 +506,7 @@ def _governed(outer, compiled_sql):
     sql = tree.sql(dialect="snowflake")
     part = governed_sql.Part(contract=QueryContract(measures=["dataset.x.v1:n"]), compiled=compiled, outputs={})
     helpers = frozenset(c.alias for c in ctes[:-1])
-    return sql, governed_sql.Spliced(sql=sql, parts={"governed_1": part}, part_names=frozenset({"governed_1"}),
+    return sql, governed_sql.SplicedSql(sql=sql, parts={"governed_1": part}, part_names=frozenset({"governed_1"}),
                                      helper_names=helpers)
 
 
@@ -542,7 +553,7 @@ def test_extra_pii_applies_to_a_governed_parts_projection(executed):
     "SELECT EMAIL FROM governed_1__DS",
     "SELECT d.role FROM governed_1 g JOIN governed_1__DS d ON TRUE",
 ])
-def test_freehand_and_structural_rules_still_apply_outside_governed_bodies(outer, executed, own_database):
+def test_freehand_and_structural_rules_still_apply_outside_governed_bodies(outer, executed):
     assert "error" in _validate_governed(_spliced(outer)), outer
     assert executed == []
 
@@ -588,8 +599,10 @@ def test_governed_ctes_must_each_be_defined_once_at_the_top_level(sql, executed)
     assert executed == []
 
 
-def test_governed_ctes_are_not_accepted_with_compiled_sql(executed):
-    assert "error" in _validate_governed(_spliced("SELECT role FROM governed_1"), compiled=True)
+def test_governed_ctes_are_not_accepted_as_compiled_sql(executed):
+    sql, _ = _spliced("SELECT role FROM governed_1")
+    ctx = guard_ctx()
+    assert run(sql, ctx, compiled_mode("SELECT role FROM CDM_LMS.PERSON"))["error"] == snowflake_client.COMPILED_MISMATCH
     assert executed == []
 
 

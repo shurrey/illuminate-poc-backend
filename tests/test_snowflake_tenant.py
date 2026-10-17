@@ -7,6 +7,8 @@ from botocore.exceptions import ClientError
 
 import snowflake_client
 from tenancy import Tenant, TenantNotReady
+from tests.guard_fakes import guard_ctx, run
+from tests.semantic_fixtures import catalog as fixture_catalog
 
 T1 = Tenant("T1", "One", "full", True)
 T2 = Tenant("T2", "Two", "full", True)
@@ -186,16 +188,16 @@ def test_none_tenant_raises_tenant_not_ready(aws):
     assert aws.secret_ids == [] and aws.connects == []
 
 
-def test_validate_and_execute_propagates_none_tenant(aws):
+def test_guard_execute_propagates_none_tenant(aws):
     with pytest.raises(TenantNotReady):
-        snowflake_client.validate_and_execute("SELECT 1 FROM CDM_LMS.T", tenant=None)
+        run("SELECT 1 FROM CDM_LMS.T", guard_ctx(None))
     assert aws.secret_ids == [] and aws.connects == []
 
 
-def test_validate_and_execute_propagates_missing_secret(aws):
+def test_guard_execute_propagates_missing_secret(aws):
     del aws.secrets["illuminate/tenants/T1/snowflake"]
     with pytest.raises(TenantNotReady):
-        snowflake_client.validate_and_execute("SELECT 1 FROM CDM_LMS.T", tenant=T1)
+        run("SELECT 1 FROM CDM_LMS.T", guard_ctx(T1))
     assert aws.connects == []
 
 
@@ -207,11 +209,11 @@ def test_secret_without_database_raises_before_connecting(aws):
 
 
 @pytest.mark.parametrize("call", [
-    lambda: snowflake_client.validate_and_execute("SELECT 1 FROM CDM_LMS.T"),
+    lambda: snowflake_client.GuardContext.of(catalog=fixture_catalog(), database="DB", allow_identity=False),
     lambda: snowflake_client.query_sql("SELECT 1"),
     lambda: snowflake_client.query_preview("CDM_LMS", "T"),
 ])
-def test_validate_and_execute_requires_tenant(call):
+def test_the_guard_and_queries_require_a_tenant(call):
     with pytest.raises(TypeError, match="tenant"):
         call()
 

@@ -35,7 +35,7 @@ class Part:
 
 
 @dataclass(frozen=True)
-class Spliced:
+class SplicedSql:
     sql: str
     parts: dict[str, Part]
     part_names: frozenset[str]
@@ -121,7 +121,7 @@ def _hoist(name: str, compiled: CompiledQuery) -> list[exp.CTE]:
     return helpers + [exp.CTE(this=tree, alias=exp.TableAlias(this=exp.to_identifier(name)))]
 
 
-def governed_ctes(spliced: Spliced) -> dict[str, exp.CTE]:
+def governed_ctes(spliced: SplicedSql) -> dict[str, exp.CTE]:
     """Every part and helper CTE as splice builds it from the parts' compiled SQL, by Snowflake-folded name."""
     return {_folded(cte.args["alias"].this): cte
             for name, part in spliced.parts.items() for cte in _hoist(name, part.compiled)}
@@ -142,7 +142,7 @@ def _outputs(contract: QueryContract, catalog: Catalog, compiled: CompiledQuery)
 
 
 def splice(outer_sql: str, governed: dict[str, QueryContract], catalog: Catalog, database: str, *,
-           allow_identity: bool) -> Spliced:
+           allow_identity: bool) -> SplicedSql:
     """Compile each governed part and splice it into outer_sql. Raises SpliceError, before compiling for
     malformed input, and with the part's name for a compile refusal."""
     for name in governed:
@@ -179,13 +179,13 @@ def splice(outer_sql: str, governed: dict[str, QueryContract], catalog: Catalog,
         sqlglot.parse_one(sql, dialect="snowflake")
     except Exception as e:
         raise SpliceError(f"The spliced SQL does not parse: {e}") from e
-    return Spliced(sql=sql, parts=parts, part_names=frozenset(parts), helper_names=helper_names)
+    return SplicedSql(sql=sql, parts=parts, part_names=frozenset(parts), helper_names=helper_names)
 
 
 UNTRACED = "Column origin could not be traced"
 
 
-def _trace_tree(spliced: Spliced) -> exp.Query:
+def _trace_tree(spliced: SplicedSql) -> exp.Query:
     """The spliced statement without the parts' definitions, so lineage stops at each part as if it were a table."""
     tree = sqlglot.parse_one(spliced.sql, dialect="snowflake")
     with_ = _with(tree)
@@ -195,7 +195,7 @@ def _trace_tree(spliced: Spliced) -> exp.Query:
     return tree
 
 
-def _origin(root: Node, spliced: Spliced) -> tuple[str, str] | None:
+def _origin(root: Node, spliced: SplicedSql) -> tuple[str, str] | None:
     """(part, column) when every path from root ends at the same part column through plain references."""
     leaves = set()
     for node in root.walk():
@@ -220,7 +220,7 @@ _ROW_PRESERVING_CLAUSES = frozenset({"expressions", "from", "from_", "where", "g
                                      "order", "limit"})
 
 
-def _rows_modified(tree: exp.Query, spliced: Spliced) -> bool:
+def _rows_modified(tree: exp.Query, spliced: SplicedSql) -> bool:
     """Whether the outer query does anything to the rows beyond reading one part with WHERE, QUALIFY, GROUP BY on
     its columns, DISTINCT, ORDER BY and LIMIT. Any other clause, source, join or set operation modifies them."""
     if not isinstance(tree, exp.Select) or _with(tree) is not None:
@@ -244,7 +244,7 @@ def _rows_modified(tree: exp.Query, spliced: Spliced) -> bool:
                                   or not all(isinstance(e, exp.Column) for e in group.expressions))
 
 
-def label(spliced: Spliced, result_columns: list[str], *, reason: str) -> dict:
+def label(spliced: SplicedSql, result_columns: list[str], *, reason: str) -> dict:
     """Mark each result column governed when it is one governed part column passed through unchanged
     (aliasing allowed), else ungoverned with reason. Never raises; a tracing failure leaves all ungoverned.
     `rows` is "governed" only when the outer query reads one unlimited part with row-preserving clauses; "modified"

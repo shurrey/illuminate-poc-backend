@@ -122,9 +122,9 @@ def test_run_renames_the_child_node_column_to_its_alias(client, monkeypatch):
 def test_identity_reaches_authors_through_the_guard_and_never_viewers(client, monkeypatch):
     import snowflake_client as sc
     seen = []
-    monkeypatch.setattr(sc, "validate_and_execute",
-                        lambda sql, params=None, *, compiled=False, allow_identity=False, extra_pii=frozenset(), tenant:
-                        seen.append((allow_identity, "PERSON_EMAIL" in extra_pii)) or {"columns": ["PERSON_EMAIL", "STUDENTS"], "rows": []})
+    monkeypatch.setattr(sc, "execute",
+                        lambda v, ctx: seen.append((ctx.allow_identity, "PERSON_EMAIL" in ctx.extra_pii))
+                        or sc.Result(columns=["PERSON_EMAIL", "STUDENTS"], rows=[]))
     as_role(monkeypatch, "illuminate-authors")
     assert run(client, "roster").status_code == 200
     as_role(monkeypatch)
