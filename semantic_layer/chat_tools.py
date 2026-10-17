@@ -18,6 +18,7 @@ from tenancy import Tenant
 
 from .compiler import CompileError, compile_query, named_result
 from .dictionary import describe_table
+from .governed_sql import SpliceError, Spliced, label, splice
 from .overlays import overlays_used
 from .contract import QueryContract
 from .schema import Catalog
@@ -38,6 +39,30 @@ _FILTER_SCHEMA = {
     },
     "required": ["dimension", "op"],
 }
+
+_CONTRACT_PROPERTIES = {
+    "metrics": {"type": "array", "items": {"type": "string"}},
+    "measures": {"type": "array", "items": {"type": "string"}},
+    "dimensions": {"type": "array", "items": {"type": "string"}},
+    "filters": {"type": "array", "items": _FILTER_SCHEMA},
+    "time_range": {"type": "object", "properties": {
+        "dimension": {"type": "string"},
+        "start": {"type": "string", "description": "YYYY-MM-DD"},
+        "end": {"type": "string", "description": "YYYY-MM-DD"},
+    }, "required": ["dimension"]},
+    "order_by": {"type": "array", "items": {"type": "object", "properties": {
+        "field": {"type": "string"}, "direction": {"type": "string", "enum": ["asc", "desc"]},
+    }, "required": ["field"]}},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+}
+
+_EXECUTE_SQL_TEXT = (
+    "Run read-only SQL against the CDM schemas{learn} when query_semantic alone cannot answer. "
+    "For a question the catalog covers only in part, put each governed part in `governed` as governed_1, "
+    "governed_2, ... (each shaped like query_semantic's input) and write SQL that selects from or joins them "
+    "by name; never re-derive a governed metric or measure by hand. Each result column is labelled governed or "
+    "ungoverned; tell the user which are governed. `reason` must say why the catalog alone does not answer."
+)
 
 SPECS = [
     {
@@ -63,19 +88,7 @@ SPECS = [
         "inputSchema": {"json": {
             "type": "object",
             "properties": {
-                "metrics": {"type": "array", "items": {"type": "string"}},
-                "measures": {"type": "array", "items": {"type": "string"}},
-                "dimensions": {"type": "array", "items": {"type": "string"}},
-                "filters": {"type": "array", "items": _FILTER_SCHEMA},
-                "time_range": {"type": "object", "properties": {
-                    "dimension": {"type": "string"},
-                    "start": {"type": "string", "description": "YYYY-MM-DD"},
-                    "end": {"type": "string", "description": "YYYY-MM-DD"},
-                }, "required": ["dimension"]},
-                "order_by": {"type": "array", "items": {"type": "object", "properties": {
-                    "field": {"type": "string"}, "direction": {"type": "string", "enum": ["asc", "desc"]},
-                }, "required": ["field"]}},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+                **_CONTRACT_PROPERTIES,
                 "title": {"type": "string", "description": "Short title for the result shown to the user"},
                 "chart": {"type": "object", "properties": {
                     "type": {"type": "string", "enum": ["bar", "line", "pie", "scatter"]},
@@ -99,17 +112,18 @@ SPECS = [
     },
     {
         "name": "execute_sql",
-        "description": (
-            "Last resort: run read-only SQL against the CDM schemas when search_catalog and "
-            "query_semantic cannot answer. Results are shown to the user as ungoverned. `reason` must "
-            "say why no governed definition fits."
-        ),
+        "description": _EXECUTE_SQL_TEXT.format(learn=""),
         "inputSchema": {"json": {
             "type": "object",
             "properties": {
                 "sql": {"type": "string"},
-                "reason": {"type": "string", "description": "Why no governed metric or dataset answers the question"},
+                "reason": {"type": "string", "description": "Why the catalog alone does not answer the question"},
                 "title": {"type": "string"},
+                "governed": {
+                    "type": "object",
+                    "description": "Governed parts by name (governed_1, governed_2, ...) that the SQL selects from",
+                    "additionalProperties": {"type": "object", "properties": _CONTRACT_PROPERTIES},
+                },
             },
             "required": ["sql", "reason"],
         }},
@@ -122,11 +136,8 @@ _LEARN_SPEC_TEXT = {
         "List the columns of a raw CDM table (schema like CDM_LMS) or a LEARN table (schema LEARN). "
         "Only for writing execute_sql when no governed metric, measure or dimension fits."
     ),
-    "execute_sql": (
-        "Last resort: run read-only SQL against the CDM schemas and the LEARN schema when search_catalog "
-        "and query_semantic cannot answer. Name every table with its schema, e.g. LEARN.<table> or <database>.LEARN.<table>. "
-        "Results are shown to the user as ungoverned. `reason` must say why no governed definition fits."
-    ),
+    "execute_sql": _EXECUTE_SQL_TEXT.format(
+        learn=" and the LEARN schema (name every table with its schema, e.g. LEARN.<table> or <database>.LEARN.<table>)"),
 }
 
 
@@ -150,6 +161,14 @@ def _model_error(result: dict) -> str:
     return re.sub(r",?\s*role \S+", "", message)
 
 
+def _contract(tool_input: dict) -> QueryContract:
+    return QueryContract(**{k: v for k, v in tool_input.items() if k in _CONTRACT_FIELDS})
+
+
+def _unique(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(values))
+
+
 def _artifact(kind: str, title: str, data, **extra) -> dict:
     return {"id": uuid.uuid4().hex, "type": kind, "title": title, "data": data, **extra}
 
@@ -168,12 +187,14 @@ class ChatTools:
         self.overlays = list(overlays)
         self.allow_identity, self.identity_audit = allow_identity, identity_audit
 
-    def _execute_for_tenant(self, sql: str, params: Optional[dict] = None, compiled: bool = False) -> dict:
+    def _execute_for_tenant(self, sql: str, params: Optional[dict] = None, compiled: bool = False,
+                            **governed) -> dict:
+        """governed: governed_parts and governed_helpers of spliced SQL, passed to the guard."""
         from snowflake_client import validate_and_execute
 
         extra_pii = frozenset(c.upper() for ds in self.catalog.datasets.values() for c in ds.pii_columns)
         return validate_and_execute(sql, params, tenant=self.tenant, compiled=compiled,
-                                    allow_identity=self.allow_identity, extra_pii=extra_pii)
+                                    allow_identity=self.allow_identity, extra_pii=extra_pii, **governed)
 
     @property
     def specs(self) -> list[dict]:
@@ -195,7 +216,7 @@ class ChatTools:
 
     def _tool_query_semantic(self, tool_input: dict) -> ToolResult:
         try:
-            contract = QueryContract(**{k: v for k, v in tool_input.items() if k in _CONTRACT_FIELDS})
+            contract = _contract(tool_input)
             compiled = compile_query(contract, self.catalog, self.database, allow_identity=self.allow_identity)
         except (ValidationError, CompileError) as e:
             return ToolResult({"error": str(e)})
@@ -242,25 +263,71 @@ class ChatTools:
             return ToolResult({"error": f"No dictionary entry for {schema.upper()}.{table.upper()}"})
         return ToolResult({"table": f"{schema.upper()}.{table.upper()}", "columns": columns})
 
+    def _spliced(self, sql: str, governed) -> Spliced:
+        """Raises SpliceError for a malformed `governed` input, naming the part at fault."""
+        if not isinstance(governed, dict):
+            raise SpliceError("governed must be an object mapping governed_1, governed_2, ... to query_semantic inputs")
+        contracts = {}
+        for name, part in governed.items():
+            if not isinstance(part, dict):
+                raise SpliceError(f"{name}: a governed part takes the same fields as query_semantic")
+            try:
+                contracts[name] = _contract(part)
+            except ValidationError as e:
+                raise SpliceError(f"{name}: {e}") from e
+        return splice(sql, contracts, self.catalog, self.database, allow_identity=self.allow_identity)
+
+    def _governed_provenance(self, spliced: Spliced, columns: list[str], reason: str) -> dict:
+        labels = label(spliced, columns, reason=reason)
+        compiled = [part.compiled.provenance for part in spliced.parts.values()]
+        return {
+            "governed": labels["governance"] == "full", **labels, "reason": reason,
+            "metrics": _unique(m for p in compiled for m in p.metrics),
+            "measures": _unique(m for p in compiled for m in p.measures),
+            "datasets": _unique(d for p in compiled for d in p.datasets),
+            "overlays": _unique(o for p in compiled for o in overlays_used(p, self.catalog, self.overlays)),
+        }
+
     def _tool_execute_sql(self, tool_input: dict) -> ToolResult:
         reason = (tool_input.get("reason") or "").strip()
         if len(reason) < MIN_REASON_LENGTH:
             return ToolResult({"error": "execute_sql needs a reason (a sentence) saying why no governed definition fits"})
         sql = tool_input.get("sql", "")
-        result = self.execute(sql, None)
+        spliced = None
+        if tool_input.get("governed"):
+            try:
+                spliced = self._spliced(sql, tool_input["governed"])
+            except SpliceError as e:
+                return ToolResult({"error": str(e)})
+            if self.allow_identity and self.identity_audit:
+                for part in spliced.parts.values():
+                    self.identity_audit("governed", part.contract)
+            result = self.execute(spliced.sql, None, governed_parts=spliced.part_names,
+                                  governed_helpers=spliced.helper_names)
+        else:
+            result = self.execute(sql, None)
         # Logged only once the guard accepted the statement; a warehouse failure still means it was accepted.
         if self.allow_identity and self.identity_audit and ("error" not in result or "warehouse_error" in result):
             self.identity_audit("freehand", None)
         if "error" in result:
             return ToolResult({"error": _model_error(result)})
         rows, columns = result["rows"], result["columns"]
-        provenance = {"governed": False, "reason": reason}
-        title = tool_input.get("title") or "Ungoverned query result"
+        extra = {"sql": sql}
+        if spliced:
+            provenance = self._governed_provenance(spliced, columns, reason)
+            extra |= {"executed_sql": spliced.sql, "governed_parts": {
+                name: part.contract.model_dump(mode="json", exclude_defaults=True) for name, part in spliced.parts.items()}}
+        else:
+            provenance = {"governed": False, "governance": "none", "rows": "modified", "reason": reason,
+                          "columns": {c: {"governed": False, "reason": reason} for c in columns}}
+        title = tool_input.get("title") or {
+            "full": "Governed query result", "partial": "Partly governed query result",
+        }.get(provenance["governance"], "Ungoverned query result")
         content = {
             "columns": columns, "rows": rows[:MODEL_ROW_LIMIT], "row_count": len(rows),
             "truncated": len(rows) > MODEL_ROW_LIMIT, "provenance": provenance,
         }
         return ToolResult(content, [
-            _artifact("table", title, {"columns": columns, "rows": rows}, sql=sql, provenance=provenance),
-            _artifact("sql", title, sql, sql=sql, provenance=provenance),
+            _artifact("table", title, {"columns": columns, "rows": rows}, provenance=provenance, **extra),
+            _artifact("sql", title, sql, provenance=provenance, **extra),
         ])

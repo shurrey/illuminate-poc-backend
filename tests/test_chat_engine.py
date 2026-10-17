@@ -133,3 +133,43 @@ def test_the_callers_system_prompt_is_sent(monkeypatch, tools):
     monkeypatch.setattr(chat_engine, "_bedrock", bedrock)
     chat_engine.send_message("q", [], tools=tools, system_prompt=PROMPT)
     assert bedrock.calls[0]["system"][0] == {"text": PROMPT}
+
+
+def test_a_partly_governed_turn_is_replayed_so_a_follow_up_can_resend_its_parts(monkeypatch):
+    import lambda_handler
+    from semantic_layer.catalog import load_catalog
+    from semantic_layer.chat_tools import ChatTools
+    from tests.tenant_fakes import TENANT_A
+    from tests.test_chat_tools import FakeWarehouse
+
+    parts = {"governed_1": {"metrics": ["metric.reportable_courses.v1"], "dimensions": ["term_name"]}}
+    sql = ("SELECT g.term_name, g.reportable_courses, c.N FROM governed_1 g"
+           " CROSS JOIN (SELECT COUNT(*) AS N FROM DB.CDM_LMS.COURSE) c")
+    request = {"sql": sql, "reason": "No governed metric counts every course row", "governed": parts}
+    wh = FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}])
+    tools = ChatTools(load_catalog(), "DB", tenant=TENANT_A, execute=wh)
+
+    bedrock = ScriptedBedrock(_tool("search_catalog", {"question": "courses"}, "t1"),
+                              _tool("execute_sql", request, "t2"), _text("Governed: term_name, reportable_courses."))
+    monkeypatch.setattr(chat_engine, "_bedrock", bedrock)
+    text, messages, artifacts = chat_engine.send_message("courses vs all", [], tools=tools, system_prompt=PROMPT)
+    result = json.loads(messages[4]["content"][0]["toolResult"]["content"][0]["text"])
+    assert result["provenance"]["governance"] == "partial"
+    assert result["provenance"]["columns"]["N"]["governed"] is False
+
+    queries = lambda_handler._queries_from(artifacts)
+    assert queries == [{"title": "Partly governed query result", "governed": False, "governance": "partial",
+                        "sql": sql, "governed_parts": parts}]
+
+    history = [{"role": "user", "content": "courses vs all"}, {"role": "assistant", "content": text, "queries": queries}]
+    turns, follow_up = lambda_handler._model_turns(history, "only Fall")
+    replayed = json.loads(follow_up.split("<previous_queries>")[1].split("</previous_queries>")[0])
+    assert replayed[0]["governed_parts"] == parts
+
+    again = {**request, "sql": sql + " WHERE g.term_name = 'Fall'", "governed": replayed[0]["governed_parts"]}
+    bedrock = ScriptedBedrock(_tool("search_catalog", {"question": "fall"}, "t1"), _tool("execute_sql", again, "t2"),
+                              _text("Fall only."))
+    monkeypatch.setattr(chat_engine, "_bedrock", bedrock)
+    _, _, artifacts = chat_engine.send_message(follow_up, turns, tools=tools, system_prompt=PROMPT)
+    assert len(wh.sql) == 2 and "governed_1 AS (" in wh.sql[1] and "'Fall'" in wh.sql[1]
+    assert artifacts[0]["governed_parts"] == parts

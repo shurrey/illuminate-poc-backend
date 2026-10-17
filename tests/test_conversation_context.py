@@ -125,3 +125,47 @@ def test_conversation_storage_runs_off_the_event_loop(client, monkeypatch):
     client.post("/api/chat/stream", headers=AUTH, json={"message": "q"})
     loop_thread = next(t[1] for t in threads if isinstance(t, tuple))
     assert all(t != loop_thread for t in threads if not isinstance(t, tuple))
+
+
+PARTS = {"governed_1": {"metrics": ["metric.reportable_courses.v1"], "dimensions": ["term_name"]}}
+OUTER_SQL = "SELECT term_name, reportable_courses FROM governed_1"
+
+
+def _sql_artifact(governance):
+    return {"id": "s2", "type": "sql", "title": "Courses", "data": OUTER_SQL, "sql": OUTER_SQL,
+            "executed_sql": "WITH governed_1 AS (SELECT 1) SELECT term_name FROM governed_1",
+            "governed_parts": PARTS, "provenance": {"governed": governance == "full", "governance": governance}}
+
+
+def test_a_fully_governed_sql_answer_keeps_its_outer_sql_and_parts_not_a_query_contract():
+    assert lambda_handler._queries_from([_sql_artifact("full")]) == [
+        {"title": "Courses", "governed": True, "governance": "full", "sql": OUTER_SQL, "governed_parts": PARTS}]
+
+
+def test_an_ungoverned_sql_answer_is_stored_with_no_parts():
+    artifact = {"id": "s3", "type": "sql", "title": "Raw", "data": "SELECT 1", "sql": "SELECT 1",
+                "provenance": {"governed": False, "governance": "none"}}
+    assert lambda_handler._queries_from([artifact]) == [
+        {"title": "Raw", "governed": False, "governance": "none", "sql": "SELECT 1", "governed_parts": {}}]
+
+
+def test_a_truthy_non_boolean_governed_flag_is_not_a_governed_query():
+    artifact = {**SQL_ARTIFACT, "provenance": {"governed": "yes"}}
+    assert lambda_handler._queries_from([artifact])[0]["governed"] is False
+
+
+def test_the_stored_conversation_keeps_the_governed_parts_for_the_follow_up(client, monkeypatch):
+    import chat_engine
+    seen = []
+
+    async def fake_stream(message, history, **kw):
+        seen.append(message)
+        yield {"type": "raw_complete", "text": "answer", "messages": [], "artifacts": [_sql_artifact("partial")]}
+
+    monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
+    client.post("/api/chat/stream", headers=AUTH, json={"message": "mixed", "context_id": "c6"})
+    stored = conversation_store.load_history("c6", "tenant-a#bob")[1]["queries"]
+    assert stored == [{"title": "Courses", "governed": False, "governance": "partial", "sql": OUTER_SQL,
+                       "governed_parts": PARTS}]
+    client.post("/api/chat/stream", headers=AUTH, json={"message": "again", "context_id": "c6"})
+    assert '"governed_parts": {"governed_1"' in seen[1] and "executed_sql" not in seen[1]

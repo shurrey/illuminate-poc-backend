@@ -76,3 +76,17 @@ def test_identity_prompt_allows_identity_on_request_only():
     prompt = build_system_prompt(CATALOG, "PROD_DB", learn=False, allow_identity=True)
     assert "Never try to return names, emails" not in prompt
     assert "only when the user asks" in prompt and "never volunteer" in prompt
+
+
+def test_mixed_questions_put_governed_parts_in_execute_sql():
+    rules = PROMPT.split("## How to answer")[1].split("## Privacy")[0]
+    rule = rules.split("\n3. ")[1].split("\n4. ")[0]
+    assert "`governed`" in rule and "`governed_1`" in rule
+    assert "never re-derive" in rule.lower()
+    assert "which columns are governed" in rule
+    assert "`governed_parts`" in rule
+
+
+def test_premium_rule_keeps_learn_text_alongside_governed_parts():
+    rule = PREMIUM_PROMPT.split("\n3. ")[1].split("\n4. ")[0]
+    assert "`LEARN` schema" in rule and "`governed_1`" in rule
