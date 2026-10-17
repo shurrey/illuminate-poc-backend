@@ -420,9 +420,11 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     functions outside the allow-list, query-history and system functions, tables in another database, LIMIT > 1000, and
     PII columns outside counting aggregates: anywhere and with no star projections, or with
     compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
-    allow_identity lifts the projection check for compiled SQL only (callers whose role may see
-    identity); extra_pii adds dataset-declared PII column names to the check. Freehand SQL also
-    treats columns the CDM or LEARN dictionary flags, and LEARN columns it does not list, as PII.
+    allow_identity (callers whose role may see identity) lifts the PII-column check for compiled and
+    freehand SQL. Freehand SQL's structural refusals (star, positional, IDENTIFIER, alias-list,
+    whole-row) and every other check still apply to every role. extra_pii adds dataset-declared PII
+    column names to the check; freehand SQL also treats columns the CDM or LEARN dictionary flags,
+    and LEARN columns it does not list, as PII.
 
     Returns:
         {"columns": [...], "rows": [...]} on success

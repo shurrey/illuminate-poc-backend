@@ -134,3 +134,63 @@ def test_stored_replies_are_pii_scrubbed(client, monkeypatch, path):
     monkeypatch.setattr(chat_engine, "send_message", lambda m, h, **kw: ("Reach jane@example.edu", [], []))
     client.post(path, headers=AUTH, json={"message": "q"})
     assert saved == ["Reach [EMAIL REDACTED]"]
+
+
+ADMIN = "illuminate-admins"
+PII_CONTRACT = {"measures": ["dataset.course_student_activity.v1:students"], "dimensions": ["person_email"],
+                "filters": [{"dimension": "person_email", "op": "eq", "values": ["jane@example.edu"]}]}
+
+
+@pytest.mark.parametrize("groups, expected", [((ADMIN,), True), ((), False)])
+def test_stream_route_gives_the_tools_the_callers_identity_right(client, monkeypatch, groups, expected):
+    import chat_engine
+
+    seen = []
+
+    async def fake_stream(message, history, **kw):
+        seen.append(kw["tools"].allow_identity)
+        yield {"type": "raw_complete", "text": "ok", "messages": [], "artifacts": []}
+
+    monkeypatch.setattr(chat_engine, "send_message_streaming", fake_stream)
+    monkeypatch.setattr(lambda_handler, "_get_user_from_token", lambda a: user_of(TENANT_A, *groups))
+    client.post("/api/chat/stream", headers=AUTH, json={"message": "q"})
+    assert seen == [expected]
+
+
+@pytest.fixture(autouse=True)
+def _tenant_database(monkeypatch):
+    import snowflake_client
+    monkeypatch.setattr(snowflake_client, "tenant_database", lambda tenant: "DB_A")
+
+
+def _admin_tools():
+    return lambda_handler._engine_kwargs(TENANT_A, user_of(TENANT_A, ADMIN))["tools"]
+
+
+def test_chat_identity_audit_logs_names_never_filter_values(caplog):
+    from semantic_layer.contract import QueryContract
+
+    tools = _admin_tools()
+    tools.execute = lambda sql, params=None, compiled=False: {"columns": ["N"], "rows": [{"N": 1}]}
+    with caplog.at_level("INFO", logger="API-PROXY"):
+        tools.dispatch("query_semantic", PII_CONTRACT)
+        lambda_handler._compile_for(QueryContract(**PII_CONTRACT), user_of(TENANT_A, ADMIN), TENANT_A)
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("identity_query")]
+    assert len(lines) == 2
+    assert all("person_email" in line and "jane@example.edu" not in line for line in lines)
+
+
+@pytest.mark.parametrize("result, logged", [
+    ({"columns": ["N"], "rows": [{"N": 1}]}, True),
+    ({"error": "Star projections are not allowed"}, False),
+    ({"error": "boom", "warehouse_error": True}, True),
+])
+def test_freehand_identity_audit_logs_only_after_the_guard_accepts_and_never_the_sql(caplog, result, logged):
+    tools = _admin_tools()
+    tools.execute = lambda sql, params=None, compiled=False: result
+    sql = "SELECT EMAIL FROM CDM_LMS.PERSON WHERE EMAIL = 'jane@example.edu'"
+    with caplog.at_level("INFO", logger="API-PROXY"):
+        tools.dispatch("execute_sql", {"sql": sql, "reason": "no governed metric covers this"}, called=("search_catalog",))
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("identity_query")]
+    assert bool(lines) is logged
+    assert not any("jane@example.edu" in line or "EMAIL" in line for line in lines)

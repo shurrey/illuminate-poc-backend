@@ -316,7 +316,7 @@ def _engine_kwargs(tenant: Tenant, user: dict) -> dict:
         if kind == "freehand":
             logger.info("identity_query sub=%s freehand=true", user.get("sub"))
         elif _selects_identity(subject, catalog):
-            logger.info("identity_query sub=%s contract=%s", user.get("sub"), subject.model_dump_json(exclude_defaults=True))
+            _log_identity_query(user, subject)
 
     tools = ChatTools(catalog, database, tenant=tenant, overlays=overlays,
                       allow_identity=allow_identity, identity_audit=audit)
@@ -1528,8 +1528,15 @@ def _compile_for(contract: QueryContract, user: dict, tenant: Tenant):
         raise HTTPException(status_code=400, detail=str(e))
     compiled.provenance.overlays = overlays_used(compiled.provenance, catalog, overlays)
     if allow_identity and _selects_identity(contract, catalog):
-        logger.info("identity_query sub=%s contract=%s", user.get("sub"), contract.model_dump_json(exclude_defaults=True))
+        _log_identity_query(user, contract)
     return compiled
+
+
+def _log_identity_query(user: dict, contract: QueryContract) -> None:
+    """Audit line naming what was selected; filter values can be PII, so only filter dimensions and ops are logged."""
+    logger.info(
+        "identity_query sub=%s metrics=%s measures=%s dimensions=%s filters=%s", user.get("sub"),
+        contract.metrics, contract.measures, contract.dimensions, [(f.dimension, f.op) for f in contract.filters])
 
 
 def _selects_identity(contract: QueryContract, catalog) -> bool:

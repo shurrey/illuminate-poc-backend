@@ -461,7 +461,7 @@ def filter_dimension(contract: QueryContract, ref: str, catalog: Catalog) -> Opt
 
 
 def compile_query(contract: QueryContract, catalog: Catalog, database: str, allow_identity: bool = False) -> CompiledQuery:
-    """allow_identity: personally identifiable dimensions may be selected (never for Viewers or chat)."""
+    """allow_identity: personally identifiable dimensions may be selected (never for Viewers)."""
     selections = _selections(contract, catalog)
     aliases = [_output_name(d) for d in contract.dimensions] + [name for name, _, _, _ in selections]
     if len({a.lower() for a in aliases}) != len(aliases):

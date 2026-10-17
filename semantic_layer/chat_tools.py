@@ -162,7 +162,7 @@ class ChatTools:
                  identity_audit: Optional[Callable[[str, object], None]] = None):
         """execute: defaults to running against the tenant's warehouse. overlays: applied to catalog, reported in provenance.
         allow_identity: the caller's role may see PII columns (governed and freehand).
-        identity_audit: called with ("governed", contract) or ("freehand", sql) before an identity-capable query runs."""
+        identity_audit: called with ("governed", contract) before, or ("freehand", None) after the guard accepts, an identity-capable query."""
         self.catalog, self.database, self.tenant, self.describe = catalog, database, tenant, describe
         self.execute = execute or self._execute_for_tenant
         self.overlays = list(overlays)
@@ -247,9 +247,10 @@ class ChatTools:
         if len(reason) < MIN_REASON_LENGTH:
             return ToolResult({"error": "execute_sql needs a reason (a sentence) saying why no governed definition fits"})
         sql = tool_input.get("sql", "")
-        if self.allow_identity and self.identity_audit:
-            self.identity_audit("freehand", sql)
         result = self.execute(sql, None)
+        # Logged only once the guard accepted the statement; a warehouse failure still means it was accepted.
+        if self.allow_identity and self.identity_audit and ("error" not in result or "warehouse_error" in result):
+            self.identity_audit("freehand", None)
         if "error" in result:
             return ToolResult({"error": _model_error(result)})
         rows, columns = result["rows"], result["columns"]
