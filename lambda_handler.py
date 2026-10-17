@@ -491,8 +491,9 @@ def _card_body(payload) -> dict:
     if payload.get("format") not in CARD_FORMATS:
         errors.append(f"format must be one of {', '.join(CARD_FORMATS)}")
     link = payload.get("reportLink")
-    if link is not None and (not isinstance(link, str) or len(link) > 500):
-        errors.append("reportLink must be a string of at most 500 characters")
+    if link is not None and (not isinstance(link, str) or len(link) > 500 or not link.startswith("/")
+                             or link.startswith("//") or "\\" in link):
+        errors.append("reportLink must be an app-relative path starting with a single / (at most 500 characters)")
     contract = payload.get("contract")
     if not isinstance(contract, dict):
         errors.append("contract must be an object")
@@ -522,13 +523,30 @@ def _load_layout(tenant_id: str, sub: str) -> tuple[dict, int]:
     return {k: list(item.get(k, [])) for k in ("order", "disabled", "hidden")}, item["version"]
 
 
+_CARDS_CONFLICT = "Your cards changed elsewhere; reload and try again"
+
+
 def _save_layout(tenant_id: str, sub: str, layout: dict, version: int) -> None:
     import user_items_store
 
     try:
         user_items_store.put(tenant_id, sub, "layout", None, layout, expected_version=version or None)
     except user_items_store.Conflict:
-        raise HTTPException(status_code=409, detail="Your cards changed elsewhere; reload and try again")
+        raise HTTPException(status_code=409, detail=_CARDS_CONFLICT)
+
+
+def _mutate_layout(tenant_id: str, sub: str, mutate) -> None:
+    """Read, mutate(layout, version) and save the layout, re-reading on a concurrent write (up to 3 attempts).
+    Only for edits that commute with other edits; raises 409 when every attempt loses the race."""
+    for attempt in range(3):
+        layout, version = _load_layout(tenant_id, sub)
+        mutate(layout, version)
+        try:
+            _save_layout(tenant_id, sub, layout, version)
+            return
+        except HTTPException as e:
+            if e.status_code != 409 or attempt == 2:
+                raise
 
 
 def _cards_view(tenant_id: str, sub: str) -> dict:
@@ -574,6 +592,10 @@ async def put_my_card_layout(payload: dict, authorization: Optional[str] = Heade
         raise _bad_request("expected_version must be a non-negative integer")
     if any(not isinstance(v, list) or any(not isinstance(i, str) for i in v) for v in lists.values()):
         raise _bad_request("order, disabled and hidden must be lists of card ids")
+    cap = len(_default_cards()) + MAX_CUSTOM_CARDS
+    if any(len(v) > cap for v in lists.values()):
+        raise _bad_request(f"order, disabled and hidden can each list at most {cap} cards")
+    lists = {k: list(dict.fromkeys(v)) for k, v in lists.items()}
 
     def save() -> dict:
         builtin = {c["id"] for c in _default_cards()}
@@ -597,13 +619,15 @@ async def reset_my_cards(authorization: Optional[str] = Header(None)) -> dict:
     tenant_id, sub = _cards_caller(authorization)
 
     def reset() -> dict:
-        layout, version = _load_layout(tenant_id, sub)
         builtin = [c["id"] for c in _default_cards()]
         custom = [i["id"] for i in user_items_store.list_kind(tenant_id, sub, "card")]
-        order = builtin + [i for i in dict.fromkeys(layout["order"]) if i in custom]
-        order += [i for i in custom if i not in order]
-        _save_layout(tenant_id, sub, {"order": order, "disabled": [i for i in layout["disabled"] if i in custom],
-                                      "hidden": []}, version)
+
+        def apply(layout: dict, version: int) -> None:
+            order = builtin + [i for i in dict.fromkeys(layout["order"]) if i in custom]
+            order += [i for i in custom if i not in order]
+            layout.update(order=order, disabled=[i for i in layout["disabled"] if i in custom], hidden=[])
+
+        _mutate_layout(tenant_id, sub, apply)
         return _cards_view(tenant_id, sub)
 
     return await _blocking(reset)
@@ -622,11 +646,17 @@ async def create_my_card(payload: dict, authorization: Optional[str] = Header(No
             raise _bad_request(f"You can have at most {MAX_CUSTOM_CARDS} custom cards")
         card_id = f"c_{uuid.uuid4().hex[:12]}"
         saved = user_items_store.put(tenant_id, sub, "card", card_id, body)
-        layout, version = _load_layout(tenant_id, sub)
-        if not version:
-            layout["order"] = [c["id"] for c in _default_cards()]
-        layout["order"].append(card_id)
-        _save_layout(tenant_id, sub, layout, version)
+
+        def append(layout: dict, version: int) -> None:
+            if not version:
+                layout["order"] = [c["id"] for c in _default_cards()]
+            layout["order"].append(card_id)
+
+        try:
+            _mutate_layout(tenant_id, sub, append)
+        except HTTPException:
+            user_items_store.delete(tenant_id, sub, "card", card_id)
+            raise
         return _custom_card(saved)
 
     return await _blocking(create)
@@ -663,14 +693,18 @@ async def delete_my_card(card_id: str, authorization: Optional[str] = Header(Non
     tenant_id, sub = _cards_caller(authorization)
 
     def remove() -> dict:
-        layout, version = _load_layout(tenant_id, sub)
-        if card_id in {c["id"] for c in _default_cards()}:
+        def hide(layout: dict, version: int) -> None:
             if card_id not in layout["hidden"]:
                 layout["hidden"].append(card_id)
-                _save_layout(tenant_id, sub, layout, version)
+
+        def forget(layout: dict, version: int) -> None:
+            for key in layout:
+                layout[key] = [i for i in layout[key] if i != card_id]
+
+        if card_id in {c["id"] for c in _default_cards()}:
+            _mutate_layout(tenant_id, sub, hide)
         elif _CARD_ID.fullmatch(card_id) and user_items_store.delete(tenant_id, sub, "card", card_id):
-            if version:
-                _save_layout(tenant_id, sub, {k: [i for i in v if i != card_id] for k, v in layout.items()}, version)
+            _mutate_layout(tenant_id, sub, forget)
         else:
             raise HTTPException(status_code=404, detail="Card not found")
         return _cards_view(tenant_id, sub)

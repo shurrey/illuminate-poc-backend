@@ -187,3 +187,58 @@ def test_not_ready_tenant_is_403(as_user):
                          ("DELETE", "/api/v1/me/cards/average-grade")):
         r = c.request(method, path, headers=AUTH)
         assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
+
+
+def test_layout_lists_are_deduplicated_and_capped(as_user):
+    c = as_user()
+    r = c.put("/api/v1/me/cards/layout", headers=AUTH, json={
+        "order": ["average-grade", "active-students", "average-grade"], "disabled": ["active-students"] * 5,
+        "hidden": [], "expected_version": 0})
+    assert r.status_code == 200
+    assert ids(r)[:2] == ["average-grade", "active-students"] and len(ids(r)) == 6
+    assert user_items_store.get("tenant-a", "u1", "layout")["disabled"] == ["active-students"]
+    r = c.put("/api/v1/me/cards/layout", headers=AUTH, json={
+        "order": ["average-grade"] * 107, "disabled": [], "hidden": [], "expected_version": 1})
+    assert r.status_code == 400 and "106" in r.json()["detail"]["errors"][0]
+
+
+@pytest.mark.parametrize("link", ["https://evil.example", "//evil.example", "reporting", "javascript:alert(1)", "/\\evil", 5])
+def test_report_link_must_be_app_relative(as_user, link):
+    r = as_user().post("/api/v1/me/cards", headers=AUTH, json={**NEW, "reportLink": link})
+    assert r.status_code == 400 and "reportLink" in r.json()["detail"]["errors"][0]
+
+
+def _conflict_layout_writes(monkeypatch, times):
+    real, left = user_items_store.put, [times]
+
+    def put(tenant_id, sub, kind, id, body, **kw):
+        if kind == "layout" and left[0] > 0:
+            left[0] -= 1
+            raise user_items_store.Conflict("layout")
+        return real(tenant_id, sub, kind, id, body, **kw)
+
+    monkeypatch.setattr(user_items_store, "put", put)
+
+
+def test_create_retries_a_layout_conflict(as_user, monkeypatch):
+    c = as_user()
+    _conflict_layout_writes(monkeypatch, 1)
+    r = c.post("/api/v1/me/cards", headers=AUTH, json=NEW)
+    assert r.status_code == 200
+    assert ids(c.get("/api/v1/me/cards", headers=AUTH)) == BUILTIN + [r.json()["id"]]
+
+
+def test_create_that_keeps_conflicting_leaves_no_orphan(as_user, monkeypatch):
+    c = as_user()
+    _conflict_layout_writes(monkeypatch, 3)
+    assert c.post("/api/v1/me/cards", headers=AUTH, json=NEW).status_code == 409
+    assert user_items_store.list_kind("tenant-a", "u1", "card") == []
+
+
+def test_delete_and_reset_retry_a_layout_conflict(as_user, monkeypatch):
+    c = as_user()
+    _conflict_layout_writes(monkeypatch, 1)
+    assert c.delete("/api/v1/me/cards/average-grade", headers=AUTH).status_code == 200
+    _conflict_layout_writes(monkeypatch, 2)
+    r = c.post("/api/v1/me/cards/reset", headers=AUTH)
+    assert r.status_code == 200 and ids(r) == BUILTIN
