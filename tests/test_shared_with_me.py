@@ -164,6 +164,26 @@ def test_a_run_uses_the_runners_role(world, executed):
     assert run(world(ADA), pii_sid).status_code == 200 and len(executed) == 2
 
 
+FILTER_ONLY = {"measures": PII_CONTRACT["measures"], "filters": PII_CONTRACT["filters"]}
+
+
+@pytest.mark.parametrize("plural, body", [
+    ("cards", {**NEW, "contract": FILTER_ONLY}),
+    ("queries", {**SQLQ, "sql": LITERAL_SQL}),
+    ("queries", {**SQLQ, "sql": "SELECT students FROM governed_1 WHERE students > 5",
+                 "governed_parts": {"governed_1": FILTER_ONLY}}),
+])
+def test_a_viewers_shared_run_masks_values_and_an_admins_does_not(world, executed, plural, body):
+    o = world(OWNER)
+    sid = share(o, plural, make(o, plural, body), ["ann", "ada"])
+    viewer = run(world(ANN), sid)
+    assert viewer.status_code == 200, viewer.text
+    assert "jane@example.edu" not in viewer.text and "…" in viewer.json()["sql"]
+    for part in (viewer.json().get("governed_parts") or {}).values():
+        assert part == redact_contract(part)
+    assert "jane@example.edu" in run(world(ADA), sid).text
+
+
 def test_a_shared_sql_runs_reason_is_the_owners_note_or_their_name(world, executed):
     o = world(OWNER)
     noted = share(o, "queries", make(o, "queries", {**SQLQ, "description": "For the dean"}), ["ann"])
@@ -522,6 +542,22 @@ def test_a_non_member_a_query_share_and_junk_cannot_be_pinned(world):
                   json={"order": [target], "disabled": [], "hidden": [], "expected_version": 0})
         assert r.status_code == 400
     assert store.get(T, "bob", "layout") is None
+
+
+def test_a_layout_put_naming_a_pin_unshared_since_load_drops_it(world):
+    o = world(OWNER)
+    cid = make(o, "cards", NEW)
+    sid = share(o, "cards", cid, ["ann"])
+    a = world(ANN)
+    loaded = pin(a, sid).json()
+    assert world(OWNER).delete(f"/api/v1/me/cards/{cid}/share", headers=AUTH).status_code == 200
+    a = world(ANN)
+    order = [c["id"] for c in loaded["cards"]]
+    r = a.put("/api/v1/me/cards/layout", headers=AUTH,
+              json={"order": order[::-1], "disabled": [sid], "hidden": [], "expected_version": loaded["version"]})
+    assert r.status_code == 200, r.text
+    assert sid not in store.get(T, "ann", "layout")["order"] and r.json()["disabled"] == []
+    assert [c["id"] for c in r.json()["cards"]] == [i for i in order[::-1] if i != sid]
 
 
 def test_a_viewer_sees_a_pinned_card_redacted_and_an_admin_the_stored_one(world):

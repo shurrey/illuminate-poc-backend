@@ -728,7 +728,13 @@ async def put_my_card_layout(payload: dict, authorization: Optional[str] = Heade
         pins = {i for k in ("order", "disabled") for i in lists[k] if _SHARE_ID.fullmatch(i)}
         if len(pins) > MAX_PINNED_SHARED:
             raise _bad_request(f"You can pin at most {MAX_PINNED_SHARED} shared cards")
-        own |= {i for i in pins if _pinned_card(tenant_id, sub, i, identity)}
+        live = {i for i in pins if _pinned_card(tenant_id, sub, i, identity)}
+        # A pin already in the stored layout may have been unshared since the client loaded it.
+        stored, _ = _load_layout(tenant_id, sub)
+        dead = (pins - live) & set(stored["order"] + stored["disabled"])
+        for k in lists:
+            lists[k] = [i for i in lists[k] if i not in dead]
+        own |= live
         unknown = sorted({i for v in lists.values() for i in v} - builtin - own)
         not_builtin = sorted(set(lists["hidden"]) - builtin)
         if unknown or not_builtin:
@@ -1423,13 +1429,35 @@ async def get_shared_with_me(share_id: str, authorization: Optional[str] = Heade
 @app.post("/api/v1/shared/{share_id}/run")
 async def run_shared_with_me(share_id: str, authorization: Optional[str] = Header(None)):
     """Run the live item as the caller, under the caller's role and licence; never writes the owner's row."""
+    from roles import role_allows_identity
+
     user, tenant = _caller(authorization)
     share, item, owner = await _blocking(_shared_item, tenant.tenant_id, user["sub"], share_id)
     if share["item_kind"] == "card":
-        return await _run_contract(item.get("contract"), user, tenant)
-    note = _text(_stored_query(item), "description")
-    reason = f"Owner's note: {note}" if note else f"Shared by {owner}"
-    return await _run_stored_query(item, user, tenant, reason, owner_writes=False)
+        response = await _run_contract(item.get("contract"), user, tenant)
+    else:
+        note = _text(_stored_query(item), "description")
+        reason = f"Owner's note: {note}" if note else f"Shared by {owner}"
+        response = await _run_stored_query(item, user, tenant, reason, owner_writes=False)
+    return response if role_allows_identity(user) else _masked_run(response)
+
+
+def _masked_run(response):
+    """The run response with the SQL and governed parts redacted as a shared view is; rows are already guarded."""
+    from semantic_layer.redact import redact_contract, redact_sql
+
+    is_json = isinstance(response, JSONResponse)
+    body = json.loads(response.body) if is_json else response
+    if not isinstance(body, dict):
+        return response
+    body = dict(body)
+    for key in ("sql", "executed_sql"):
+        if key in body:
+            masked = redact_sql(body[key])
+            body[key] = masked if masked is not None else ""
+    if isinstance(body.get("governed_parts"), dict):
+        body["governed_parts"] = {name: redact_contract(c) for name, c in body["governed_parts"].items()}
+    return JSONResponse(body, status_code=response.status_code) if is_json else body
 
 
 @app.post("/api/v1/shared/{share_id}/copy")
