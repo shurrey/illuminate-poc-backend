@@ -249,3 +249,40 @@ def test_oversized_prefs_are_skipped(as_user):
     assert body["status"] == "imported"
     assert [(s["kind"], "too large" in s["reason"]) for s in body["skipped"]] == [("prefs", True)]
     assert c.get("/api/v1/me/prefs", headers=AUTH).json()["version"] == 0
+
+
+def _counting_validate(monkeypatch):
+    import semantic_layer.sql_service as sql_service
+
+    calls, real = [], sql_service.validate_sql
+
+    def counted(*a, **k):
+        calls.append(k.get("sql"))
+        return real(*a, **k)
+
+    monkeypatch.setattr(sql_service, "validate_sql", counted)
+    return calls
+
+
+def sql_query(qid):
+    return {"id": qid, "name": f"q {qid}", "query_kind": "sql", "sql": "SELECT COUNT(*) AS n FROM CDM_LMS.COURSE",
+            "governed_parts": {}}
+
+
+def test_sql_items_are_not_validated_once_there_is_no_room(as_user, monkeypatch):
+    import lambda_handler
+
+    monkeypatch.setattr(lambda_handler, "MAX_QUERIES", 1)
+    calls = _counting_validate(monkeypatch)
+    r = run(as_user(), queries=[sql_query("a"), sql_query("b"), sql_query("c")])
+    assert r.json()["queries"] == 1 and len(calls) == 1
+    assert [s["reason"] for s in r.json()["skipped"]] == ["You can save at most 1 queries"] * 2
+
+
+def test_at_most_100_sql_items_are_validated_per_import(as_user, monkeypatch):
+    calls = _counting_validate(monkeypatch)
+    r = run(as_user(), queries=[sql_query(str(i)) for i in range(102)] + [query("g")])
+    body = r.json()
+    assert len(calls) == 100 and body["queries"] == 101
+    assert body["skipped"] == [{"kind": "query", "name": f"q {i}", "reason": "Too many SQL queries in one import"}
+                               for i in (100, 101)]

@@ -183,6 +183,13 @@ def splice(outer_sql: str, governed: dict[str, QueryContract], catalog: Catalog,
 
 
 UNTRACED = "Column origin could not be traced"
+MAX_TRACED_COLUMNS = 200  # lineage is traced per column, and each trace grows with the projection's width
+TOO_MANY_COLUMNS = "Too many columns to trace"
+
+
+def output_columns(spliced: SplicedSql) -> list[str]:
+    """The names the statement's outermost projection gives its columns (a set operation's first branch)."""
+    return list(sqlglot.parse_one(spliced.sql, dialect="snowflake").named_selects)
 
 
 def _trace_tree(spliced: SplicedSql) -> exp.Query:
@@ -248,7 +255,10 @@ def label(spliced: SplicedSql, result_columns: list[str], *, reason: str) -> dic
     """Mark each result column governed when it is one governed part column passed through unchanged
     (aliasing allowed), else ungoverned with reason. Never raises; a tracing failure leaves all ungoverned.
     `rows` is "governed" only when the outer query reads one unlimited part with row-preserving clauses; "modified"
-    also caps governance at partial."""
+    also caps governance at partial. Over MAX_TRACED_COLUMNS columns, none is traced and all are ungoverned."""
+    if len(result_columns) > MAX_TRACED_COLUMNS:
+        return {"governance": "none", "rows": "modified",
+                "columns": {c: {"governed": False, "reason": TOO_MANY_COLUMNS} for c in result_columns}}
     ungoverned = {"governed": False, "reason": reason}
     try:
         schema = {name: {column: "VARCHAR" for column in part.outputs} for name, part in spliced.parts.items()}

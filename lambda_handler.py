@@ -810,7 +810,7 @@ def _query_body(payload) -> dict:
 
 
 QUERY_KINDS = ("governed", "sql")
-_KIND_FIELDS = ("prompt", "contract", "sql", "governed_parts", "owner_name")
+_KIND_FIELDS = ("prompt", "contract", "sql", "governed_parts", "owner_name", "governance_hint")
 MAX_SQL_CHARS = 20_000
 DEFAULT_REASON = "Written in the query builder"
 
@@ -851,7 +851,8 @@ def _sql_query_body(payload: dict, user: dict, tenant: Tenant) -> dict:
     from semantic_layer.sql_service import contract_of
 
     parts = {n: contract_of(p).model_dump(mode="json", exclude_unset=True) for n, p in parts.items()}
-    body = {"name": name, "description": description, "query_kind": "sql", "sql": sql, "governed_parts": parts}
+    body = {"name": name, "description": description, "query_kind": "sql", "sql": sql, "governed_parts": parts,
+            "governance_hint": _sql_hint(checked["governance_preview"])}
     owner = user.get("name") or user.get("email")
     if isinstance(owner, str) and owner.strip():
         body["owner_name"] = owner.strip()[:200]
@@ -871,10 +872,17 @@ def _saved_query_body(payload, user: dict, tenant: Tenant) -> dict:
     return _sql_query_body(payload, user, tenant) if kind == "sql" else {**_query_body(payload), "query_kind": "governed"}
 
 
+def _sql_hint(preview: str) -> str:
+    """An SQL query's list hint from its validate preview; at most "partial", since a run can be truncated."""
+    return "ungoverned" if preview == "none" else "partial"
+
+
 def _governance_hint(item: dict) -> str:
-    """A label guess for lists only; the run's provenance is the real one."""
+    """A label guess for lists only; the run's provenance is the real one. An SQL query's is never "governed"."""
     if item["query_kind"] != "sql":
         return "governed"
+    if item.get("governance_hint") == "ungoverned":
+        return "ungoverned"
     return "partial" if item.get("governed_parts") else "ungoverned"
 
 
@@ -1090,6 +1098,7 @@ async def put_my_prefs(payload: dict, authorization: Optional[str] = Header(None
 
 MAX_IMPORT_CARDS = 1000
 MAX_IMPORT_QUERIES = 2000
+MAX_IMPORT_SQL_CHECKS = 100  # each SQL item is validated (parsed and spliced) as the importing user
 
 
 def _import_id(prefix: str, sub: str, kind: str, source_id) -> str:
@@ -1184,16 +1193,20 @@ def _import_queries(user: dict, tenant: Tenant, queries: list, skipped: list) ->
     import user_items_store
 
     room = MAX_QUERIES - user_items_store.count(tenant_id, sub, "query")
-    created = 0
+    created = sql_checked = 0
     for i, query in enumerate(queries):
         name = _name_of(query, "name")
         try:
             if not isinstance(query, dict):
                 raise _bad_request("query must be an object")
-            body = _saved_query_body({**query, "query_kind": "sql" if "sql" in (query.get("query_kind"), query.get("kind"))
-                                      else "governed"}, user, tenant)
             if room <= 0:
                 raise _bad_request(f"You can save at most {MAX_QUERIES} queries")
+            is_sql = "sql" in (query.get("query_kind"), query.get("kind"))
+            if is_sql:
+                if sql_checked >= MAX_IMPORT_SQL_CHECKS:
+                    raise _bad_request("Too many SQL queries in one import")
+                sql_checked += 1
+            body = _saved_query_body({**query, "query_kind": "sql" if is_sql else "governed"}, user, tenant)
         except HTTPException as e:
             skipped.append({"kind": "query", "name": name, "reason": _skip_reason(e)})
             continue
@@ -1837,9 +1850,10 @@ async def _execute(compiled, user: dict, tenant: Tenant) -> dict:
     ctx = guard_context(tenant, user)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, lambda: _guarded(compiled, ctx))
-    if isinstance(result, snowflake_client.Refusal):
-        logger.error("Semantic query failed: %s", result.message)
-        raise HTTPException(status_code=502, detail={"error": result.message, "sql": compiled.sql})
+    if isinstance(result, snowflake_client.Refusal) or result.refused:
+        message = result.message if isinstance(result, snowflake_client.Refusal) else result.error
+        logger.error("Semantic query failed: %s", message)
+        raise HTTPException(status_code=502, detail={"error": message, "sql": compiled.sql})
     if result.error is not None:
         logger.error("Semantic query failed: %s", result.error)
         raise HTTPException(status_code=502, detail={"error": "The warehouse could not run this query.",

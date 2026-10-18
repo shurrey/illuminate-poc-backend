@@ -272,3 +272,12 @@ def test_a_rotated_database_is_seen_by_the_guard_after_the_ttl(aws, clock):
     _secret(aws, "T1")["database"] = "DB_T1_NEW"
     clock.t += snowflake_client.CREDENTIALS_TTL_SECONDS
     assert snowflake_client.tenant_database(T1) == "DB_T1_NEW"
+
+
+def test_connections_carry_a_statement_timeout_and_a_tenant_query_tag(aws):
+    snowflake_client.get_connection(T1)
+    snowflake_client.get_connection(T2)
+    assert [c.kw["session_parameters"] for c in aws.connects] == [
+        {"STATEMENT_TIMEOUT_IN_SECONDS": 120, "QUERY_TAG": "illuminate:T1"},
+        {"STATEMENT_TIMEOUT_IN_SECONDS": 120, "QUERY_TAG": "illuminate:T2"},
+    ]

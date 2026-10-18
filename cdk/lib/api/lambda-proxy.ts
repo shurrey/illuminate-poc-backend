@@ -124,6 +124,8 @@ export class LambdaProxy extends Construct {
       role,
       timeout: cdk.Duration.seconds(900),
       memorySize: 1024,
+      // Caps how many requests can hold warehouse connections at once.
+      reservedConcurrentExecutions: 20,
       layers: [lwaLayer],
       code: lambda.Code.fromAsset(projectRoot, {
         bundling: {
