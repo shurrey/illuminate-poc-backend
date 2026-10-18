@@ -1433,13 +1433,58 @@ async def run_shared_with_me(share_id: str, authorization: Optional[str] = Heade
 
     user, tenant = _caller(authorization)
     share, item, owner = await _blocking(_shared_item, tenant.tenant_id, user["sub"], share_id)
-    if share["item_kind"] == "card":
-        response = await _run_contract(item.get("contract"), user, tenant)
-    else:
-        note = _text(_stored_query(item), "description")
-        reason = f"Owner's note: {note}" if note else f"Shared by {owner}"
-        response = await _run_stored_query(item, user, tenant, reason, owner_writes=False)
-    return response if role_allows_identity(user) else _masked_run(response)
+    identity = role_allows_identity(user)
+    try:
+        if share["item_kind"] == "card":
+            response = await _run_contract(item.get("contract"), user, tenant)
+        else:
+            note = _text(_stored_query(item), "description")
+            reason = f"Owner's note: {note}" if note else f"Shared by {owner}"
+            response = await _run_stored_query(item, user, tenant, reason, owner_writes=False)
+    except HTTPException as e:
+        if identity:
+            raise
+        hidden = _stored_values(share["item_kind"], item)
+        raise HTTPException(status_code=e.status_code, detail=_scrub(_masked_run(e.detail), hidden))
+    if identity:
+        return response
+    masked = _masked_run(response)
+    if isinstance(masked, dict) and "error" in masked:
+        masked["error"] = _scrub(masked["error"], _stored_values(share["item_kind"], item))
+    return masked
+
+
+def _stored_values(item_kind: str, item: dict) -> list[str]:
+    """The item's filter values and SQL string literals, longest first: what a Viewer's view of it masks."""
+    import sqlglot
+    from semantic_layer.redact import _STRING_TOKENS
+
+    stored = item if item_kind == "card" else _stored_query(item)
+    contracts = [stored.get("contract")]
+    if isinstance(stored.get("governed_parts"), dict):
+        contracts += list(stored["governed_parts"].values())
+    values = {str(v) for c in contracts if isinstance(c, dict) and isinstance(c.get("filters"), list)
+              for f in c["filters"] if isinstance(f, dict) and isinstance(f.get("values"), list) for v in f["values"]}
+    if isinstance(stored.get("sql"), str):
+        try:
+            tokens = sqlglot.Dialect.get_or_raise("snowflake").tokenize(stored["sql"])
+            values |= {t.text for t in tokens if t.token_type in _STRING_TOKENS}
+        except Exception:
+            pass
+    return sorted((v for v in values if v), key=len, reverse=True)
+
+
+def _scrub(value, hidden: list[str]):
+    """value with every occurrence of a hidden string replaced by '…', recursing through dicts and lists."""
+    if isinstance(value, str):
+        for h in hidden:
+            value = value.replace(h, "…")
+        return value
+    if isinstance(value, dict):
+        return {k: _scrub(v, hidden) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub(v, hidden) for v in value]
+    return value
 
 
 def _masked_run(response):
