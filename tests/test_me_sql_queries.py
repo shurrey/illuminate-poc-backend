@@ -204,3 +204,61 @@ def test_import_accepts_sql_queries_validated_as_the_importing_user(as_user, exe
     assert body["skipped"][0]["name"] == "email" and body["skipped"][0]["reason"]
     stored = user_items_store.list_kind(TENANT_A.tenant_id, "u1", "query")
     assert [q["query_kind"] for q in stored] == ["sql"] and stored[0]["sql"] == FREEHAND
+
+
+def _tamper(tenant_id, query_id, **fields):
+    stored = user_items_store.get(tenant_id, "u1", "query", query_id)
+    body = {k: v for k, v in stored.items() if k not in ("id", "version", "updated_at")}
+    user_items_store.put(tenant_id, "u1", "query", query_id, {**body, **fields}, expected_version=stored["version"])
+
+
+@pytest.mark.parametrize("field", ["description", "sql", "owner_name", "query_kind", "name", "governed_parts"])
+@pytest.mark.parametrize("value", [5, ["x"], {"a": 1}])
+def test_a_tampered_field_type_is_never_a_500(as_user, executed, field, value):
+    c = as_user(admin(name="Pat"))
+    made = save(c, WITH_PARTS).json()
+    _tamper(TENANT_A.tenant_id, made["id"], **{field: value})
+    assert c.get("/api/v1/me/queries", headers=AUTH).status_code == 200
+    assert run(c, made["id"]).status_code in (200, 400)
+
+
+def test_a_null_description_is_blank(as_user, executed):
+    c = as_user(admin(name="Pat"))
+    made = save(c, {**SQLQ, "description": None})
+    assert made.status_code == 200
+    assert run(c, made.json()["id"]).json()["provenance"]["reason"] == "Written by Pat"
+
+
+JUNK_PART = {**PART, "sql": "DROP TABLE x", "junk": 1}
+
+
+def test_unknown_keys_in_governed_parts_are_dropped_on_save_and_update(as_user, executed):
+    c = as_user()
+    made = save(c, {**WITH_PARTS, "governed_parts": {"governed_1": JUNK_PART}})
+    assert made.status_code == 200 and made.json()["governed_parts"] == {"governed_1": PART}
+    r = c.put(f"/api/v1/me/queries/{made.json()['id']}", headers=AUTH,
+              json={**WITH_PARTS, "governed_parts": {"governed_1": JUNK_PART}})
+    assert r.json()["governed_parts"] == {"governed_1": PART}
+    stored = user_items_store.list_kind(TENANT_A.tenant_id, "u1", "query")[0]
+    assert stored["governed_parts"] == {"governed_1": PART}
+
+
+def test_unknown_keys_in_governed_parts_are_dropped_on_import(as_user, executed):
+    c = as_user()
+    r = c.post("/api/v1/me/import", headers=AUTH, json={"queries": [
+        {**WITH_PARTS, "id": "l1", "governed_parts": {"governed_1": JUNK_PART}}]})
+    assert r.json()["queries"] == 1
+    assert user_items_store.list_kind(TENANT_A.tenant_id, "u1", "query")[0]["governed_parts"] == {"governed_1": PART}
+
+
+def test_a_failed_last_used_write_still_returns_the_result(as_user, executed, monkeypatch):
+    from fastapi import HTTPException
+
+    c = as_user()
+    made = save(c).json()
+
+    def conflict(*a, **k):
+        raise HTTPException(status_code=409, detail="changed")
+
+    monkeypatch.setattr(lambda_handler, "_replace_query", conflict)
+    assert run(c, made["id"]).status_code == 200

@@ -820,7 +820,8 @@ def _sql_query_body(payload: dict, user: dict, tenant: Tenant) -> dict:
     from semantic_layer.sql_service import validate_sql
 
     errors = []
-    name, description, sql = payload.get("name"), payload.get("description", ""), payload.get("sql")
+    name, sql = payload.get("name"), payload.get("sql")
+    description = "" if payload.get("description") is None else payload["description"]
     parts = payload.get("governed_parts", {})
     if not isinstance(name, str) or not name.strip():
         errors.append("name is required")
@@ -847,6 +848,9 @@ def _sql_query_body(payload: dict, user: dict, tenant: Tenant) -> dict:
     checked = validate_sql(guard_context(tenant, user), sql=sql, governed=parts or None)
     if not checked["ok"]:
         raise _bad_request(checked["error"])
+    from semantic_layer.sql_service import contract_of
+
+    parts = {n: contract_of(p).model_dump(mode="json", exclude_unset=True) for n, p in parts.items()}
     body = {"name": name, "description": description, "query_kind": "sql", "sql": sql, "governed_parts": parts}
     owner = user.get("name") or user.get("email")
     if isinstance(owner, str) and owner.strip():
@@ -967,10 +971,17 @@ async def run_my_query(query_id: str, authorization: Optional[str] = Header(None
     user, tenant = _caller(authorization)
     item = await _blocking(_query_item, tenant.tenant_id, user["sub"], query_id)
     stored = _stored_query(item)
+
+    def text(field: str) -> str:
+        value = stored.get(field)
+        return value.strip() if isinstance(value, str) else ""
+
     if stored["query_kind"] == "sql":
-        reason = (stored.get("description") or "").strip() or (
-            f"Written by {stored['owner_name']}" if stored.get("owner_name") else DEFAULT_REASON)
-        response = await _run_sql_for(user, tenant, stored.get("sql") or "", stored.get("governed_parts") or None,
+        owner = text("owner_name")
+        reason = text("description") or (f"Written by {owner}" if owner else DEFAULT_REASON)
+        sql = stored.get("sql") if isinstance(stored.get("sql"), str) else ""
+        parts = stored.get("governed_parts")
+        response = await _run_sql_for(user, tenant, sql, parts if isinstance(parts, dict) and parts else None,
                                       reason[:500])
     else:
         try:
@@ -980,7 +991,10 @@ async def run_my_query(query_id: str, authorization: Optional[str] = Header(None
         compiled = await _blocking(_compile_for, contract, user, tenant)
         response = _semantic_response(compiled, await _execute(compiled, user, tenant))
     now = _now_iso()
-    await _blocking(_replace_query, tenant.tenant_id, user["sub"], query_id, lambda b: b.update(lastUsedAt=now))
+    try:
+        await _blocking(_replace_query, tenant.tenant_id, user["sub"], query_id, lambda b: b.update(lastUsedAt=now))
+    except HTTPException as e:
+        logger.warning("Could not record lastUsedAt for saved query %s: %s", query_id, e.detail)
     return response
 
 
@@ -1802,7 +1816,7 @@ def guard_context(tenant: Tenant, user: dict, catalog=None):
     import snowflake_client
     from roles import role_allows_identity
 
-    return snowflake_client.GuardContext.of(tenant, catalog or _catalog_for(tenant)[0],
+    return snowflake_client.GuardContext.of(tenant, _catalog_for(tenant)[0] if catalog is None else catalog,
                                             allow_identity=role_allows_identity(user))
 
 

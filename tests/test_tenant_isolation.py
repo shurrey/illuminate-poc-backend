@@ -629,6 +629,8 @@ SECRET_ROUTES = [
     ("POST", "/api/chat", {"json": {"message": "q"}}),
     ("POST", "/api/chat/stream", {"json": {"message": "q"}}),
     ("POST", "/api/v1/sql/run", {"json": {"sql": SQL}}),
+    ("POST", "/api/v1/me/queries", {"json": {"name": "n", "query_kind": "sql", "sql": SQL, "governed_parts": {}}}),
+    ("POST", "/api/v1/me/queries/q_000000000000/run", {}),
 ]
 NO_SECRET_ROUTES = [
     ("POST", "/api/v1/sql/validate", {"json": {"sql": SQL}}),
@@ -707,15 +709,18 @@ def test_saved_sql_run_never_crosses(world):
     assert MARK_A in c.post(f"/api/v1/me/queries/{qid}/run", headers=AS_A).text
 
     # Same sub, other tenant: A's id does not exist in B's store.
+    before = len(world.log)
     crossed = c.post(f"/api/v1/me/queries/{qid}/run", headers=AS_B)
-    assert crossed.status_code == 404
+    assert crossed.status_code == 404 and len(world.log) == before
     _clean(crossed.text)
 
     mine = c.post("/api/v1/me/queries", headers=AS_B, json={
         "name": "mine", "query_kind": "sql", "sql": SQL, "governed_parts": {}, "description": ""}).json()["id"]
+    before = len(world.log)
     r = c.post(f"/api/v1/me/queries/{mine}/run", headers=AS_B)
+    assert len(world.log) == before + 1
     assert r.status_code == 200 and r.json()["rows"] == [{"TENANT_MARK": MARK_B, "DATABASE": DB_B}]
     _clean(r.text)
-    assert {mark for mark, _ in world.log[-1:]} == {MARK_B}
+    assert world.log[-1][0] == MARK_B
     assert user_items_store.get(A, "u1", "query", qid)["lastUsedAt"]
     assert user_items_store.get(B, "u1", "query", qid) is None
