@@ -17,9 +17,9 @@ import logging
 import re
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import Body, FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -473,6 +473,7 @@ async def get_me(authorization: Optional[str] = Header(None)):
         "tenant": {"name": tenant.name, "license": tenant.license},
         "roles": user_roles,
         "is_admin": ADMIN_GROUP in groups,
+        "mcp_enabled": tenant.mcp_enabled,
     }
 
 
@@ -2594,6 +2595,34 @@ def _save_checked(tenant_id: str, target: str, candidate, save) -> dict:
         raise HTTPException(status_code=404, detail=str(e).strip("'"))
     _overlay_cache.pop(tenant_id, None)
     return {"tenant_id": tenant_id, "target": target, "overlay": saved.model_dump() if saved else None}
+
+
+@app.get("/api/v1/admin/settings/mcp")
+async def admin_get_mcp_setting(authorization: Optional[str] = Header(None)) -> dict:
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return {"enabled": _require_admin_tenant(user).mcp_enabled}
+
+
+@app.put("/api/v1/admin/settings/mcp")
+async def admin_put_mcp_setting(body: Any = Body(None), authorization: Optional[str] = Header(None)) -> dict:
+    _, tenant_id = _admin_tenant(authorization)
+    enabled = body.get("enabled") if isinstance(body, dict) else None
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be true or false")
+    return {"enabled": (await _blocking(tenancy.set_mcp_enabled, tenant_id, enabled)).mcp_enabled}
+
+
+@app.get("/api/v1/admin/mcp/setup")
+async def admin_mcp_setup(authorization: Optional[str] = Header(None)) -> dict:
+    import mcp_access
+
+    _admin_tenant(authorization)
+    _, url = await _blocking(mcp_access._mcp_discovery)
+    if not url:
+        return {"deployed": False}
+    return {"deployed": True, "url": url, "snippets": mcp_access.setup_snippets(url)}
 
 
 @app.get("/api/v1/admin/overlays")

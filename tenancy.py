@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import boto3
 
@@ -56,3 +57,14 @@ def get_tenant(tenant_id: str) -> Tenant:
     )
     _cache[tenant_id] = (now, tenant)
     return tenant
+
+
+def set_mcp_enabled(tenant_id: str, enabled: bool) -> Tenant:
+    """Set the tenant's MCP flag and return the row read fresh, bypassing the 60 s cache."""
+    _get_table().update_item(
+        Key={"tenant_id": tenant_id},
+        UpdateExpression="SET mcp_enabled = :e, updated_at = :u",
+        ConditionExpression="attribute_exists(tenant_id)",
+        ExpressionAttributeValues={":e": enabled, ":u": datetime.now(timezone.utc).isoformat()})
+    _cache.pop(tenant_id, None)
+    return get_tenant(tenant_id)
