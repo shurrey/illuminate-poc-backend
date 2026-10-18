@@ -6,15 +6,27 @@ import json
 import logging
 import math
 import os
+import re
 import time
 
 import boto3
+from botocore.exceptions import ClientError
+from fastapi import HTTPException
 
 from tenancy import Tenant
 
 MCP_REFUSAL = "MCP access is not enabled for your organization"
 MCP_ADMIN_REFUSAL = "Admin actions aren't available through MCP"
 MCP_RATE_REFUSAL = "Too many MCP requests; try again shortly"
+SESSION_REFUSAL = "This MCP session belongs to someone else; start a new one"
+SESSION_HEADER_REFUSAL = "X-Mcp-Session must be 1 to 128 letters, digits, '-' or '_'"
+SESSION_REQUIRED = "Running raw SQL through MCP needs an X-Mcp-Session header"
+GOVERNED_FIRST_REFUSAL = ("Try a governed tool first (run_query or compile_query); raw SQL is for what the semantic "
+                          "layer can't answer.")
+REASON_REFUSAL = "Give a reason of at least 20 characters for running raw SQL"
+MIN_REASON = 20
+SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+SESSION_SECONDS = 24 * 3600
 RATE_LIMIT = 120
 SESSIONS_TABLE = os.environ.get("MCP_SESSIONS_TABLE", "illuminate-mcp-sessions-dev")
 _DISCOVERY_SECONDS = 300
@@ -87,6 +99,50 @@ def charge(tenant_id: str, sub: str, now: float) -> int | None:
     if int(attrs["n"]) <= RATE_LIMIT:
         return None
     return max(1, math.ceil((minute + 1) * 60 - now))
+
+
+def _lost_condition(e: ClientError) -> bool:
+    return e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException"
+
+
+def session(session_id: str, tenant_id: str, sub: str, now: float | None = None) -> dict:
+    """The session item, created ungoverned for the caller on first sight and kept 24 h.
+    When it belongs to another tenant or user it is deleted and this raises a 403."""
+    now = time.time() if now is None else now
+    key = {"pk": f"session#{session_id}"}
+    for _ in range(3):
+        item = _sessions().get_item(Key=key, ConsistentRead=True).get("Item")
+        # TTL deletion lags, so an expired item still present counts as absent.
+        if item and int(item.get("expires_at", 0)) > now:
+            if item.get("tenant_id") != tenant_id or item.get("sub") != sub:
+                _sessions().delete_item(Key=key)
+                raise HTTPException(status_code=403, detail=SESSION_REFUSAL)
+            return item
+        fresh = {**key, "tenant_id": tenant_id, "sub": sub, "governed": False,
+                 "expires_at": int(now) + SESSION_SECONDS}
+        try:
+            _sessions().put_item(Item=fresh, ConditionExpression="attribute_not_exists(pk) OR expires_at <= :now",
+                                 ExpressionAttributeValues={":now": int(now)})
+            return fresh
+        except ClientError as e:
+            if not _lost_condition(e):
+                raise
+    raise HTTPException(status_code=409, detail="This MCP session changed while it was being set up; try again")
+
+
+def mark_governed(session_id: str, tenant_id: str, sub: str) -> None:
+    """Record a successful governed call. A no-op when the session is gone or now belongs to someone else."""
+    try:
+        _sessions().update_item(
+            Key={"pk": f"session#{session_id}"},
+            UpdateExpression="SET governed = :g",
+            ConditionExpression="#t = :t AND #s = :s",
+            ExpressionAttributeNames={"#t": "tenant_id", "#s": "sub"},
+            ExpressionAttributeValues={":g": True, ":t": tenant_id, ":s": sub},
+        )
+    except ClientError as e:
+        if not _lost_condition(e):
+            raise
 
 
 def setup_snippets(url: str) -> dict[str, str]:
