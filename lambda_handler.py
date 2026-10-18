@@ -171,6 +171,8 @@ def _validate_token(token: str) -> Optional[dict]:
 
 # (Authorization header, its claims or None) as decided once by _mcp_gate for the current request.
 _request_auth: ContextVar[Optional[tuple[Optional[str], Optional[dict]]]] = ContextVar("_request_auth", default=None)
+# (session id, session item) when the current request is MCP-audience and sent X-Mcp-Session; set by _mcp_gate.
+_mcp_session: ContextVar[Optional[tuple[str, dict]]] = ContextVar("_mcp_session", default=None)
 
 
 def _get_user_from_token(authorization: Optional[str]) -> Optional[dict]:
@@ -436,6 +438,7 @@ async def _mcp_gate(request: Request) -> None:
     Async so the ContextVar it sets is visible to the endpoint; a threadpool dependency's set would be lost."""
     authorization = request.headers.get("authorization")
     _request_auth.set(None)
+    _mcp_session.set(None)
     user = _get_user_from_token(authorization)
     _request_auth.set((authorization, user))
     if authorization and not user:
@@ -451,6 +454,47 @@ async def _mcp_gate(request: Request) -> None:
     if retry is not None:
         raise HTTPException(status_code=429, detail=mcp_access.MCP_RATE_REFUSAL,
                             headers={"Retry-After": str(retry)})
+    session_id = request.headers.get("x-mcp-session")
+    if session_id is not None:
+        if not mcp_access.SESSION_ID.fullmatch(session_id):
+            raise HTTPException(status_code=400, detail=mcp_access.SESSION_HEADER_REFUSAL)
+        item = await _blocking(mcp_access.session, session_id, tenant.tenant_id, user["sub"], _now())
+        _mcp_session.set((session_id, item))
+
+
+async def _governed_success(response):
+    """Mark the request's MCP session governed when response is a governed call's success: a 2xx whose body has
+    no `error` (nor `unavailable`, which ran nothing). Returns response unchanged; a no-op without a session."""
+    session = _mcp_session.get()
+    if session is None or session[1].get("governed"):
+        return response
+    status = response.status_code if isinstance(response, JSONResponse) else 200
+    body = json.loads(response.body) if isinstance(response, JSONResponse) else response
+    if 200 <= status < 300 and isinstance(body, dict) and not {"error", "unavailable"} & body.keys():
+        session_id, item = session
+        try:
+            await _blocking(mcp_access.mark_governed, session_id, item["tenant_id"], item["sub"])
+        except Exception:
+            logger.warning("Could not mark an MCP session governed", exc_info=True)
+    return response
+
+
+def _require_mcp_governed() -> None:
+    """400 unless this MCP request carries a session that has already made a governed call."""
+    session = _mcp_session.get()
+    if session is None:
+        raise HTTPException(status_code=400, detail=mcp_access.SESSION_REQUIRED)
+    if not session[1].get("governed"):
+        raise HTTPException(status_code=400, detail=mcp_access.GOVERNED_FIRST_REFUSAL)
+
+
+def _require_mcp_sql_allowed(body: "SqlRequest") -> None:
+    """Governed first and a real reason, for raw SQL from an MCP-audience caller; 400 otherwise."""
+    _require_mcp_governed()
+    # The model's default reason is the web app's label, so an MCP caller that omits one has given none.
+    reason = body.reason.strip() if "reason" in body.model_fields_set else ""
+    if len(reason) < mcp_access.MIN_REASON:
+        raise HTTPException(status_code=400, detail=mcp_access.REASON_REFUSAL)
 
 
 _API_DOCS = os.environ.get("API_DOCS", "on") == "on"
@@ -1152,7 +1196,10 @@ async def run_my_query(query_id: str, authorization: Optional[str] = Header(None
     stored = _stored_query(item)
     owner = _text(stored, "owner_name")
     reason = _text(stored, "description") or (f"Written by {owner}" if owner else DEFAULT_REASON)
-    return await _run_stored_query(item, user, tenant, reason, owner_writes=True)
+    if user.get("_via_mcp") and stored["query_kind"] == "sql":
+        _require_mcp_governed()
+    response = await _run_stored_query(item, user, tenant, reason, owner_writes=True)
+    return response if stored["query_kind"] == "sql" else await _governed_success(response)
 
 
 def _text(stored: dict, field: str) -> str:
@@ -1482,6 +1529,9 @@ async def run_shared_with_me(share_id: str, authorization: Optional[str] = Heade
     user, tenant = _caller(authorization)
     share, item, owner = await _blocking(_shared_item, tenant.tenant_id, user["sub"], share_id)
     identity = role_allows_identity(user)
+    governed = share["item_kind"] == "card" or _stored_query(item)["query_kind"] != "sql"
+    if user.get("_via_mcp") and not governed:
+        _require_mcp_governed()
     try:
         if share["item_kind"] == "card":
             response = await _run_contract(item.get("contract"), user, tenant)
@@ -1495,11 +1545,11 @@ async def run_shared_with_me(share_id: str, authorization: Optional[str] = Heade
         hidden = _stored_values(share["item_kind"], item)
         raise HTTPException(status_code=e.status_code, detail=_scrub(_masked_run(e.detail), hidden))
     if identity:
-        return response
+        return await _governed_success(response) if governed else response
     masked = _masked_run(response)
     if isinstance(masked, dict) and "error" in masked:
         masked["error"] = _scrub(masked["error"], _stored_values(share["item_kind"], item))
-    return masked
+    return await _governed_success(masked) if governed else masked
 
 
 def _stored_values(item_kind: str, item: dict) -> list[str]:
@@ -2242,7 +2292,7 @@ def _is_identity(ref: str, catalog) -> bool:
 @app.post("/api/v1/semantic/compile")
 async def semantic_compile(contract: QueryContract, authorization: Optional[str] = Header(None)) -> dict:
     """Compile a semantic query contract to SQL without executing it."""
-    return _compile_contract(contract, authorization).model_dump()
+    return await _governed_success(_compile_contract(contract, authorization).model_dump())
 
 
 def _etag_matches(if_none_match: str, etag: str) -> bool:
@@ -2285,7 +2335,7 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
     compiled = _compile_for(contract, user, tenant)
     result = await _execute(compiled, user, tenant)
 
-    return _semantic_response(compiled, result)
+    return await _governed_success(_semantic_response(compiled, result))
 
 
 def _semantic_response(compiled, result: dict) -> JSONResponse:
@@ -2337,6 +2387,8 @@ async def _run_sql_for(user: dict, tenant: Tenant, sql: str, governed: Optional[
 async def sql_run(body: SqlRequest, authorization: Optional[str] = Header(None)):
     """Run SQL through the execution guard as the caller; `governed` parts are spliced from query contracts."""
     user, tenant = _caller(authorization)
+    if user.get("_via_mcp"):
+        _require_mcp_sql_allowed(body)
     return await _run_sql_for(user, tenant, body.sql, body.governed, body.reason.strip() or DEFAULT_REASON)
 
 
@@ -2531,11 +2583,11 @@ async def run_report_query(report_id: str, request: ReportRun, authorization: Op
     renames = output_renames(report, visual, request.query, request.values)
     columns = [renames.get(c, c) for c in result["columns"]]
     rows = [{renames.get(k, k): v for k, v in r.items()} for r in result["rows"]] if renames else result["rows"]
-    return JSONResponse(_json_safe({
+    return await _governed_success(JSONResponse(_json_safe({
         "columns": columns, "rows": rows, "truncated": result.get("truncated", False),
         "sql": compiled.sql, "provenance": compiled.provenance,
         "contract": contract.model_dump(mode="json", exclude_defaults=True), "ignored_filters": ignored,
-    }))
+    })))
 
 
 
