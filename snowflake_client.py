@@ -902,7 +902,7 @@ def _execute(conn, sql: str, params: dict | None) -> dict:
             fetched.extend(batch)
             size += sum(len(str(value)) for row in batch for value in row)
             if size > MAX_RESULT_BYTES:
-                raise ResultTooLarge()
+                raise ResultTooLarge(TOO_LARGE)
             if len(batch) < wanted:
                 break
         rows = [dict(zip(columns, row)) for row in fetched[:MAX_ROWS]]

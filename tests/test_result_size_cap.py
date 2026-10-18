@@ -83,3 +83,10 @@ def test_a_statement_timeout_is_an_ordinary_masked_warehouse_error(monkeypatch):
     result = snowflake_client.execute(snowflake_client.validate("SELECT COUNT(*) AS N FROM CDM_LMS.PERSON", ctx, Freehand()), ctx)
     assert result == snowflake_client.Result(columns=[], rows=[],
                                              error="The warehouse could not run this query (error 630).")
+
+
+def test_a_too_large_table_preview_says_so(monkeypatch):
+    monkeypatch.setattr(snowflake_client, "_run",
+                        lambda sql, params, tenant: snowflake_client._execute(Conn(WideCursor(20, 1_000_000)), sql, params))
+    with pytest.raises(snowflake_client.WarehouseError, match="^The result is too large; select fewer columns or rows.$"):
+        snowflake_client.query_preview("CDM_LMS", "T", tenant=object())
