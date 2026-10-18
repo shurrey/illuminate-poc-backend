@@ -662,6 +662,7 @@ SECRET_ROUTES = [
     ("POST", "/api/v1/sql/run", {"json": {"sql": SQL}}),
     ("POST", "/api/v1/me/queries", {"json": {"name": "n", "query_kind": "sql", "sql": SQL, "governed_parts": {}}}),
     ("POST", "/api/v1/me/queries/q_000000000000/run", {}),
+    ("POST", "/api/v1/shared/sh_0000000000000000/run", {}),
 ]
 NO_SECRET_ROUTES = [
     ("POST", "/api/v1/sql/validate", {"json": {"sql": SQL}}),
@@ -683,6 +684,9 @@ NO_SECRET_ROUTES = [
     ("DELETE", "/api/v1/me/queries/q_000000000000", {}),
     *[(m, f"/api/v1/me/{p}/{i}/share", {"json": {"recipients": [], "tenant": False}} if m == "PUT" else {})
       for p, i in (("queries", "q_000000000000"), ("cards", "c_000000000000")) for m in ("GET", "PUT", "DELETE")],
+    ("GET", "/api/v1/shared", {}),
+    ("GET", "/api/v1/shared/sh_0000000000000000", {}),
+    ("POST", "/api/v1/shared/sh_0000000000000000/copy", {}),
     ("GET", "/api/v1/me/prefs", {}),
     ("PUT", "/api/v1/me/prefs", {"json": {**PREFS, "expected_version": 0}}),
     ("POST", "/api/v1/me/import", {"json": {"cards": [{**CARD, "id": "local-1"}], "queries": [QUERY], "prefs": PREFS}}),
@@ -783,3 +787,33 @@ def test_saved_sql_run_never_crosses(world):
     assert world.log[-1][0] == MARK_B
     assert user_items_store.get(A, "u1", "query", qid)["lastUsedAt"]
     assert user_items_store.get(B, "u1", "query", qid) is None
+
+
+def test_shared_never_crosses(world):
+    c = world.client
+    as_av, as_bv = {"Authorization": "Bearer av"}, {"Authorization": "Bearer bv"}
+    everyone = {"recipients": [], "tenant": True}
+    qid = c.post("/api/v1/me/queries", headers=AS_A, json=QUERY).json()["id"]
+    cid = c.post("/api/v1/me/cards", headers=AS_A, json=CARD).json()["id"]
+    sids = [c.put(f"/api/v1/me/{p}/{i}/share", headers=AS_A, json=everyone).json()["share_id"]
+            for p, i in (("queries", qid), ("cards", cid))]
+    own = c.post("/api/v1/me/queries", headers=AS_B, json={**QUERY, "name": "b query"}).json()["id"]
+    c.put(f"/api/v1/me/queries/{own}/share", headers=AS_B, json=everyone)
+
+    in_a = c.get("/api/v1/shared", headers=as_av)
+    assert sorted(i["share_id"] for i in in_a.json()["items"]) == sorted(sids) and MARK_A in in_a.text
+
+    # u1 owns A's items and u2 is a recipient in A; the same subs in B see only B's share.
+    for headers in (AS_B, as_bv):
+        listed = c.get("/api/v1/shared", headers=headers)
+        assert listed.status_code == 200
+        assert [i["name"] for i in listed.json()["items"]] == ([] if headers is AS_B else ["b query"])
+        _clean(listed.text)
+        before = len(world.log)
+        for sid in sids:
+            for method, path in (("GET", ""), ("POST", "/run"), ("POST", "/copy")):
+                r = c.request(method, f"/api/v1/shared/{sid}{path}", headers=headers)
+                assert r.status_code == 404 and r.json() == {"detail": "Shared item not found"}
+                _clean(r.text)
+        assert len(world.log) == before
+    assert user_items_store.list_kind(B, "u2", "query") == [] and user_items_store.list_kind(B, "u2", "card") == []
