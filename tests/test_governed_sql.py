@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 import sqlglot
 import sqlglot.expressions as exp
@@ -6,7 +8,8 @@ import licenses
 import semantic_layer.governed_sql as governed_sql
 import snowflake_client
 from semantic_layer.contract import QueryContract
-from semantic_layer.governed_sql import Spliced, SpliceError, label, splice
+from semantic_layer.governed_sql import SplicedSql, SpliceError, label, splice
+from tests.guard_fakes import guard_ctx, run
 from tests.semantic_fixtures import COURSES, ENROLLMENTS, catalog, dataset
 from tests.tenant_fakes import TENANT_A, TENANT_CORE, install_tenants
 
@@ -36,7 +39,7 @@ def _unqualified_tables(node):
 
 def test_one_part_becomes_a_top_level_cte_after_its_prefixed_helpers():
     spliced = _splice("SELECT course_role, student_enrollments FROM governed_1", {"governed_1": STUDENTS})
-    assert isinstance(spliced, Spliced)
+    assert isinstance(spliced, SplicedSql)
     assert _cte_names(spliced.sql) == ["governed_1__DS_ENROLLMENTS_V1", "governed_1"]
     assert _unqualified_tables(_cte(spliced.sql, "governed_1")) == {"governed_1__DS_ENROLLMENTS_V1"}
     assert spliced.part_names == frozenset({"governed_1"})
@@ -171,73 +174,79 @@ def executed(monkeypatch):
     return calls
 
 
-def _guard(spliced, tenant=TENANT_A, **kwargs):
-    return snowflake_client.validate_and_execute(spliced.sql, tenant=tenant, spliced=spliced, **kwargs)
+def _ctx(tenant=TENANT_A, cat=CATALOG, **kwargs):
+    return guard_ctx(tenant, catalog=cat, database=DB, **kwargs)
+
+
+def _guard(outer, governed, tenant=TENANT_A, cat=CATALOG, **kwargs):
+    """The guard in Spliced mode, splicing outer and governed itself."""
+    return run(None, _ctx(tenant, cat, **kwargs), snowflake_client.Spliced(outer, governed))
+
+
+def _guard_as_spliced(monkeypatch, sql, spliced, **kwargs):
+    """The guard checking sql against spliced, standing in for the splice it would build."""
+    monkeypatch.setattr(snowflake_client, "splice", lambda *a, **k: dataclasses.replace(spliced, sql=sql))
+    return run(None, _ctx(**kwargs), snowflake_client.Spliced("SELECT 1", {}))
 
 
 def test_guard_accepts_governed_bodies_with_stars_and_inner_pii_that_freehand_rules_refuse(executed):
-    spliced = _splice("SELECT course_role, people FROM governed_1 ORDER BY people DESC LIMIT 10",
-                      {"governed_1": STAR_PEOPLE}, cat=catalog(STAR))
-    assert snowflake_client.validate_and_execute(spliced.sql, tenant=TENANT_A)["error"]
-    assert "error" not in _guard(spliced)
+    outer = "SELECT course_role, people FROM governed_1 ORDER BY people DESC LIMIT 10"
+    spliced = _splice(outer, {"governed_1": STAR_PEOPLE}, cat=catalog(STAR))
+    assert run(spliced.sql, _ctx())["error"]
+    assert "error" not in _guard(outer, {"governed_1": STAR_PEOPLE}, cat=catalog(STAR))
     assert executed == [spliced.sql.strip()]
 
 
 def test_guard_accepts_a_two_part_join_and_an_outer_cte(executed):
-    spliced = _splice("WITH x AS (SELECT course_role, student_enrollments FROM governed_1)"
-                      " SELECT x.course_role, x.student_enrollments, b.people"
-                      " FROM x JOIN governed_2 b ON x.course_role = b.course_role",
-                      {"governed_1": STUDENTS, "governed_2": PEOPLE})
-    assert "error" not in _guard(spliced)
+    assert "error" not in _guard("WITH x AS (SELECT course_role, student_enrollments FROM governed_1)"
+                                 " SELECT x.course_role, x.student_enrollments, b.people"
+                                 " FROM x JOIN governed_2 b ON x.course_role = b.course_role",
+                                 {"governed_1": STUDENTS, "governed_2": PEOPLE})
     assert len(executed) == 1
 
 
 def test_guard_refuses_outer_freehand_pii_for_a_viewer_and_allows_it_for_an_admin(executed):
-    spliced = _splice("SELECT g.course_role, p.EMAIL FROM governed_1 g JOIN CDM_LMS.PERSON p ON p.ID = g.people",
-                      {"governed_1": PEOPLE})
-    assert "personally identifiable" in _guard(spliced)["error"]
-    assert "error" not in _guard(spliced, allow_identity=True)
+    outer = "SELECT g.course_role, p.EMAIL FROM governed_1 g JOIN CDM_LMS.PERSON p ON p.ID = g.people"
+    assert "personally identifiable" in _guard(outer, {"governed_1": PEOPLE})["error"]
+    assert "error" not in _guard(outer, {"governed_1": PEOPLE}, allow_identity=True)
 
 
 def test_guard_refuses_an_outer_star_over_a_governed_part(executed):
-    spliced = _splice("SELECT * FROM governed_1", {"governed_1": PEOPLE})
-    assert "Star projections" in _guard(spliced)["error"]
+    assert "Star projections" in _guard("SELECT * FROM governed_1", {"governed_1": PEOPLE})["error"]
     assert executed == []
 
 
-def test_guard_refuses_outer_sql_reading_a_parts_helper_cte(executed):
+def test_guard_refuses_outer_sql_reading_a_parts_helper_cte(executed, monkeypatch):
     spliced = _splice("SELECT g.course_role FROM governed_1 g", {"governed_1": PEOPLE})
     sql = spliced.sql.replace("SELECT\n  g.course_role\nFROM governed_1 AS g",
                               "SELECT\n  d.course_role\nFROM governed_1 AS g JOIN governed_1__DS_ENROLLMENTS_V1 AS d ON TRUE")
     assert sql != spliced.sql
-    result = snowflake_client.validate_and_execute(sql, tenant=TENANT_A, spliced=spliced)
-    assert "governed_1" in result["error"]
+    assert "governed_1" in _guard_as_spliced(monkeypatch, sql, spliced)["error"]
     assert executed == []
 
 
-def test_the_reviewers_probe_is_refused_for_a_viewer_under_a_genuine_splice(executed):
+def test_the_reviewers_probe_is_refused_for_a_viewer_under_a_genuine_splice(executed, monkeypatch):
     spliced = _splice("SELECT course_role, people FROM governed_1", {"governed_1": PEOPLE})
     probe = ("WITH governed_1 AS (SELECT n FROM (SELECT p.EMAIL AS n FROM CDM_LMS.PERSON p) t)"
              " SELECT n FROM governed_1")
-    assert "error" in snowflake_client.validate_and_execute(probe, tenant=TENANT_A, spliced=spliced)
+    assert "error" in _guard_as_spliced(monkeypatch, probe, spliced)
     assert executed == []
 
 
-def test_a_genuine_splice_passes_and_its_helper_tampered_does_not(executed):
+def test_a_genuine_splice_passes_and_its_helper_tampered_does_not(executed, monkeypatch):
     spliced = _splice("SELECT course_role, people FROM governed_1", {"governed_1": PEOPLE})
-    assert "error" not in _guard(spliced)
+    assert "error" not in _guard("SELECT course_role, people FROM governed_1", {"governed_1": PEOPLE})
     tampered = spliced.sql.replace("CDM_LMS.PERSON AS p", "CDM_LMS.PERSON AS p TABLESAMPLE (10)")
     assert tampered != spliced.sql
-    assert "error" in snowflake_client.validate_and_execute(tampered, tenant=TENANT_A, spliced=spliced)
+    assert "error" in _guard_as_spliced(monkeypatch, tampered, spliced)
     assert len(executed) == 1
 
 
 def test_a_core_tenants_outer_sql_naming_learn_is_refused(monkeypatch, executed):
     install_tenants(monkeypatch, TENANT_CORE, database=DB)
     monkeypatch.setattr(snowflake_client, "tenant_database", lambda tenant: DB)
-    spliced = _splice("SELECT g.course_role, COUNT(*) AS n FROM governed_1 g JOIN LEARN.USERS u ON TRUE GROUP BY 1",
-                      {"governed_1": PEOPLE})
-    assert _guard(spliced, tenant=TENANT_CORE) == {"error": licenses.LEARN_REFUSAL}
+    outer = "SELECT g.course_role, COUNT(*) AS n FROM governed_1 g JOIN LEARN.USERS u ON TRUE GROUP BY 1"
+    assert _guard(outer, {"governed_1": PEOPLE}, tenant=TENANT_CORE) == {"error": licenses.LEARN_REFUSAL}
     assert executed == []
 
 
@@ -505,5 +514,6 @@ _REAL_PARTS = ([(m, _real_part(_REAL.datasets[_REAL.metrics[m].measure.partition
 def test_every_real_metric_and_measure_splices_as_a_part_that_passes_a_viewers_guard(ref, contract, column, executed):
     spliced = splice(f"SELECT {column} FROM governed_1", {"governed_1": contract}, _REAL, DB, allow_identity=False)
     sqlglot.parse_one(spliced.sql, dialect="snowflake")
-    assert _guard(spliced) == {"columns": [], "rows": []}
+    assert _guard(f"SELECT {column} FROM governed_1", {"governed_1": contract}, cat=_REAL) == \
+        {"columns": [], "rows": [], "truncated": False}
     assert executed == [spliced.sql.strip()]

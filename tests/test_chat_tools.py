@@ -1,6 +1,9 @@
+import dataclasses
+
 from semantic_layer.catalog import load_catalog
 import snowflake_client
 from semantic_layer.chat_tools import MODEL_ROW_LIMIT, ChatTools
+from snowflake_client import Compiled, Result, Spliced
 from licenses import LEARN_REFUSAL
 from tests.tenant_fakes import TENANT_A, TENANT_B, TENANT_CORE
 
@@ -8,15 +11,19 @@ CATALOG = load_catalog()
 
 
 class FakeWarehouse:
-    def __init__(self, rows=None, error=None):
-        self.rows, self.error, self.sql = rows if rows is not None else [{"N": 1}], error, []
+    """Stands in for snowflake_client.execute: records each statement the guard accepted and its context."""
 
-    def __call__(self, sql, params=None, compiled=False, **guard):
-        self.sql.append(sql)
-        self.guard = guard
+    def __init__(self, rows=None, error=None):
+        self.rows, self.error, self.sql, self.validated, self.ctx = (
+            rows if rows is not None else [{"N": 1}], error, [], [], [])
+
+    def __call__(self, v, ctx):
+        self.sql.append(v.sql)
+        self.validated.append(v)
+        self.ctx.append(ctx)
         if self.error:
-            return {"error": self.error}
-        return {"columns": list(self.rows[0]) if self.rows else [], "rows": self.rows}
+            return Result(columns=[], rows=[], error=self.error)
+        return Result(columns=list(self.rows[0]) if self.rows else [], rows=self.rows)
 
 
 SEARCHED = ("search_catalog",)
@@ -131,10 +138,11 @@ def test_execute_sql_results_are_marked_ungoverned_with_the_reason():
     assert "query" not in out.artifacts[0]
 
 
-def test_execute_sql_errors_pass_through():
-    out = _fallback(FakeWarehouse(error="Schema 'X' is not in the allowed list")).dispatch(
-        "execute_sql", {"sql": "SELECT * FROM X.Y", "reason": "testing the error path"}, called=SEARCHED)
-    assert "allowed list" in out.content["error"] and out.artifacts == []
+def test_execute_sql_guard_refusals_pass_through_and_nothing_runs():
+    wh = FakeWarehouse()
+    out = _fallback(wh).dispatch(
+        "execute_sql", {"sql": "SELECT a.B FROM X.Y a", "reason": "testing the error path"}, called=SEARCHED)
+    assert "allowed list" in out.content["error"] and out.artifacts == [] and wh.sql == []
 
 
 def test_describe_cdm_table_returns_columns():
@@ -153,11 +161,11 @@ def test_specs_include_the_fallback_tools():
 
 
 def test_only_governed_queries_run_with_the_compiled_guard():
-    modes = []
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=lambda sql, params=None, compiled=False: modes.append(compiled) or {"columns": ["N"], "rows": [{"N": 1}]})
+    wh = FakeWarehouse()
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=wh)
     tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
     tools.dispatch("execute_sql", {"sql": "SELECT COUNT(*) AS N FROM CDM_LMS.COURSE", "reason": "no governed metric counts all course rows"}, called=SEARCHED)
-    assert modes == [True, False]
+    assert [type(v.mode).__name__ for v in wh.validated] == ["Compiled", "Freehand"]
 
 
 def test_governed_results_use_the_contract_names_so_charts_match():
@@ -195,7 +203,7 @@ def test_filter_values_schema_names_the_value_types():
 
 def test_warehouse_errors_reach_the_model_without_internal_object_or_role_names():
     raw = "002003 (42S02): SQL compilation error:\nObject 'PROD_DB.SECRET_SCHEMA.T' does not exist or not authorized, role BBDATA_ROLE"
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=lambda sql, params=None, compiled=False: {"error": raw, "warehouse_error": True})
+    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=FakeWarehouse(error=raw))
     out = tools.dispatch("execute_sql", {"sql": "SELECT 1", "reason": "testing the error path"}, called=SEARCHED)
     assert "SECRET_SCHEMA" not in out.content["error"] and "BBDATA_ROLE" not in out.content["error"]
     assert "does not exist" in out.content["error"]
@@ -213,7 +221,7 @@ def test_query_semantic_provenance_lists_the_tenant_overlays_it_used():
 
 def test_chat_tools_execute_with_their_tenant(monkeypatch):
     seen = []
-    monkeypatch.setattr(snowflake_client, "validate_and_execute",
+    monkeypatch.setattr(snowflake_client, "query_sql",
                         lambda sql, params=None, **k: seen.append(k["tenant"]) or {"columns": ["N"], "rows": [{"N": 1}]})
     tools = ChatTools(CATALOG, "DB", tenant=TENANT_B)
     tools.dispatch("execute_sql", {"sql": "SELECT 1 AS N FROM DB.CDM_LMS.COURSE",
@@ -267,9 +275,9 @@ def test_chat_runs_an_identity_dimension_for_an_allowed_role_and_audits_it():
 
 def test_chat_passes_allow_identity_to_the_guard_for_governed_and_freehand_sql(monkeypatch):
     seen = []
-    monkeypatch.setattr(snowflake_client, "validate_and_execute",
-                        lambda sql, params=None, **kw: seen.append((kw["compiled"], kw["allow_identity"]))
-                        or {"columns": ["N"], "rows": [{"N": 1}]})
+    monkeypatch.setattr(snowflake_client, "execute",
+                        lambda v, ctx: seen.append((isinstance(v.mode, Compiled), ctx.allow_identity))
+                        or Result(columns=["N"], rows=[{"N": 1}]))
     reason = "no governed metric covers this question"
     for allow in (False, True):
         tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, allow_identity=allow)
@@ -294,8 +302,9 @@ def test_execute_sql_with_a_governed_part_runs_the_spliced_sql_and_labels_each_c
     wh = FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}])
     out = _mixed(wh)
     assert len(wh.sql) == 1 and "governed_1 AS (" in wh.sql[0] and "DS_COURSE_FILTERS_V1" in wh.sql[0]
-    assert set(wh.guard) == {"spliced"} and wh.guard["spliced"].sql == wh.sql[0]
-    assert wh.guard["spliced"].part_names == frozenset({"governed_1"})
+    validated = wh.validated[0]
+    assert isinstance(validated.mode, Spliced) and validated.spliced.sql.strip() == wh.sql[0]
+    assert validated.spliced.part_names == frozenset({"governed_1"})
     provenance = out.content["provenance"]
     assert provenance == {
         "governed": False, "governance": "partial", "rows": "modified", "reason": MIXED_REASON,
@@ -385,8 +394,8 @@ def test_governed_parts_still_need_a_governed_tool_called_first():
 
 def test_governed_parts_compile_and_run_with_the_callers_identity_rights(monkeypatch):
     seen = []
-    monkeypatch.setattr(snowflake_client, "validate_and_execute",
-                        lambda sql, params=None, **kw: seen.append(kw) or {"columns": ["PERSON_EMAIL"], "rows": []})
+    monkeypatch.setattr(snowflake_client, "execute",
+                        lambda v, ctx: seen.append((v, ctx)) or Result(columns=["PERSON_EMAIL"], rows=[]))
     email = {"governed_1": {"measures": ["dataset.course_student_activity.v1:students"], "dimensions": ["person_email"]}}
     request = {"sql": "SELECT person_email FROM governed_1", "reason": MIXED_REASON, "governed": email}
     viewer = ChatTools(CATALOG, "DB", tenant=TENANT_A).dispatch("execute_sql", request, called=SEARCHED)
@@ -395,8 +404,9 @@ def test_governed_parts_compile_and_run_with_the_callers_identity_rights(monkeyp
     admin = ChatTools(CATALOG, "DB", tenant=TENANT_A, allow_identity=True,
                       identity_audit=lambda kind, subject: audited.append(kind))
     assert "error" not in admin.dispatch("execute_sql", request, called=SEARCHED).content
-    assert seen[0]["allow_identity"] is True and seen[0]["tenant"] == TENANT_A and not seen[0]["compiled"]
-    assert seen[0]["spliced"].part_names == frozenset({"governed_1"}) and isinstance(seen[0]["extra_pii"], frozenset)
+    v, ctx = seen[0]
+    assert ctx.allow_identity is True and ctx.tenant == TENANT_A and isinstance(v.mode, Spliced)
+    assert v.spliced.part_names == frozenset({"governed_1"}) and isinstance(ctx.extra_pii, frozenset)
     assert audited == ["governed", "freehand"]
 
 
@@ -425,8 +435,8 @@ def test_artifacts_say_which_tool_kind_produced_them():
 
 
 class TruncatingWarehouse(FakeWarehouse):
-    def __call__(self, sql, params=None, compiled=False, **guard):
-        return {**super().__call__(sql, params, compiled, **guard), "truncated": True}
+    def __call__(self, v, ctx):
+        return dataclasses.replace(super().__call__(v, ctx), truncated=True)
 
 
 def test_a_warehouse_truncated_single_part_result_is_partial_with_rows_modified_and_says_so():

@@ -26,6 +26,7 @@ from semantic_layer.catalog_view import public_catalog
 from semantic_layer.overlays import Overlay
 from tenancy import NOT_READY
 from tests.conftest import REAL_LIST_OVERLAYS
+from tests.guard_fakes import run
 
 MARK_A, MARK_B = "ALPHA-ONLY", "BETA-ONLY"
 DB_A, DB_B = "DB_ALPHA_ONLY", "DB_BETA_ONLY"
@@ -278,11 +279,11 @@ def test_me_never_crosses(world):
 
 @pytest.mark.parametrize("table", [f"{DB_A}.CDM_LMS.COURSE", f"{DB_A}.INFORMATION_SCHEMA.DATABASES"])
 def test_raw_sql_naming_another_tenants_database_is_refused_before_any_connection(world, table):
-    tenant_b = tenancy.get_tenant(B)
-    result = snowflake_client.validate_and_execute(f"SELECT COUNT(*) FROM {table}", tenant=tenant_b)
+    ctx = lambda_handler.guard_context(tenancy.get_tenant(B), {"sub": "b"})
+    result = run(f"SELECT COUNT(*) FROM {table}", ctx)
     assert "not the tenant's database" in result["error"] and "warehouse_error" not in result
     assert world.connects == [] and world.log == []
-    assert snowflake_client.validate_and_execute(f"SELECT COUNT(*) FROM {DB_B}.CDM_LMS.COURSE", tenant=tenant_b).get("rows")
+    assert run(f"SELECT COUNT(*) FROM {DB_B}.CDM_LMS.COURSE", ctx).get("rows")
     assert world.connects == [MARK_B]
 
 
@@ -396,7 +397,7 @@ CROSS_SESSION_SQL = [
 
 @pytest.mark.parametrize("sql", CROSS_SESSION_SQL)
 def test_core_tenant_cannot_read_other_sessions_query_results_or_history(world, sql):
-    result = snowflake_client.validate_and_execute(sql, tenant=tenancy.get_tenant(C2))
+    result = run(sql, lambda_handler.guard_context(tenancy.get_tenant(C2), {"sub": "c2"}))
     assert "not allowed" in result["error"] and "warehouse_error" not in result
     assert world.connects == [] and world.log == []
 

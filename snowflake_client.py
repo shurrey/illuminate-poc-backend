@@ -12,19 +12,20 @@ import logging
 import os
 import re
 import time
-from typing import TYPE_CHECKING
+import weakref
+from dataclasses import dataclass
 
 import boto3
 from botocore.exceptions import ClientError
 
 from licenses import LEARN_REFUSAL, allows_learn, schema_allowed
 from semantic_layer.compiler import is_bounded_generator_call
+from semantic_layer.contract import CompiledQuery, QueryContract
+from semantic_layer.governed_sql import SpliceError, SplicedSql, splice
 from semantic_layer.learn import learn_columns, learn_pii
 from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
+from semantic_layer.schema import Catalog
 from tenancy import Tenant, TenantNotReady
-
-if TYPE_CHECKING:
-    from semantic_layer.governed_sql import Spliced
 
 logger = logging.getLogger("API-PROXY")
 
@@ -498,58 +499,159 @@ def _governed_bodies(stmt, spliced) -> tuple[list, frozenset[int]] | str:
     return part_ctes, inside
 
 
-def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant | None, compiled: bool = False,
-                         allow_identity: bool = False, extra_pii: frozenset[str] | set[str] = frozenset(),
-                         spliced: "Spliced | None" = None) -> dict:
-    """Validate a SQL statement with sqlglot AST checks, then execute it.
+@dataclass(frozen=True)
+class GuardContext:
+    """Whom the guard checks SQL for: the token's tenant and role, the tenant's catalog and database."""
+    tenant: Tenant
+    allow_identity: bool
+    extra_pii: frozenset[str]
+    catalog: Catalog
+    database: str
+
+    @classmethod
+    def of(cls, tenant: Tenant, catalog: Catalog, database: str, *, allow_identity: bool) -> "GuardContext":
+        """extra_pii is every dataset's declared PII columns, upper-cased."""
+        extra_pii = frozenset(c.upper() for ds in catalog.datasets.values() for c in ds.pii_columns)
+        return cls(tenant=tenant, allow_identity=allow_identity, extra_pii=extra_pii, catalog=catalog,
+                   database=database)
+
+
+@dataclass(frozen=True)
+class Freehand:
+    """SQL a person or model wrote."""
+
+
+@dataclass(frozen=True)
+class Compiled:
+    """SQL the semantic-layer compiler produced; it was PII-checked when it was compiled."""
+    compiled: CompiledQuery
+
+
+@dataclass(frozen=True)
+class Spliced:
+    """Freehand outer SQL reading governed parts, which the guard compiles from the contracts itself."""
+    outer_sql: str
+    governed: dict[str, QueryContract]
+
+
+Mode = Freehand | Compiled | Spliced
+
+
+@dataclass(frozen=True)
+class Refusal:
+    message: str
+
+
+@dataclass(frozen=True, eq=False)
+class Validated:
+    """A statement validate accepted. execute runs only instances validate returned, under the same context."""
+    sql: str
+    stmt: object  # the parsed sqlglot statement
+    mode: Mode
+    ctx: GuardContext
+    spliced: SplicedSql | None = None
+
+
+@dataclass(frozen=True)
+class Result:
+    """error is set, with columns and rows empty, when the warehouse failed; it names no row values."""
+    columns: list[str]
+    rows: list[dict]
+    truncated: bool = False
+    error: str | None = None
+
+
+_issued: "weakref.WeakSet[Validated]" = weakref.WeakSet()
+
+COMPILED_MISMATCH = "The SQL does not match the query the server compiled."
+
+
+def _canonical(stmt) -> str:
+    from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
+
+    return normalize_identifiers(stmt.copy(), dialect="snowflake").sql(dialect="snowflake")
+
+
+def validate(sql: str | None, ctx: GuardContext, mode: Mode) -> Validated | Refusal:
+    """Check a statement with sqlglot AST checks; makes no warehouse call.
+
+    Spliced mode ignores sql and checks the statement it splices from the mode's contracts with ctx's catalog,
+    database and identity rights. Compiled mode refuses sql unless it parses to the compiled SQL.
+    """
+    spliced = None
+    if isinstance(mode, Spliced):
+        try:
+            spliced = splice(mode.outer_sql, mode.governed, ctx.catalog, ctx.database,
+                             allow_identity=ctx.allow_identity)
+        except SpliceError as e:
+            return Refusal(str(e))
+        sql = spliced.sql
+    elif not isinstance(mode, (Freehand, Compiled)):
+        raise TypeError(f"unknown guard mode {mode!r}")
+    elif sql is None:
+        raise TypeError("sql is required outside Spliced mode")
+
+    checked = _check(sql.strip(), ctx, mode, spliced)
+    if isinstance(checked, str):
+        return Refusal(checked)
+    validated = Validated(sql=sql.strip(), stmt=checked, mode=mode, ctx=ctx, spliced=spliced)
+    _issued.add(validated)
+    return validated
+
+
+def _check(stripped: str, ctx: GuardContext, mode: Mode, spliced: SplicedSql | None):
+    """The parsed statement, or a refusal message.
 
     Allowed statement types: SELECT, WITH (CTE), UNION.
     Blocked: DML/DDL in any subquery, references outside CDM_*, INFORMATION_SCHEMA and (Premium only) LEARN,
     INFORMATION_SCHEMA views other than TABLES, COLUMNS, VIEWS, SCHEMATA and TABLE_CONSTRAINTS, table
     functions outside the allow-list, query-history and system functions, tables in another database, LIMIT > 1000, and
-    PII columns outside counting aggregates: anywhere and with no star projections, or with
-    compiled=True (semantic-layer SQL, PII-checked at definition time) in the outermost projection.
+    PII columns outside counting aggregates: anywhere and with no star projections, or in Compiled mode
+    (PII-checked at definition time) in the outermost projection.
     allow_identity (callers whose role may see identity) lifts the PII-column check for compiled and
     freehand SQL. Freehand SQL's structural refusals (star, positional, IDENTIFIER, alias-list,
     whole-row) and every other check still apply to every role. extra_pii adds dataset-declared PII
     column names to the check; freehand SQL also treats columns the CDM or LEARN dictionary flags,
-    and LEARN columns it does not list, as PII. spliced: the splice freehand SQL was built from; each of its
-    part and helper CTEs must appear in sql exactly as splice built it. Those bodies get the compiled PII rule (a
-    part's own projection is its outermost), only parts may read helpers, a part must name its columns,
-    the rest of the statement gets the freehand rules, and every other check covers the whole statement.
-
-    Returns:
-        {"columns": [...], "rows": [...]} on success
-        {"error": "..."} on validation or execution failure
+    and LEARN columns it does not list, as PII. spliced: each of its part and helper CTEs must appear in the
+    statement exactly as splice built it. Those bodies get the compiled PII rule (a part's own projection is its
+    outermost), only parts may read helpers, a part must name its columns, the rest of the statement gets the
+    freehand rules, and every other check covers the whole statement.
     """
     import sqlglot
     import sqlglot.expressions as exp
 
-    stripped = sql.strip()
+    tenant, allow_identity = ctx.tenant, ctx.allow_identity
+    compiled = isinstance(mode, Compiled)
 
     # Parse with sqlglot
     try:
         statements = sqlglot.parse(stripped, dialect="snowflake")
     except Exception as exc:
-        return {"error": f"SQL parse error: {exc}"}
+        return f"SQL parse error: {exc}"
 
     if not statements or statements[0] is None:
-        return {"error": "Could not parse SQL statement."}
+        return "Could not parse SQL statement."
 
     if len(statements) > 1:
-        return {"error": "Multiple statements are not allowed. Submit one query at a time."}
+        return "Multiple statements are not allowed. Submit one query at a time."
 
     stmt = statements[0]
+
+    if compiled:
+        try:
+            matches = _canonical(stmt) == _canonical(sqlglot.parse_one(mode.compiled.sql, dialect="snowflake"))
+        except Exception:
+            matches = False
+        if not matches:
+            return COMPILED_MISMATCH
 
     # Only allow SELECT/With at the top level
     allowed_top_level = (exp.Select, exp.With, exp.Union)
     if not isinstance(stmt, allowed_top_level):
-        return {
-            "error": (
-                f"Statement type '{type(stmt).__name__}' is not allowed. "
-                "Only SELECT and WITH statements are permitted."
-            )
-        }
+        return (
+            f"Statement type '{type(stmt).__name__}' is not allowed. "
+            "Only SELECT and WITH statements are permitted."
+        )
 
     # Block DML/DDL anywhere in the AST (catches subquery abuse)
     blocked_node_types = (
@@ -563,69 +665,63 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
     )
     for node in stmt.walk():
         if isinstance(node, blocked_node_types):
-            return {
-                "error": (
-                    f"Statement contains a disallowed operation: {type(node).__name__}. "
-                    "Only read-only queries are permitted."
-                )
-            }
+            return (
+                f"Statement contains a disallowed operation: {type(node).__name__}. "
+                "Only read-only queries are permitted."
+            )
 
     # Table functions carry no schema, so the whitelist below would pass RESULT_SCAN and friends.
     sources = [t.this for t in stmt.find_all(exp.Table) if not isinstance(t.this, exp.Identifier)]
     sources += [lateral.this for lateral in stmt.find_all(exp.Lateral)]
     if stmt.find(exp.Unnest) is not None or not all(map(_allowed_table_function, sources)):
-        return {"error": TABLE_FUNCTION_REFUSAL}
+        return TABLE_FUNCTION_REFUSAL
 
     refused = _refused_function(stmt)
     if refused:
-        return {"error": f"Function {refused} is not allowed."}
+        return f"Function {refused} is not allowed."
 
     # A database-qualified table or function must name the tenant's own database.
-    own_database = None
+    own_database = ctx.database.upper()
     qualified_functions = list(_qualified_functions(stmt))
     catalogs = [t.args.get("catalog") for t in stmt.find_all(exp.Table)] + [parts[0] for parts in qualified_functions if len(parts) > 1]
     for catalog in filter(None, catalogs):
-        if own_database is None:
-            own_database = tenant_database(tenant).upper()
         if _folded(catalog) != own_database:
-            return {"error": f"Database '{catalog.name}' is not the tenant's database. Only the tenant's own database is accessible."}
+            return f"Database '{catalog.name}' is not the tenant's database. Only the tenant's own database is accessible."
 
     # Other views list databases, roles, grants, stages and load history beyond the tenant's tables.
     for table_node in stmt.find_all(exp.Table):
         db_part = table_node.args.get("db")
         if (db_part and db_part.name.upper() == "INFORMATION_SCHEMA" and isinstance(table_node.this, exp.Identifier)
                 and _folded(table_node.this) not in _INFORMATION_SCHEMA_VIEWS):
-            return {"error": f"INFORMATION_SCHEMA.{table_node.name.upper()} is not accessible. "
-                             "Only TABLES, COLUMNS, VIEWS, SCHEMATA and TABLE_CONSTRAINTS are."}
+            return (f"INFORMATION_SCHEMA.{table_node.name.upper()} is not accessible. "
+                    "Only TABLES, COLUMNS, VIEWS, SCHEMATA and TABLE_CONSTRAINTS are.")
 
     # Without a schema Snowflake resolves the table in the session's default schema, which may be LEARN.
     for table_node in stmt.find_all(exp.Table):
         if (isinstance(table_node.this, exp.Identifier) and not table_node.args.get("db")
                 and not _is_cte_reference(table_node)):
             name = table_node.name
-            return {"error": f"Name the schema for table {name.upper()} (for example CDM_LMS.{name.upper()})."}
+            return f"Name the schema for table {name.upper()} (for example CDM_LMS.{name.upper()})."
 
     schemas = [t.args.get("db") for t in stmt.find_all(exp.Table)] + [parts[-1] for parts in qualified_functions]
     for schema_part in filter(None, schemas):
         schema_name = schema_part.name.strip('"').strip("'")
         if not schema_allowed(tenant, schema_name):
             if schema_name.upper() == "LEARN":
-                return {"error": LEARN_REFUSAL}
+                return LEARN_REFUSAL
             allowed = "CDM_* schemas, LEARN and INFORMATION_SCHEMA are" if allows_learn(tenant) else \
                 "CDM_* schemas and INFORMATION_SCHEMA are"
-            return {"error": f"Schema '{schema_name.upper()}' is not in the allowed list. Only {allowed} accessible."}
+            return f"Schema '{schema_name.upper()}' is not in the allowed list. Only {allowed} accessible."
 
     # PII columns must sit inside a counting aggregate. Value-returning aggregates (MIN, ARRAY_AGG,
     # LISTAGG, ANY_VALUE, MEDIAN...) and window functions return raw values, and GROUP BY on a PII
     # column returns one row per value, so neither unlocks PII. Compiled SQL is checked on its
     # outermost projection. Freehand SQL is checked everywhere except filter conditions, since
     # UNPIVOT, FLATTEN, PIVOT and MATCH_RECOGNIZE move PII values out of the projections.
-    pii_names = PII_COLUMN_NAMES | {name.upper() for name in extra_pii}
+    pii_names = PII_COLUMN_NAMES | {name.upper() for name in ctx.extra_pii}
     scopes: list = []
     freehand: list = []  # the columns the dictionary check also covers
     if compiled:
-        if spliced is not None:
-            return {"error": "Governed parts can only be spliced into freehand SQL."}
         if not allow_identity:
             outer = stmt.find(exp.Select)
             scopes = [(col, sel) for sel in (outer.expressions if outer else []) for col in sel.find_all(exp.Column)]
@@ -638,28 +734,28 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
                 logger.exception("Governed part check failed; refusing")
                 found = "The governed parts could not be checked."
             if isinstance(found, str):
-                return {"error": found}
+                return found
             parts, inside = found
         # Structural checks apply to every role: they stop a statement from naming columns the PII scan cannot see.
         for star in stmt.find_all(exp.Star):
             if not isinstance(star.parent, exp.Count) and id(star) not in inside:
-                return {"error": "Star projections are not allowed in freehand SQL; name the columns you need."}
+                return "Star projections are not allowed in freehand SQL; name the columns you need."
         # $1 and IDENTIFIER('COL') name columns without a Column node, so the PII checks cannot see them.
         if any((isinstance(n, exp.Parameter) or (isinstance(n, exp.Anonymous) and n.name.upper() == "IDENTIFIER"))
                and id(n) not in inside for n in stmt.walk()):
-            return {"error": POSITIONAL_REFUSAL}
+            return POSITIONAL_REFUSAL
         # FROM t AS a (C1) renames t's columns before the name-based PII check sees them. CTE column lists
         # rename projections checked where they read their tables; sqlglot fills in LATERAL FLATTEN's list.
         if any(a.columns and not isinstance(a.parent, (exp.CTE, exp.Lateral)) and id(a) not in inside
                for a in stmt.find_all(exp.TableAlias)):
-            return {"error": ALIAS_LIST_REFUSAL}
+            return ALIAS_LIST_REFUSAL
         try:
             whole_row = _whole_row_reference(stmt, inside)
         except Exception:
             logger.exception("Whole-row reference check failed; refusing")
             whole_row = True
         if whole_row:
-            return {"error": WHOLE_ROW_REFUSAL}
+            return WHOLE_ROW_REFUSAL
         if not allow_identity:
             freehand = [col for col in stmt.find_all(exp.Column) if not _in_filter(col) and id(col) not in inside]
             scopes = [(col, stmt) for col in freehand]
@@ -675,13 +771,11 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
         for col_node, scope in scopes:
             col_name = col_node.name.upper().strip('"').strip("'")
             if (col_name in pii_names or id(col_node) in dictionary_pii_ids) and not inside_counting_aggregate(col_node, scope):
-                return {
-                    "error": (
-                        f"Column '{col_name}' contains personally identifiable information (PII). "
-                        "FERPA rules allow PII columns only inside COUNT, COUNT_IF or "
-                        "APPROX_COUNT_DISTINCT. Please revise your query to count this data."
-                    )
-                }
+                return (
+                    f"Column '{col_name}' contains personally identifiable information (PII). "
+                    "FERPA rules allow PII columns only inside COUNT, COUNT_IF or "
+                    "APPROX_COUNT_DISTINCT. Please revise your query to count this data."
+                )
 
     # Enforce LIMIT <= 1000
     for limit_node in stmt.find_all(exp.Limit):
@@ -690,25 +784,31 @@ def validate_and_execute(sql: str, params: dict | None = None, *, tenant: Tenant
             try:
                 limit_val = int(limit_expr.name)
                 if limit_val > 1000:
-                    return {
-                        "error": (
-                            f"LIMIT {limit_val} exceeds the maximum allowed value of 1000. "
-                            "Please reduce your LIMIT clause."
-                        )
-                    }
+                    return (
+                        f"LIMIT {limit_val} exceeds the maximum allowed value of 1000. "
+                        "Please reduce your LIMIT clause."
+                    )
             except (ValueError, AttributeError):
                 pass  # Non-literal LIMIT; allow and let Snowflake enforce
 
-    # Validation passed — execute
+    return stmt
+
+
+def execute(v: Validated, ctx: GuardContext) -> Result:
+    """Run a statement validate accepted under ctx. A warehouse failure becomes Result.error: the error code alone
+    without identity rights, else the text before its first quote. Raises TypeError for anything else, and
+    TenantNotReady."""
+    if not isinstance(v, Validated) or v not in _issued or v.ctx is not ctx:
+        raise TypeError("execute takes a Validated that validate returned for this GuardContext")
     try:
-        return query_sql(stripped, params, tenant=tenant)
+        raw = query_sql(v.sql, tenant=ctx.tenant)
     except TenantNotReady:
         raise
     except Exception as exc:
-        message = _warehouse_message(exc, allow_identity)
+        message = _warehouse_message(exc, ctx.allow_identity)
         logger.error("Snowflake execution error %s: %s", _error_code(exc), message)
-        # warehouse_error separates Snowflake failures (internal detail) from guard rejections.
-        return {"error": message, "warehouse_error": True}
+        return Result(columns=[], rows=[], error=message)
+    return Result(columns=raw["columns"], rows=raw["rows"], truncated=raw.get("truncated") is True)
 
 
 MAX_ROWS = 1000

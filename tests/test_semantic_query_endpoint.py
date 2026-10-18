@@ -75,8 +75,8 @@ def test_numeric_and_date_results_serialise_as_json_numbers_and_iso_dates(client
 
 
 def test_guard_rejection_is_a_502_with_the_guard_message(client, monkeypatch):
-    monkeypatch.setattr(snowflake_client, "validate_and_execute",
-                        lambda sql, params=None, **k: {"error": "Schema 'X' is not in the allowed list."})
+    monkeypatch.setattr(snowflake_client, "validate",
+                        lambda sql, ctx, mode: snowflake_client.Refusal("Schema 'X' is not in the allowed list."))
     r = client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
     assert r.status_code == 502
     assert "allowed list" in r.json()["detail"]["error"]
@@ -109,7 +109,7 @@ def test_nan_and_infinite_values_serialise_as_null(client, monkeypatch):
 
 def test_query_runs_through_the_guard_as_compiled_sql(client, monkeypatch):
     seen = {}
-    monkeypatch.setattr(snowflake_client, "validate_and_execute",
-                        lambda sql, params=None, **k: seen.update(k) or {"columns": [], "rows": []})
+    monkeypatch.setattr(snowflake_client, "execute",
+                        lambda v, ctx: seen.update(mode=v.mode, ctx=ctx) or snowflake_client.Result(columns=[], rows=[]))
     client.post("/api/v1/semantic/query", headers=AUTH, json=CONTRACT)
-    assert seen["compiled"] is True and "PERSON_EMAIL" in seen["extra_pii"]
+    assert isinstance(seen["mode"], snowflake_client.Compiled) and "PERSON_EMAIL" in seen["ctx"].extra_pii

@@ -3,6 +3,7 @@ import pytest
 import snowflake_client
 from semantic_layer.catalog import load_catalog
 from semantic_layer.chat_tools import ChatTools
+from tests.guard_fakes import guard
 from tests.tenant_fakes import TENANT_A
 
 
@@ -13,8 +14,8 @@ def executed(monkeypatch):
     return calls
 
 
-def _validate(sql, **kwargs):
-    return snowflake_client.validate_and_execute(sql, tenant=TENANT_A, **kwargs)
+def _validate(sql, compiled=False, **kwargs):
+    return guard(sql, tenant=TENANT_A, compiled_sql=compiled, **kwargs)
 
 
 def _refused_as_pii(result):
@@ -89,14 +90,14 @@ def test_resolver_failure_is_a_pii_refusal(monkeypatch, executed):
 
 def test_chat_execute_passes_every_dataset_pii_column(monkeypatch):
     seen = []
-    monkeypatch.setattr(snowflake_client, "validate_and_execute",
-                        lambda sql, params=None, **kw: seen.append(kw) or {"columns": [], "rows": []})
+    monkeypatch.setattr(snowflake_client, "execute",
+                        lambda v, ctx: seen.append(ctx) or snowflake_client.Result(columns=[], rows=[]))
     catalog = load_catalog()
     ChatTools(catalog, "DB", tenant=TENANT_A).dispatch(
         "execute_sql", {"sql": "SELECT COUNT(*) AS n FROM CDM_LMS.COURSE", "reason": "no governed metric fits this"},
         called=("search_catalog",))
     declared = {c.upper() for ds in catalog.datasets.values() for c in ds.pii_columns}
-    assert declared and seen and set(seen[0]["extra_pii"]) == declared
+    assert declared and seen and set(seen[0].extra_pii) == declared
 
 
 @pytest.mark.parametrize("sql", [
