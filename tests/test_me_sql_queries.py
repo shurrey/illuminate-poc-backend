@@ -112,14 +112,27 @@ def test_core_learn_is_refused_at_save(as_user):
     assert user_items_store.list_kind(TENANT_CORE.tenant_id, "u1", "query") == []
 
 
+def test_a_stored_learn_query_is_refused_on_run_for_a_core_user(as_user, executed):
+    c = as_user(user_of(TENANT_CORE))
+    user_items_store.put(TENANT_CORE.tenant_id, "u1", "query", "q_000000000001", {
+        **SQLQ, "sql": "SELECT COUNT(*) AS n FROM LEARN.COURSE_MAIN", "createdAt": "2026-01-01T00:00:00Z",
+        "lastUsedAt": None})
+    r = run(c, "q_000000000001")
+    assert r.status_code == 400 and r.json()["detail"] == LEARN_REFUSAL
+    assert executed == []
+
+
 def test_an_overlay_change_is_reflected_in_the_next_run(as_user, executed, monkeypatch):
     c = as_user()
     made = save(c, WITH_PARTS).json()
-    assert run(c, made["id"]).json()["provenance"]["overlays"] == []
-    overlay = Overlay(target="metric:metric.reportable_courses.v1", default_filters=[], version=1)
+    before = run(c, made["id"]).json()
+    assert before["provenance"]["overlays"] == [] and "COURSE_ENDED = 0" not in before["executed_sql"]
+    overlay = Overlay(target="metric:metric.reportable_courses.v1", default_filters=["ongoing"], version=1)
     monkeypatch.setattr(overlay_store, "list_overlays", lambda tenant_id: [overlay])
     lambda_handler._overlay_cache.clear()
-    assert len(run(c, made["id"]).json()["provenance"]["overlays"]) == 1
+    after = run(c, made["id"]).json()
+    assert len(after["provenance"]["overlays"]) == 1
+    assert "COURSE_ENDED = 0" in after["executed_sql"] and executed[-1] == after["executed_sql"] != executed[0]
 
 
 def test_a_tampered_stored_part_is_still_guarded(as_user, executed):
