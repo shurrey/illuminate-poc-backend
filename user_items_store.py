@@ -296,7 +296,8 @@ def list_tenant_shares(tenant_id: str) -> list[dict]:
 
 def delete_share(tenant_id: str, owner_sub: str, item_kind: str, item_id: str) -> bool:
     """Delete the share and its pointer in one transaction. True when a share was removed.
-    A cancelled transaction is retried once; anything but a failed condition (already gone) is re-raised."""
+    A cancelled transaction is retried once; anything but a failed condition (gone, or replaced by a newer share,
+    which is left alone) is re-raised."""
     key = _share_key(tenant_id, owner_sub, item_kind, item_id)
     table = _get_table().name
     for attempt in range(2):
@@ -306,7 +307,9 @@ def delete_share(tenant_id: str, owner_sub: str, item_kind: str, item_id: str) -
         try:
             _get_table().meta.client.transact_write_items(TransactItems=[
                 {"Delete": {"TableName": table, "Key": {"tenant_id": tenant_id, "item_key": key},
-                            "ConditionExpression": "attribute_exists(item_key)"}},
+                            "ConditionExpression": "attribute_exists(item_key) AND #body.share_id = :sid",
+                            "ExpressionAttributeNames": {"#body": "body"},
+                            "ExpressionAttributeValues": {":sid": current["share_id"]}}},
                 {"Delete": {"TableName": table,
                             "Key": {"tenant_id": tenant_id, "item_key": _shareid_key(current["share_id"])}}},
             ])

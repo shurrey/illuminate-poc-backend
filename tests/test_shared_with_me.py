@@ -216,18 +216,18 @@ def test_copy_saves_into_the_recipients_profile_unredacted(world):
     o = world(OWNER)
     qid = make(o, "queries", {**SQLQ, "name": "lit", "description": "note", "sql": LITERAL_SQL})
     cid = make(o, "cards", {**NEW, "contract": PII_CONTRACT})
-    q_sid, c_sid = share(o, "queries", qid, ["ann"]), share(o, "cards", cid, ["ann"])
-    a = world(ANN)
+    q_sid, c_sid = share(o, "queries", qid, ["ada"]), share(o, "cards", cid, ["ada"])
+    a = world(ADA)
 
     got = copy(a, q_sid)
     assert got.status_code == 200 and got.json()["id"] != qid
-    mine = store.list_kind(T, "ann", "query")
-    assert len(mine) == 1 and mine[0]["sql"] == LITERAL_SQL and mine[0]["owner_name"] == "Ann Lee"
+    mine = store.list_kind(T, "ada", "query")
+    assert len(mine) == 1 and mine[0]["sql"] == LITERAL_SQL and mine[0]["owner_name"] == "Ada Admin"
     assert mine[0]["name"] == "lit" and mine[0]["description"] == "note" and mine[0]["lastUsedAt"] is None
 
     card = copy(a, c_sid)
     assert card.status_code == 200 and card.json()["id"] != cid
-    assert store.list_kind(T, "ann", "card")[0]["contract"] == PII_CONTRACT
+    assert store.list_kind(T, "ada", "card")[0]["contract"] == PII_CONTRACT
     assert card.json()["id"] in [c["id"] for c in a.get("/api/v1/me/cards", headers=AUTH).json()["cards"]]
     assert store.get(T, "owner", "query", qid)["version"] == 1 and store.get(T, "owner", "card", cid)["version"] == 1
 
@@ -241,11 +241,40 @@ def test_a_viewer_copying_an_email_query_is_refused_with_the_reason(world):
     assert copy(world(ADA), sid).status_code == 200
 
 
-def test_a_viewer_may_copy_a_governed_query_with_pii_filter_values(world):
+HIDDEN = "This item contains values hidden for your role, so it can't be copied."
+
+
+@pytest.mark.parametrize("plural,body", [
+    ("queries", {**SQLQ, "sql": "SELECT COUNT(*) AS n FROM CDM_LMS.COURSE WHERE COURSE_NAME = 'Bio'"}),
+    ("queries", {**SQLQ, "sql": "SELECT COUNT(*) AS n FROM CDM_LMS.COURSE WHERE ID = 12345"}),
+    ("queries", {**SQLQ, "sql": "SELECT COUNT(*) AS n -- for jane@x.edu\nFROM CDM_LMS.COURSE"}),
+    ("queries", {**SQLQ, "sql": "SELECT students FROM governed_1",
+                 "governed_parts": {"governed_1": {**PII_CONTRACT, "dimensions": []}}}),
+    ("queries", {**Q, "contract": PII_CONTRACT, "prompt": ""}),
+    ("queries", {**Q, "prompt": "emails for jane@example.edu"}),
+    ("cards", {**NEW, "contract": PII_CONTRACT, "prompt": ""}),
+    ("cards", {**NEW, "prompt": "p"}),
+], ids=["sql-string", "sql-number", "sql-comment", "governed-part", "filter-value", "prompt", "card-filter",
+        "card-prompt"])
+def test_a_viewer_cannot_copy_an_item_with_hidden_values_but_an_admin_can(world, plural, body):
     o = world(OWNER)
-    sid = share(o, "queries", make(o, "queries", {**Q, "contract": PII_CONTRACT}), ["ann"])
-    assert copy(world(ANN), sid).status_code == 200
-    assert store.list_kind(T, "ann", "query")[0]["contract"] == PII_CONTRACT
+    sid = share(o, plural, make(o, plural, body), ["ann", "ada"])
+    kind = "query" if plural == "queries" else "card"
+    refused = copy(world(ANN), sid)
+    assert refused.status_code == 400 and refused.json()["detail"]["errors"] == [HIDDEN]
+    assert store.list_kind(T, "ann", kind) == []
+    assert copy(world(ADA), sid).status_code == 200 and len(store.list_kind(T, "ada", kind)) == 1
+
+
+def test_a_viewer_can_copy_an_item_with_nothing_to_hide(world):
+    o = world(OWNER)
+    q_sid = share(o, "queries", make(o, "queries", {**SQLQ, "sql": "SELECT COUNT(*) AS n FROM CDM_LMS.COURSE LIMIT 10"}),
+                  ["ann"])
+    g_sid = share(o, "queries", make(o, "queries", {**Q, "prompt": ""}), ["ann"])
+    c_sid = share(o, "cards", make(o, "cards", {**NEW, "prompt": ""}), ["ann"])
+    a = world(ANN)
+    assert [copy(a, s).status_code for s in (q_sid, g_sid, c_sid)] == [200, 200, 200]
+    assert len(store.list_kind(T, "ann", "query")) == 2 and len(store.list_kind(T, "ann", "card")) == 1
 
 
 @pytest.mark.parametrize("sid", ["sh_0000000000000000", "nope", "sh_XYZ", "sh_00000000000000000"])
@@ -329,7 +358,16 @@ def test_delete_share_treats_a_failed_condition_as_nothing_removed(world, monkey
 
 @pytest.mark.parametrize("sql,expected", [
     ("SELECT 'a''b', $$x$$, N'n' FROM t WHERE e = 'j@x.edu' AND n = 1",
-     "SELECT '…', '…', '…' FROM t WHERE e = '…' AND n = 1"),
+     "SELECT '…', '…', '…' FROM t WHERE e = '…' AND n = '…'"),
+    ("SELECT a FROM t WHERE student_id = 12345 AND g > 1.5 LIMIT 10 OFFSET 20",
+     "SELECT a FROM t WHERE student_id = '…' AND g > '…' LIMIT 10 OFFSET 20"),
+    ("SELECT TOP 5 a FROM t SAMPLE (10) FETCH FIRST 3 ROWS ONLY",
+     "SELECT TOP 5 a FROM t SAMPLE (10) FETCH FIRST 3 ROWS ONLY"),
+    ("SELECT a FROM t TABLESAMPLE BERNOULLI (20 ROWS) SEED (7)",
+     "SELECT a FROM t TABLESAMPLE BERNOULLI (20 ROWS) SEED (7)"),
+    ("SELECT a -- for jane@x.edu\nFROM t /* jane */ WHERE b = 1",
+     "SELECT a\nFROM t WHERE b = '…'"),
+    ("SELECT a FROM t -- trailing jane", "SELECT a FROM t"),
     ('SELECT "Col" FROM t', 'SELECT "Col" FROM t'),
     ("SELECT 'x\nFROM t", None),
     ("SELECT FROM WHERE (", None),
@@ -346,3 +384,14 @@ def test_redact_contract_replaces_every_filter_value_and_keeps_the_rest():
     assert contract["filters"][0]["values"] == ["a", 2, True]
     assert redact_contract("tampered") == {}
     assert redact_contract({"metrics": ["m"], "filters": "x"}) == {"metrics": ["m"], "filters": []}
+
+
+def test_delete_share_never_removes_a_newer_share(world, monkeypatch):
+    newer = store.put_share(T, "owner", "query", "q_a", {"recipients": [], "tenant": True})
+    stale = {**newer, "share_id": "sh_" + "0" * 16}
+    real = store.get_share
+    monkeypatch.setattr(store, "get_share", lambda *a: stale)
+    assert store.delete_share(T, "owner", "query", "q_a") is False
+    monkeypatch.setattr(store, "get_share", real)
+    assert store.get_share(T, "owner", "query", "q_a")["share_id"] == newer["share_id"]
+    assert store.get_share_pointer(T, newer["share_id"]) is not None

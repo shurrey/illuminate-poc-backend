@@ -1295,6 +1295,26 @@ def _shared_detail(share: dict, item: dict, owner: str, allow_identity: bool) ->
     return out
 
 
+_COPY_HIDDEN = "This item contains values hidden for your role, so it can't be copied."
+
+
+def _hides_values(item_kind: str, item: dict) -> bool:
+    """True when the redacted view differs from the stored item, so a copy would hand the caller what the view hid."""
+    from semantic_layer.redact import redact_contract, redact_sql
+
+    prompt = item.get("prompt")
+    if prompt and (not isinstance(prompt, str) or prompt.strip()):
+        return True
+    stored = item if item_kind == "card" else _stored_query(item)
+    if item_kind == "card" or stored["query_kind"] != "sql":
+        return redact_contract(stored.get("contract")) != stored.get("contract")
+    sql, parts = stored.get("sql"), stored.get("governed_parts")
+    if redact_sql(sql) != sql:
+        return True
+    return parts not in (None, {}) and (
+        not isinstance(parts, dict) or any(redact_contract(p) != p for p in parts.values()))
+
+
 @app.get("/api/v1/shared")
 async def list_shared_with_me(authorization: Optional[str] = Header(None)) -> dict:
     """Live items others in the caller's tenant shared with them or with everyone, newest share first."""
@@ -1341,10 +1361,14 @@ async def run_shared_with_me(share_id: str, authorization: Optional[str] = Heade
 @app.post("/api/v1/shared/{share_id}/copy")
 async def copy_shared_with_me(share_id: str, authorization: Optional[str] = Header(None)) -> dict:
     """Save a copy of the live item to the caller's profile through their own create path; 400 with the reason."""
+    from roles import role_allows_identity
+
     user, tenant = _caller(authorization)
 
     def save() -> dict:
         share, item, _ = _shared_item(tenant.tenant_id, user["sub"], share_id)
+        if not role_allows_identity(user) and _hides_values(share["item_kind"], item):
+            raise _bad_request(_COPY_HIDDEN)
         if share["item_kind"] == "card":
             return _create_card(tenant.tenant_id, user["sub"], _card_body(item))
         stored = _stored_query(item)
