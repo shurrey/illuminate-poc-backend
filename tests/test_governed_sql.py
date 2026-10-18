@@ -517,3 +517,23 @@ def test_every_real_metric_and_measure_splices_as_a_part_that_passes_a_viewers_g
     assert _guard(f"SELECT {column} FROM governed_1", {"governed_1": contract}, cat=_REAL) == \
         {"columns": [], "rows": [], "truncated": False}
     assert executed == [spliced.sql.strip()]
+
+
+def test_label_does_not_trace_more_than_200_columns():
+    import time
+
+    names = [f"C{i}" for i in range(201)]
+    spliced = _splice("SELECT " + ", ".join(f"course_role AS {n}" for n in names) + " FROM governed_1",
+                      {"governed_1": STUDENTS})
+    started = time.monotonic()
+    result = label(spliced, names, reason=REASON)
+    assert time.monotonic() - started < 1.0
+    assert result["governance"] == "none"
+    assert result["columns"] == {n: {"governed": False, "reason": "Too many columns to trace"} for n in names}
+
+
+def test_label_still_traces_200_columns():
+    names = [f"C{i}" for i in range(200)]
+    spliced = _splice("SELECT " + ", ".join(f"course_role AS {n}" for n in names) + " FROM governed_1",
+                      {"governed_1": STUDENTS})
+    assert label(spliced, names, reason=REASON)["columns"]["C199"]["governed"] is True
