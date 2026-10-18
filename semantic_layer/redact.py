@@ -11,6 +11,9 @@ from sqlglot.tokens import TokenType
 MASK = "…"
 _STRING_TOKENS = {TokenType.STRING, TokenType.RAW_STRING, TokenType.NATIONAL_STRING, TokenType.BYTE_STRING,
                   TokenType.HEX_STRING, TokenType.BIT_STRING, TokenType.HEREDOC_STRING, TokenType.UNICODE_STRING}
+_CLAUSE_BREAKS = {TokenType.SEMICOLON, TokenType.COMMA, TokenType.SELECT, TokenType.FROM, TokenType.WHERE,
+                  TokenType.GROUP_BY, TokenType.HAVING, TokenType.ORDER_BY, TokenType.LIMIT, TokenType.UNION,
+                  TokenType.JOIN}
 
 
 def _row_limit(tokens: list, i: int) -> bool:
@@ -25,8 +28,19 @@ def _row_limit(tokens: list, i: int) -> bool:
     # SAMPLE (n), SAMPLE BERNOULLI (n ROWS), ... SEED (n)
     before = tokens[i - 2] if i >= 2 else None
     return before is not None and (before.token_type == TokenType.TABLE_SAMPLE or (
-        before.token_type == TokenType.VAR and (before.text.upper() in ("SEED", "REPEATABLE") or (
-            i >= 3 and tokens[i - 3].token_type == TokenType.TABLE_SAMPLE))))
+        before.token_type == TokenType.VAR and (
+            (before.text.upper() in ("SEED", "REPEATABLE") and _after_sample(tokens, i - 2)) or (
+                i >= 3 and tokens[i - 3].token_type == TokenType.TABLE_SAMPLE))))
+
+
+def _after_sample(tokens: list, i: int) -> bool:
+    """True when a sample clause precedes tokens[i] without a clause boundary in between."""
+    for token in reversed(tokens[:i]):
+        if token.token_type == TokenType.TABLE_SAMPLE:
+            return True
+        if token.token_type in _CLAUSE_BREAKS:
+            return False
+    return False
 
 
 def _gap(text: str, edge: bool) -> str:
@@ -68,7 +82,7 @@ def redact_contract(contract) -> dict:
     if "filters" in contract:
         filters = contract["filters"] if isinstance(contract["filters"], list) else []
         out["filters"] = [
-            {**f, "values": [MASK] * len(f["values"]) if isinstance(f.get("values"), list) else []}
+            {**f, "values": [MASK] * len(f["values"]) if isinstance(f["values"], list) else []} if "values" in f else f
             for f in filters if isinstance(f, dict)
         ]
     return out

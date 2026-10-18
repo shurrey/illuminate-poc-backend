@@ -624,9 +624,33 @@ def _mutate_layout(tenant_id: str, sub: str, mutate) -> None:
                 raise
 
 
-def _cards_view(tenant_id: str, sub: str) -> dict:
+MAX_PINNED_SHARED = 50
+_SHARE_ID = re.compile(r"sh_[0-9a-f]{16}")
+
+
+def _pinned_card(tenant_id: str, sub: str, share_id: str, allow_identity: bool) -> Optional[dict]:
+    """The live card behind a pinned share, shaped like a home card with the share id as its id; None unless the
+    caller is currently a member of a card share. Without identity rights filter values and the prompt are hidden."""
+    from semantic_layer.redact import redact_contract
+
+    try:
+        share, item, owner = _shared_item(tenant_id, sub, share_id)
+    except HTTPException:
+        return None
+    if share["item_kind"] != "card":
+        return None
+    card = {k: item[k] for k in ("label", "description", "longDescription", "prompt", "contract", "format", "reportLink")
+            if k in item}
+    if not allow_identity:
+        card.pop("prompt", None)
+        card["contract"] = redact_contract(card.get("contract"))
+    return {**card, "id": share_id, "shared": True, "owner": {"name": owner}, "isBuiltIn": False, "enabled": True}
+
+
+def _cards_view(tenant_id: str, sub: str, allow_identity: bool = False) -> dict:
     """Built-ins merged with the user's custom cards in layout order; an unlisted built-in or card is appended.
-    hidden lists the hidden built-ins in default order and disabled the disabled cards in layout order."""
+    hidden lists the hidden built-ins in default order and disabled the disabled cards in layout order.
+    Pinned shared cards resolve live and are omitted, without touching the layout, once the share is gone."""
     import user_items_store
 
     layout, version = _load_layout(tenant_id, sub)
@@ -634,6 +658,10 @@ def _cards_view(tenant_id: str, sub: str) -> dict:
     shared = _share_summaries(tenant_id, sub, "card")
     for item in user_items_store.list_kind(tenant_id, sub, "card"):
         by_id[item["id"]] = {**_custom_card(item), "shared": shared.get(item["id"], _NOT_SHARED)}
+    for share_id in dict.fromkeys(i for i in layout["order"] if _SHARE_ID.fullmatch(i)):
+        card = _pinned_card(tenant_id, sub, share_id, allow_identity)
+        if card:
+            by_id[share_id] = card
     ordered = [i for i in dict.fromkeys(layout["order"]) if i in by_id]
     ordered += [i for i in by_id if i not in ordered]
     return {
@@ -659,6 +687,13 @@ def _cards_caller(authorization: Optional[str]) -> tuple[str, str]:
     return tenant_for(user).tenant_id, user["sub"]
 
 
+def _cards_viewer(authorization: Optional[str]) -> tuple[str, str, bool]:
+    from roles import role_allows_identity
+
+    user, tenant = _caller(authorization)
+    return tenant.tenant_id, user["sub"], role_allows_identity(user)
+
+
 async def _blocking(fn, *args):
     return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
 
@@ -666,8 +701,8 @@ async def _blocking(fn, *args):
 @app.get("/api/v1/me/cards")
 async def get_my_cards(authorization: Optional[str] = Header(None)) -> dict:
     """The caller's home cards in layout order, built-ins included."""
-    tenant_id, sub = _cards_caller(authorization)
-    return await _blocking(_cards_view, tenant_id, sub)
+    tenant_id, sub, identity = _cards_viewer(authorization)
+    return await _blocking(_cards_view, tenant_id, sub, identity)
 
 
 @app.put("/api/v1/me/cards/layout")
@@ -675,7 +710,7 @@ async def put_my_card_layout(payload: dict, authorization: Optional[str] = Heade
     """Replace order, disabled and hidden; 400 on ids that are not built-in or the caller's own, 409 if stale."""
     import user_items_store
 
-    tenant_id, sub = _cards_caller(authorization)
+    tenant_id, sub, identity = _cards_viewer(authorization)
     version = payload.get("expected_version")
     lists = {k: payload.get(k) for k in ("order", "disabled", "hidden")}
     if isinstance(version, bool) or not isinstance(version, int) or version < 0:
@@ -683,20 +718,24 @@ async def put_my_card_layout(payload: dict, authorization: Optional[str] = Heade
     if any(not isinstance(v, list) or any(not isinstance(i, str) for i in v) for v in lists.values()):
         raise _bad_request("order, disabled and hidden must be lists of card ids")
     cap = len(_default_cards()) + MAX_CUSTOM_CARDS
-    if any(len(v) > cap for v in lists.values()):
+    if any(sum(1 for i in v if not _SHARE_ID.fullmatch(i)) > cap for v in lists.values()):
         raise _bad_request(f"order, disabled and hidden can each list at most {cap} cards")
     lists = {k: list(dict.fromkeys(v)) for k, v in lists.items()}
 
     def save() -> dict:
         builtin = {c["id"] for c in _default_cards()}
         own = {i["id"] for i in user_items_store.list_kind(tenant_id, sub, "card")}
+        pins = {i for k in ("order", "disabled") for i in lists[k] if _SHARE_ID.fullmatch(i)}
+        if len(pins) > MAX_PINNED_SHARED:
+            raise _bad_request(f"You can pin at most {MAX_PINNED_SHARED} shared cards")
+        own |= {i for i in pins if _pinned_card(tenant_id, sub, i, identity)}
         unknown = sorted({i for v in lists.values() for i in v} - builtin - own)
         not_builtin = sorted(set(lists["hidden"]) - builtin)
         if unknown or not_builtin:
             raise _bad_request(*[f"unknown card id {i}" for i in unknown],
                                *[f"only built-in cards can be hidden: {i}" for i in not_builtin if i not in unknown])
         _save_layout(tenant_id, sub, lists, version)
-        return _cards_view(tenant_id, sub)
+        return _cards_view(tenant_id, sub, identity)
 
     return await _blocking(save)
 
@@ -706,19 +745,20 @@ async def reset_my_cards(authorization: Optional[str] = Header(None)) -> dict:
     """Unhide and enable the built-ins in their original order, followed by the caller's custom cards."""
     import user_items_store
 
-    tenant_id, sub = _cards_caller(authorization)
+    tenant_id, sub, identity = _cards_viewer(authorization)
 
     def reset() -> dict:
         builtin = [c["id"] for c in _default_cards()]
         custom = [i["id"] for i in user_items_store.list_kind(tenant_id, sub, "card")]
 
         def apply(layout: dict, version: int) -> None:
-            order = builtin + [i for i in dict.fromkeys(layout["order"]) if i in custom]
-            order += [i for i in custom if i not in order]
-            layout.update(order=order, disabled=[i for i in layout["disabled"] if i in custom], hidden=[])
+            keep = custom + [i for i in dict.fromkeys(layout["order"]) if _SHARE_ID.fullmatch(i)]
+            order = builtin + [i for i in dict.fromkeys(layout["order"]) if i in keep]
+            order += [i for i in keep if i not in order]
+            layout.update(order=order, disabled=[i for i in layout["disabled"] if i in keep], hidden=[])
 
         _mutate_layout(tenant_id, sub, apply)
-        return _cards_view(tenant_id, sub)
+        return _cards_view(tenant_id, sub, identity)
 
     return await _blocking(reset)
 
@@ -781,7 +821,7 @@ async def delete_my_card(card_id: str, authorization: Optional[str] = Header(Non
     """Delete a custom card, or hide a built-in; 404 for any other id."""
     import user_items_store
 
-    tenant_id, sub = _cards_caller(authorization)
+    tenant_id, sub, identity = _cards_viewer(authorization)
 
     def remove() -> dict:
         def hide(layout: dict, version: int) -> None:
@@ -794,13 +834,41 @@ async def delete_my_card(card_id: str, authorization: Optional[str] = Header(Non
 
         if card_id in {c["id"] for c in _default_cards()}:
             _mutate_layout(tenant_id, sub, hide)
+        elif _SHARE_ID.fullmatch(card_id) and card_id in _load_layout(tenant_id, sub)[0]["order"]:
+            _mutate_layout(tenant_id, sub, forget)
         elif _CARD_ID.fullmatch(card_id) and _delete_item_and_share(tenant_id, sub, "card", card_id):
             _mutate_layout(tenant_id, sub, forget)
         else:
             raise HTTPException(status_code=404, detail="Card not found")
-        return _cards_view(tenant_id, sub)
+        return _cards_view(tenant_id, sub, identity)
 
     return await _blocking(remove)
+
+
+@app.post("/api/v1/me/cards/pin-shared")
+async def pin_shared_card(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
+    """Put a card shared with the caller on their home page (idempotent); 404 unless they are a current member of a
+    card share, 400 at 50 pinned."""
+    tenant_id, sub, identity = _cards_viewer(authorization)
+    share_id = payload.get("share_id")
+
+    def pin() -> dict:
+        if not isinstance(share_id, str) or _pinned_card(tenant_id, sub, share_id, identity) is None:
+            raise _not_shared()
+
+        def append(layout: dict, version: int) -> None:
+            if share_id in layout["order"]:
+                return
+            if sum(1 for i in layout["order"] if _SHARE_ID.fullmatch(i)) >= MAX_PINNED_SHARED:
+                raise _bad_request(f"You can pin at most {MAX_PINNED_SHARED} shared cards")
+            if not version:
+                layout["order"] = [c["id"] for c in _default_cards()]
+            layout["order"].append(share_id)
+
+        _mutate_layout(tenant_id, sub, append)
+        return _cards_view(tenant_id, sub, identity)
+
+    return await _blocking(pin)
 
 
 MAX_QUERIES = 500
@@ -1307,7 +1375,8 @@ def _hides_values(item_kind: str, item: dict) -> bool:
         return True
     stored = item if item_kind == "card" else _stored_query(item)
     if item_kind == "card" or stored["query_kind"] != "sql":
-        return redact_contract(stored.get("contract")) != stored.get("contract")
+        contract = stored.get("contract")
+        return contract is not None and redact_contract(contract) != contract
     sql, parts = stored.get("sql"), stored.get("governed_parts")
     if redact_sql(sql) != sql:
         return True
@@ -1431,7 +1500,7 @@ async def put_my_prefs(payload: dict, authorization: Optional[str] = Header(None
     """Replace the four preference lists; 409 when expected_version is stale."""
     import user_items_store
 
-    tenant_id, sub = _cards_caller(authorization)
+    tenant_id, sub, identity = _cards_viewer(authorization)
     version = payload.get("expected_version")
     if isinstance(version, bool) or not isinstance(version, int) or version < 0:
         raise _bad_request("expected_version must be a non-negative integer")
