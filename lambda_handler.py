@@ -810,7 +810,7 @@ def _query_body(payload) -> dict:
 
 
 QUERY_KINDS = ("governed", "sql")
-_KIND_FIELDS = ("prompt", "contract", "sql", "governed_parts", "owner_name")
+_KIND_FIELDS = ("prompt", "contract", "sql", "governed_parts", "owner_name", "governance_hint")
 MAX_SQL_CHARS = 20_000
 DEFAULT_REASON = "Written in the query builder"
 
@@ -851,7 +851,8 @@ def _sql_query_body(payload: dict, user: dict, tenant: Tenant) -> dict:
     from semantic_layer.sql_service import contract_of
 
     parts = {n: contract_of(p).model_dump(mode="json", exclude_unset=True) for n, p in parts.items()}
-    body = {"name": name, "description": description, "query_kind": "sql", "sql": sql, "governed_parts": parts}
+    body = {"name": name, "description": description, "query_kind": "sql", "sql": sql, "governed_parts": parts,
+            "governance_hint": _sql_hint(checked["governance_preview"])}
     owner = user.get("name") or user.get("email")
     if isinstance(owner, str) and owner.strip():
         body["owner_name"] = owner.strip()[:200]
@@ -871,10 +872,17 @@ def _saved_query_body(payload, user: dict, tenant: Tenant) -> dict:
     return _sql_query_body(payload, user, tenant) if kind == "sql" else {**_query_body(payload), "query_kind": "governed"}
 
 
+def _sql_hint(preview: str) -> str:
+    """An SQL query's list hint from its validate preview; at most "partial", since a run can be truncated."""
+    return "ungoverned" if preview == "none" else "partial"
+
+
 def _governance_hint(item: dict) -> str:
-    """A label guess for lists only; the run's provenance is the real one."""
+    """A label guess for lists only; the run's provenance is the real one. An SQL query's is never "governed"."""
     if item["query_kind"] != "sql":
         return "governed"
+    if item.get("governance_hint") == "ungoverned":
+        return "ungoverned"
     return "partial" if item.get("governed_parts") else "ungoverned"
 
 

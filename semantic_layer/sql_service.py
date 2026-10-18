@@ -16,7 +16,7 @@ from snowflake_client import Freehand, GuardContext, Refusal, Result, Spliced, V
 
 from .contract import QueryContract
 from .dictionary import describe_table
-from .governed_sql import SpliceError, SplicedSql, label
+from .governed_sql import SpliceError, SplicedSql, label, output_columns
 from .overlays import overlays_used
 
 _CONTRACT_FIELDS = set(QueryContract.model_fields)
@@ -55,12 +55,19 @@ def _check(ctx: GuardContext, sql: str, governed: dict | None) -> Validated | Re
 
 def validate_sql(ctx: GuardContext, *, sql: str, governed: dict | None = None) -> dict:
     """{"ok": True, "governance_preview"} when the guard accepts the statement for this caller, else
-    {"ok": False, "error"}. The preview is "partial" with governed parts, else "none"; a run's label can be lower.
-    No warehouse call."""
+    {"ok": False, "error"}. The preview is the label a run would get before truncation, which a run can still
+    lower to "partial"; "none" without parts. No warehouse call."""
     checked = _check(ctx, sql, governed)
     if isinstance(checked, Refusal):
         return {"ok": False, "error": checked.message}
-    return {"ok": True, "governance_preview": "partial" if governed else "none"}
+    spliced = checked.spliced
+    if spliced is None:
+        return {"ok": True, "governance_preview": "none"}
+    try:
+        columns = output_columns(spliced)
+    except Exception:
+        return {"ok": True, "governance_preview": "none"}
+    return {"ok": True, "governance_preview": label(spliced, columns, reason="")["governance"]}
 
 
 def _unique(values: Iterable[str]) -> list[str]:

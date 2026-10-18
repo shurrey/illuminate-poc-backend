@@ -262,3 +262,26 @@ def test_a_failed_last_used_write_still_returns_the_result(as_user, executed, mo
 
     monkeypatch.setattr(lambda_handler, "_replace_query", conflict)
     assert run(c, made["id"]).status_code == 200
+
+
+def test_a_saved_sql_querys_hint_is_its_validated_preview_and_never_governed(as_user):
+    c = as_user()
+    counted = save(c, {**WITH_PARTS, "sql": "SELECT COUNT(*) AS n FROM governed_1"}).json()
+    passthrough = save(c, WITH_PARTS).json()
+    assert counted["governance_hint"] == "ungoverned" and passthrough["governance_hint"] == "partial"
+    listed = {q["id"]: q["governance_hint"] for q in c.get("/api/v1/me/queries", headers=AUTH).json()["queries"]}
+    assert listed == {counted["id"]: "ungoverned", passthrough["id"]: "partial"}
+
+
+@pytest.mark.parametrize("stored, hint", [
+    ({}, "partial"),
+    ({"governance_hint": "governed"}, "partial"),
+    ({"governance_hint": "full"}, "partial"),
+    ({"governance_hint": "ungoverned"}, "ungoverned"),
+])
+def test_an_sql_rows_listed_hint_is_clamped_to_partial(as_user, stored, hint):
+    c = as_user()
+    user_items_store.put(TENANT_A.tenant_id, "u1", "query", "q_000000000001",
+                         {**WITH_PARTS, "createdAt": "2026-01-01T00:00:00Z", "lastUsedAt": None, **stored})
+    [listed] = c.get("/api/v1/me/queries", headers=AUTH).json()["queries"]
+    assert listed["governance_hint"] == hint

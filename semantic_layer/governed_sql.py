@@ -185,6 +185,11 @@ def splice(outer_sql: str, governed: dict[str, QueryContract], catalog: Catalog,
 UNTRACED = "Column origin could not be traced"
 
 
+def output_columns(spliced: SplicedSql) -> list[str]:
+    """The names the statement's outermost projection gives its columns (a set operation's first branch)."""
+    return list(sqlglot.parse_one(spliced.sql, dialect="snowflake").named_selects)
+
+
 def _trace_tree(spliced: SplicedSql) -> exp.Query:
     """The spliced statement without the parts' definitions, so lineage stops at each part as if it were a table."""
     tree = sqlglot.parse_one(spliced.sql, dialect="snowflake")

@@ -128,7 +128,7 @@ def test_validate_accepts_and_refuses_without_a_warehouse_call(as_user, executed
     ok = client.post("/api/v1/sql/validate", headers=AUTH, json={"sql": FREEHAND})
     assert ok.status_code == 200 and ok.json() == {"ok": True, "governance_preview": "none"}
     spliced = client.post("/api/v1/sql/validate", headers=AUTH, json={"sql": OUTER, "governed": {"governed_1": PART}})
-    assert spliced.json() == {"ok": True, "governance_preview": "partial"}
+    assert spliced.json() == {"ok": True, "governance_preview": "full"}
     bad = client.post("/api/v1/sql/validate", headers=AUTH, json={"sql": "SELECT EMAIL FROM CDM_LMS.PERSON"})
     assert bad.status_code == 200 and bad.json()["ok"] is False and bad.json()["error"]
     bad_part = client.post("/api/v1/sql/validate", headers=AUTH,
@@ -172,3 +172,15 @@ def test_describe_rejects_unsafe_identifiers(as_user):
 def test_a_blank_reason_falls_back_to_the_default(as_user, executed, reason):
     body = _run(as_user(), sql=FREEHAND, reason=reason).json()
     assert body["provenance"]["reason"] == "Written in the query builder"
+
+
+@pytest.mark.parametrize("sql, preview", [
+    ("SELECT COUNT(*) AS n FROM governed_1", "none"),
+    ("SELECT term_name, 1 AS x FROM governed_1", "partial"),
+    ("SELECT term_name, reportable_courses FROM governed_1 WHERE reportable_courses > 1", "full"),
+    ("SELECT g.term_name, g.reportable_courses FROM governed_1 g JOIN CDM_LMS.COURSE c ON c.ID = 1", "partial"),
+])
+def test_validate_previews_the_label_a_run_would_get(as_user, executed, sql, preview):
+    r = as_user().post("/api/v1/sql/validate", headers=AUTH, json={"sql": sql, "governed": {"governed_1": PART}})
+    assert r.json() == {"ok": True, "governance_preview": preview}
+    assert executed == []
