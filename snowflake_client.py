@@ -30,6 +30,7 @@ from tenancy import Tenant, TenantNotReady
 logger = logging.getLogger("API-PROXY")
 
 CREDENTIALS_TTL_SECONDS = 300
+STATEMENT_TIMEOUT_SECONDS = 120
 
 _connections: dict = {}
 _credentials: dict[str, tuple[float, dict]] = {}  # tenant_id -> (monotonic time read, secret)
@@ -124,6 +125,8 @@ def get_connection(tenant: Tenant | None):
             role=creds.get("role", ""),
             network_timeout=30,
             login_timeout=30,
+            session_parameters={"STATEMENT_TIMEOUT_IN_SECONDS": STATEMENT_TIMEOUT_SECONDS,
+                                "QUERY_TAG": f"illuminate:{tenant.tenant_id}"},
         )
         _connections[tenant.tenant_id] = conn
         logger.info("Snowflake connection established for tenant %s", tenant.tenant_id)
@@ -555,11 +558,13 @@ class Validated:
 
 @dataclass(frozen=True)
 class Result:
-    """error is set, with columns and rows empty, when the warehouse failed; it names no row values."""
+    """error is set, with columns and rows empty, when the warehouse failed; it names no row values. refused marks
+    an error that is a limit the caller can fix (shown as is), not a warehouse failure."""
     columns: list[str]
     rows: list[dict]
     truncated: bool = False
     error: str | None = None
+    refused: bool = False
 
 
 _issued: "weakref.WeakSet[Validated]" = weakref.WeakSet()
@@ -808,6 +813,8 @@ def execute(v: Validated, ctx: GuardContext) -> Result:
         raw = query_sql(v.sql, tenant=ctx.tenant)
     except TenantNotReady:
         raise
+    except ResultTooLarge:
+        return Result(columns=[], rows=[], error=TOO_LARGE, refused=True)
     except Exception as exc:
         message = _warehouse_message(exc, ctx.allow_identity)
         logger.error("Snowflake execution error %s: %s", _error_code(exc), message)
@@ -816,6 +823,13 @@ def execute(v: Validated, ctx: GuardContext) -> Result:
 
 
 MAX_ROWS = 1000
+MAX_RESULT_BYTES = 10 * 1024 * 1024
+TOO_LARGE = "The result is too large; select fewer columns or rows."
+_FETCH_BATCH = 100
+
+
+class ResultTooLarge(Exception):
+    """The rows fetched so far exceed MAX_RESULT_BYTES, estimated as the length of each value's str()."""
 
 
 def query_sql(sql: str, params: dict | None = None, *, tenant: Tenant | None) -> dict:
@@ -876,7 +890,16 @@ def _execute(conn, sql: str, params: dict | None) -> dict:
         else:
             cursor.execute(sql)
         columns = [desc[0] for desc in cursor.description]
-        fetched = cursor.fetchmany(MAX_ROWS + 1)
+        fetched, size = [], 0
+        while len(fetched) <= MAX_ROWS:
+            wanted = min(_FETCH_BATCH, MAX_ROWS + 1 - len(fetched))
+            batch = cursor.fetchmany(wanted)
+            fetched.extend(batch)
+            size += sum(len(str(value)) for row in batch for value in row)
+            if size > MAX_RESULT_BYTES:
+                raise ResultTooLarge()
+            if len(batch) < wanted:
+                break
         rows = [dict(zip(columns, row)) for row in fetched[:MAX_ROWS]]
         return {"columns": columns, "rows": rows, "truncated": len(fetched) > MAX_ROWS}
     finally:

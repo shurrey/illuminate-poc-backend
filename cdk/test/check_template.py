@@ -74,6 +74,9 @@ def main() -> int:
               not resources("IlluminateBase-dev", "AWS::SecretsManager::Secret")),
         check("API cannot write Snowflake secrets (nothing in the API writes them)",
               "secretsmanager:PutSecretValue" not in json.dumps(resources("IlluminateApi-dev", "AWS::IAM::Policy"))),
+        check("the API function has reserved concurrency 20",
+              [f["Properties"].get("ReservedConcurrentExecutions") for f in resources("IlluminateApi-dev", "AWS::Lambda::Function")
+               if f["Properties"].get("FunctionName") == "illuminate-api-dev"] == [20]),
     ]
     return 0 if all(results) else 1
 

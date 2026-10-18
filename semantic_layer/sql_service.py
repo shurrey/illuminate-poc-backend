@@ -98,7 +98,7 @@ def run_sql(ctx: GuardContext, *, sql: str, governed: dict | None, reason: str, 
         identity_audit("freehand", None)
     result = (execute or snowflake_client.execute)(checked, ctx)
     if result.error is not None:
-        return {"error": result.error, "warehouse": True}
+        return {"error": result.error} if result.refused else {"error": result.error, "warehouse": True}
 
     columns = result.columns
     out = {"columns": columns, "rows": result.rows, "sql": sql}

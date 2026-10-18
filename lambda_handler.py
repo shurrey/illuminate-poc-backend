@@ -1837,9 +1837,10 @@ async def _execute(compiled, user: dict, tenant: Tenant) -> dict:
     ctx = guard_context(tenant, user)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, lambda: _guarded(compiled, ctx))
-    if isinstance(result, snowflake_client.Refusal):
-        logger.error("Semantic query failed: %s", result.message)
-        raise HTTPException(status_code=502, detail={"error": result.message, "sql": compiled.sql})
+    if isinstance(result, snowflake_client.Refusal) or result.refused:
+        message = result.message if isinstance(result, snowflake_client.Refusal) else result.error
+        logger.error("Semantic query failed: %s", message)
+        raise HTTPException(status_code=502, detail={"error": message, "sql": compiled.sql})
     if result.error is not None:
         logger.error("Semantic query failed: %s", result.error)
         raise HTTPException(status_code=502, detail={"error": "The warehouse could not run this query.",
