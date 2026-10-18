@@ -492,6 +492,37 @@ def test_queries_never_cross(world):
     assert user_items_store.list_kind(B, "u1", "query") == []
 
 
+def test_shares_never_cross(world, monkeypatch):
+    c = world.client
+    monkeypatch.setitem(USERS, "Bearer a", {**USERS["Bearer a"], "name": "Admin Alpha", "email": "u1@alpha.edu"})
+    monkeypatch.setitem(USERS, "Bearer av", {**USERS["Bearer av"], "name": f"{MARK_A} Person", "email": "p@alpha.edu"})
+    monkeypatch.setitem(USERS, "Bearer b", {**USERS["Bearer b"], "name": "Admin Beta", "email": "u1@beta.edu"})
+    for token in ("a", "av", "b"):
+        c.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
+    qid = c.post("/api/v1/me/queries", headers=AS_A, json=QUERY).json()["id"]
+    cid = c.post("/api/v1/me/cards", headers=AS_A, json=CARD).json()["id"]
+    body = {"recipients": ["u2"], "tenant": False}
+    assert c.put(f"/api/v1/me/queries/{qid}/share", headers=AS_A, json=body).status_code == 200
+    assert c.put(f"/api/v1/me/cards/{cid}/share", headers=AS_A, json=body).status_code == 200
+
+    for plural, item in (("queries", qid), ("cards", cid)):
+        for method in ("get", "put", "delete"):
+            r = c.request(method.upper(), f"/api/v1/me/{plural}/{item}/share", headers=AS_B,
+                          **({"json": {"recipients": [], "tenant": True}} if method == "put" else {}))
+            assert r.status_code == 404
+            _clean(r.text)
+    own = c.post("/api/v1/me/queries", headers=AS_B, json={**QUERY, "name": "b query"}).json()["id"]
+    # u2 is in A's directory only; a recipient sub from another tenant's directory is refused.
+    r = c.put(f"/api/v1/me/queries/{own}/share", headers=AS_B, json={"recipients": ["u2"], "tenant": False})
+    assert r.status_code == 400
+    _clean(r.text)
+    assert user_items_store.get_share(B, "u1", "query", qid) is None
+    assert user_items_store.get_share(B, "u1", "card", cid) is None
+    assert user_items_store.list_shares(B, "u1") == []
+    sid = user_items_store.get_share(A, "u1", "query", qid)["share_id"]
+    assert user_items_store.get_share_pointer(B, sid) is None
+
+
 def test_prefs_never_cross(world):
     c = world.client
     saved = c.put("/api/v1/me/prefs", headers=AS_A, json={**PREFS, "expected_version": 0})
@@ -650,6 +681,8 @@ NO_SECRET_ROUTES = [
     ("PUT", "/api/v1/me/queries/q_000000000000", {"json": QUERY}),
     ("POST", "/api/v1/me/queries/q_000000000000/used", {}),
     ("DELETE", "/api/v1/me/queries/q_000000000000", {}),
+    *[(m, f"/api/v1/me/{p}/{i}/share", {"json": {"recipients": [], "tenant": False}} if m == "PUT" else {})
+      for p, i in (("queries", "q_000000000000"), ("cards", "c_000000000000")) for m in ("GET", "PUT", "DELETE")],
     ("GET", "/api/v1/me/prefs", {}),
     ("PUT", "/api/v1/me/prefs", {"json": {**PREFS, "expected_version": 0}}),
     ("POST", "/api/v1/me/import", {"json": {"cards": [{**CARD, "id": "local-1"}], "queries": [QUERY], "prefs": PREFS}}),

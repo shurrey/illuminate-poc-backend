@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
@@ -21,7 +22,11 @@ KEYED_KINDS = ("card", "query")
 SINGLETON_KINDS = ("layout", "prefs", "imported")
 DIRECTORY_KIND = "directory"
 DIRECTORY_PREFIX = "directory#"
+SHARE_KIND = "share"
+SHAREID_KIND = "shareid"
+SHARE_ITEM_KINDS = ("query", "card")
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_SHARE_ID = re.compile(r"sh_[0-9a-f]{16}")
 
 _table = None
 
@@ -169,4 +174,124 @@ def upsert_directory(tenant_id: str, sub: str, name: str, email: str, *, table=N
     if current and (current["name"], current["email"]) == (name, email):
         return False
     put(tenant_id, sub, DIRECTORY_KIND, None, body, expected_version=current["version"] if current else None, table=table)
+    return True
+
+
+def _share_key(tenant_id: str, owner_sub: str, item_kind: str, item_id: str) -> str:
+    if not tenant_id:
+        raise ValueError("tenant_id is required")
+    _validate_sub(owner_sub)
+    if item_kind not in SHARE_ITEM_KINDS:
+        raise ValueError(f"cannot share {item_kind!r}")
+    if not _ID.fullmatch(item_id or ""):
+        raise ValueError("id must match [A-Za-z0-9_-]{1,64}")
+    return f"share#{owner_sub}#{item_kind}#{item_id}"
+
+
+def _shareid_key(share_id: str) -> str:
+    if not _SHARE_ID.fullmatch(share_id or ""):
+        raise ValueError("invalid share id")
+    return f"shareid#{share_id}"
+
+
+def _share_item(tenant_id: str, item_key: str, kind: str, body: dict, version: int, updated_at: str) -> dict:
+    return _to_dynamo({"tenant_id": tenant_id, "item_key": item_key, "kind": kind, "body": body,
+                       "version": version, "updated_at": updated_at})
+
+
+def _transact(items: list[dict], conflict: str) -> None:
+    try:
+        # The resource's client serialises plain Python values itself.
+        _get_table().meta.client.transact_write_items(TransactItems=items)
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("TransactionCanceledException", "ConditionalCheckFailedException"):
+            raise Conflict(conflict) from e
+        raise
+
+
+def get_share(tenant_id: str, owner_sub: str, item_kind: str, item_id: str) -> Optional[dict]:
+    item = _get_table().get_item(
+        Key={"tenant_id": tenant_id, "item_key": _share_key(tenant_id, owner_sub, item_kind, item_id)},
+        ConsistentRead=True).get("Item")
+    return _from_item(item) if item else None
+
+
+def get_share_pointer(tenant_id: str, share_id: str) -> Optional[dict]:
+    """The `{owner_sub, item_kind, item_id}` a share id points at, or None for an unknown or malformed id."""
+    if not tenant_id:
+        raise ValueError("tenant_id is required")
+    if not _SHARE_ID.fullmatch(share_id or ""):
+        return None
+    item = _get_table().get_item(Key={"tenant_id": tenant_id, "item_key": _shareid_key(share_id)},
+                                 ConsistentRead=True).get("Item")
+    return _from_item(item) if item else None
+
+
+def list_shares(tenant_id: str, owner_sub: str) -> list[dict]:
+    """All of the owner's shares, in key order."""
+    _share_key(tenant_id, owner_sub, "query", "x")
+    kwargs = {"KeyConditionExpression": Key("tenant_id").eq(tenant_id) & Key("item_key").begins_with(f"share#{owner_sub}#"),
+              "ConsistentRead": True}
+    items = []
+    while True:
+        resp = _get_table().query(**kwargs)
+        items += resp.get("Items", [])
+        if "LastEvaluatedKey" not in resp:
+            return [_from_item(i) for i in items]
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+
+def put_share(tenant_id: str, owner_sub: str, item_kind: str, item_id: str, body: dict) -> dict:
+    """Create the share and its pointer in one transaction with a new share id; Conflict if the item is already shared."""
+    key = _share_key(tenant_id, owner_sub, item_kind, item_id)
+    share_id = f"sh_{secrets.token_hex(8)}"
+    now = datetime.now(timezone.utc).isoformat()
+    full = {**body, "share_id": share_id, "owner_sub": owner_sub, "item_kind": item_kind, "item_id": item_id,
+            "shared_at": now, "updated_at": now}
+    pointer = {"owner_sub": owner_sub, "item_kind": item_kind, "item_id": item_id}
+    table = _get_table().name
+    _transact([
+        {"Put": {"TableName": table, "Item": _share_item(tenant_id, key, SHARE_KIND, full, 1, now),
+                 "ConditionExpression": "attribute_not_exists(item_key)"}},
+        {"Put": {"TableName": table, "Item": _share_item(tenant_id, _shareid_key(share_id), SHAREID_KIND, pointer, 1, now),
+                 "ConditionExpression": "attribute_not_exists(item_key)"}},
+    ], key)
+    return get_share(tenant_id, owner_sub, item_kind, item_id)
+
+
+def update_share(tenant_id: str, owner_sub: str, item_kind: str, item_id: str, changes: dict, expected_version: int) -> dict:
+    """Merge changes into the share, keeping its id and shared_at; Conflict unless the version matches."""
+    key = _share_key(tenant_id, owner_sub, item_kind, item_id)
+    current = get_share(tenant_id, owner_sub, item_kind, item_id)
+    if current is None or current["version"] != expected_version:
+        raise Conflict(key)
+    body = {k: v for k, v in current.items() if k != "version"}
+    body.update({k: v for k, v in changes.items() if k in ("recipients", "tenant")})
+    body["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        _get_table().put_item(
+            Item=_share_item(tenant_id, key, SHARE_KIND, body, expected_version + 1, body["updated_at"]),
+            ConditionExpression="version = :expected", ExpressionAttributeValues={":expected": expected_version})
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise Conflict(key) from e
+        raise
+    return get_share(tenant_id, owner_sub, item_kind, item_id)
+
+
+def delete_share(tenant_id: str, owner_sub: str, item_kind: str, item_id: str) -> bool:
+    """Delete the share and its pointer in one transaction. True when a share was removed."""
+    key = _share_key(tenant_id, owner_sub, item_kind, item_id)
+    current = get_share(tenant_id, owner_sub, item_kind, item_id)
+    if current is None:
+        return False
+    table = _get_table().name
+    try:
+        _transact([
+            {"Delete": {"TableName": table, "Key": {"tenant_id": tenant_id, "item_key": key},
+                        "ConditionExpression": "attribute_exists(item_key)"}},
+            {"Delete": {"TableName": table, "Key": {"tenant_id": tenant_id, "item_key": _shareid_key(current["share_id"])}}},
+        ], key)
+    except Conflict:
+        return False
     return True
