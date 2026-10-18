@@ -834,7 +834,8 @@ async def delete_my_card(card_id: str, authorization: Optional[str] = Header(Non
 
         if card_id in {c["id"] for c in _default_cards()}:
             _mutate_layout(tenant_id, sub, hide)
-        elif _SHARE_ID.fullmatch(card_id) and card_id in _load_layout(tenant_id, sub)[0]["order"]:
+        elif _SHARE_ID.fullmatch(card_id) and any(
+                card_id in _load_layout(tenant_id, sub)[0][k] for k in ("order", "disabled")):
             _mutate_layout(tenant_id, sub, forget)
         elif _CARD_ID.fullmatch(card_id) and _delete_item_and_share(tenant_id, sub, "card", card_id):
             _mutate_layout(tenant_id, sub, forget)
@@ -857,6 +858,10 @@ async def pin_shared_card(payload: dict, authorization: Optional[str] = Header(N
             raise _not_shared()
 
         def append(layout: dict, version: int) -> None:
+            dead = {i for i in layout["order"] + layout["disabled"]
+                    if _SHARE_ID.fullmatch(i) and i != share_id and _pinned_card(tenant_id, sub, i, identity) is None}
+            for key in ("order", "disabled"):
+                layout[key] = [i for i in layout[key] if i not in dead]
             if share_id in layout["order"]:
                 return
             if sum(1 for i in layout["order"] if _SHARE_ID.fullmatch(i)) >= MAX_PINNED_SHARED:
@@ -1500,7 +1505,7 @@ async def put_my_prefs(payload: dict, authorization: Optional[str] = Header(None
     """Replace the four preference lists; 409 when expected_version is stale."""
     import user_items_store
 
-    tenant_id, sub, identity = _cards_viewer(authorization)
+    tenant_id, sub = _cards_caller(authorization)
     version = payload.get("expected_version")
     if isinstance(version, bool) or not isinstance(version, int) or version < 0:
         raise _bad_request("expected_version must be a non-negative integer")

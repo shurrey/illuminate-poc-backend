@@ -11,9 +11,6 @@ from sqlglot.tokens import TokenType
 MASK = "…"
 _STRING_TOKENS = {TokenType.STRING, TokenType.RAW_STRING, TokenType.NATIONAL_STRING, TokenType.BYTE_STRING,
                   TokenType.HEX_STRING, TokenType.BIT_STRING, TokenType.HEREDOC_STRING, TokenType.UNICODE_STRING}
-_CLAUSE_BREAKS = {TokenType.SEMICOLON, TokenType.COMMA, TokenType.SELECT, TokenType.FROM, TokenType.WHERE,
-                  TokenType.GROUP_BY, TokenType.HAVING, TokenType.ORDER_BY, TokenType.LIMIT, TokenType.UNION,
-                  TokenType.JOIN}
 
 
 def _row_limit(tokens: list, i: int) -> bool:
@@ -29,17 +26,21 @@ def _row_limit(tokens: list, i: int) -> bool:
     before = tokens[i - 2] if i >= 2 else None
     return before is not None and (before.token_type == TokenType.TABLE_SAMPLE or (
         before.token_type == TokenType.VAR and (
-            (before.text.upper() in ("SEED", "REPEATABLE") and _after_sample(tokens, i - 2)) or (
+            (before.text.upper() in ("SEED", "REPEATABLE") and _closes_sample_args(tokens, i - 3)) or (
                 i >= 3 and tokens[i - 3].token_type == TokenType.TABLE_SAMPLE))))
 
 
-def _after_sample(tokens: list, i: int) -> bool:
-    """True when a sample clause precedes tokens[i] without a clause boundary in between."""
-    for token in reversed(tokens[:i]):
-        if token.token_type == TokenType.TABLE_SAMPLE:
-            return True
-        if token.token_type in _CLAUSE_BREAKS:
-            return False
+def _closes_sample_args(tokens: list, i: int) -> bool:
+    """True when tokens[i] is the ')' ending a SAMPLE / TABLESAMPLE [method] (...) argument list."""
+    if i < 0 or tokens[i].token_type != TokenType.R_PAREN:
+        return False
+    depth = 0
+    for k in range(i, -1, -1):
+        depth += (tokens[k].token_type == TokenType.R_PAREN) - (tokens[k].token_type == TokenType.L_PAREN)
+        if depth == 0:
+            head = tokens[k - 1].token_type if k >= 1 else None
+            return head == TokenType.TABLE_SAMPLE or (
+                head == TokenType.VAR and k >= 2 and tokens[k - 2].token_type == TokenType.TABLE_SAMPLE)
     return False
 
 

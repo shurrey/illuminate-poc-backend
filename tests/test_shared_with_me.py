@@ -368,6 +368,11 @@ def test_delete_share_treats_a_failed_condition_as_nothing_removed(world, monkey
     ("SELECT a FROM t TABLESAMPLE BERNOULLI (20 ROWS) SEED (7)",
      "SELECT a FROM t TABLESAMPLE BERNOULLI (20 ROWS) SEED (7)"),
     ("SELECT seed(12345), repeatable (678) FROM t", "SELECT seed('…'), repeatable ('…') FROM t"),
+    ("SELECT a FROM t SAMPLE (10) QUALIFY seed(5) > 1", "SELECT a FROM t SAMPLE (10) QUALIFY seed('…') > '…'"),
+    ("SELECT a FROM t SAMPLE (10) UNION ALL SELECT seed(5) FROM u",
+     "SELECT a FROM t SAMPLE (10) UNION ALL SELECT seed('…') FROM u"),
+    ("SELECT a FROM t TABLESAMPLE BERNOULLI (10) REPEATABLE (7)",
+     "SELECT a FROM t TABLESAMPLE BERNOULLI (10) REPEATABLE (7)"),
     ("SELECT a FROM t SAMPLE (10) SEED (7) WHERE b = 1", "SELECT a FROM t SAMPLE (10) SEED (7) WHERE b = '…'"),
     ("SELECT a -- for jane@x.edu\nFROM t /* jane */ WHERE b = 1",
      "SELECT a\nFROM t WHERE b = '…'"),
@@ -554,3 +559,22 @@ def test_at_most_fifty_shared_cards_can_be_pinned(world):
         "order": [c["id"] for c in layout["cards"]] + [sids[50]], "disabled": [], "hidden": [],
         "expected_version": layout["version"]})
     assert over.status_code == 400
+
+
+def test_delete_removes_a_pin_that_is_only_disabled_and_pin_prunes_dead_pins(world):
+    o = world(OWNER)
+    c1, c2 = make(o, "cards", NEW), make(o, "cards", {**NEW, "label": "two"})
+    s1, s2 = share(o, "cards", c1, ["ann"]), share(world(OWNER), "cards", c2, ["ann"])
+    a = world(ANN)
+    pin(a, s1)
+    pin(a, s2)
+    layout = store.get(T, "ann", "layout")
+    store.put(T, "ann", "layout", None, {"order": [i for i in layout["order"] if i != s1], "disabled": [s1],
+                                         "hidden": []}, expected_version=layout["version"])
+    assert a.delete(f"/api/v1/me/cards/{s1}", headers=AUTH).status_code == 200
+    assert s1 not in store.get(T, "ann", "layout")["disabled"]
+
+    pin(a, s1)
+    world(OWNER).delete(f"/api/v1/me/cards/{c2}/share", headers=AUTH)
+    pin(world(ANN), s1)
+    assert s2 not in store.get(T, "ann", "layout")["order"]
