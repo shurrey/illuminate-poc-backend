@@ -184,6 +184,35 @@ def test_a_viewers_shared_run_masks_values_and_an_admins_does_not(world, execute
     assert "jane@example.edu" in run(world(ADA), sid).text
 
 
+def _warehouse_fails(monkeypatch):
+    import snowflake_client
+    monkeypatch.setattr(lambda_handler, "_guarded", lambda compiled, ctx: snowflake_client.Result([], [], error="boom"))
+
+
+def _compile_echoes_value(monkeypatch):
+    from semantic_layer import compiler
+
+    def echo(contract, *a, **k):
+        raise compiler.CompileError(f"person_email needs number values; got {'jane@example.edu'!r}")
+
+    monkeypatch.setattr(compiler, "compile_query", echo)
+
+
+@pytest.mark.parametrize("fail", [_warehouse_fails, _compile_echoes_value])
+@pytest.mark.parametrize("plural, body", [
+    ("cards", {**NEW, "contract": FILTER_ONLY}),
+    ("queries", {**Q, "contract": FILTER_ONLY}),
+])
+def test_a_viewers_failed_shared_run_never_echoes_the_owners_values(world, monkeypatch, fail, plural, body):
+    o = world(OWNER)
+    sid = share(o, plural, make(o, plural, body), ["ann", "ada"])
+    fail(monkeypatch)
+    viewer = run(world(ANN), sid)
+    assert viewer.status_code in (400, 502)
+    assert "jane@example.edu" not in viewer.text and "…" in viewer.text
+    assert "jane@example.edu" in run(world(ADA), sid).text
+
+
 def test_a_shared_sql_runs_reason_is_the_owners_note_or_their_name(world, executed):
     o = world(OWNER)
     noted = share(o, "queries", make(o, "queries", {**SQLQ, "description": "For the dean"}), ["ann"])
