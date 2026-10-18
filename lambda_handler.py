@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from semantic_layer.contract import QueryContract
 import tenancy
@@ -1613,13 +1613,82 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
     }))
 
 
+class SqlRequest(BaseModel):
+    sql: str = Field(max_length=20_000)
+    governed: Optional[dict[str, dict]] = None
+    reason: str = Field(default="Written in the query builder", max_length=500)
+
+
+def _identity_audit(user: dict, catalog):
+    def audit(kind: str, subject) -> None:
+        if kind == "freehand":
+            logger.info("identity_query sub=%s freehand=true", user.get("sub"))
+        elif _selects_identity(subject, catalog):
+            _log_identity_query(user, subject)
+
+    return audit
+
+
+@app.post("/api/v1/sql/run")
+async def sql_run(body: SqlRequest, authorization: Optional[str] = Header(None)):
+    """Run SQL through the execution guard as the caller; `governed` parts are spliced from query contracts."""
+    from semantic_layer.sql_service import run_sql
+
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    tenant = tenant_for(user)
+
+    def work():
+        ctx = guard_context(tenant, user)
+        return run_sql(ctx, sql=body.sql, governed=body.governed, reason=body.reason.strip(),
+                       overlays=_catalog_for(tenant)[1], identity_audit=_identity_audit(user, ctx.catalog))
+
+    result = await _blocking(work)
+    if "error" in result:
+        if result.get("warehouse"):
+            logger.error("SQL run failed: %s", result["error"])
+            raise HTTPException(status_code=502, detail="The warehouse could not run this query.")
+        raise HTTPException(status_code=400, detail=result["error"])
+    return JSONResponse(_json_safe(result))
+
+
+@app.post("/api/v1/sql/validate")
+async def sql_validate(body: SqlRequest, authorization: Optional[str] = Header(None)):
+    """Check SQL against the guard for the caller without running it."""
+    from semantic_layer.sql_service import validate_sql
+
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    tenant = tenant_for(user)
+    return await _blocking(lambda: validate_sql(guard_context(tenant, user), sql=body.sql, governed=body.governed))
+
+
+@app.get("/api/v1/schema/describe")
+async def schema_describe(schema: str, table: str, authorization: Optional[str] = Header(None)):
+    """Columns of a CDM or LEARN table from the data dictionary; LEARN needs Premium."""
+    from semantic_layer.sql_service import describe
+
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    tenant = tenant_for(user)
+    if not _SAFE_IDENTIFIER.match(schema) or not _SAFE_IDENTIFIER.match(table):
+        raise HTTPException(status_code=400, detail="Invalid identifier: only alphanumeric and underscore allowed")
+    result = await _blocking(lambda: describe(guard_context(tenant, user), schema, table))
+    if "error" in result:
+        raise HTTPException(status_code=result["status"], detail=result["error"])
+    return result
+
+
 def guard_context(tenant: Tenant, user: dict):
     """The SQL guard's context for this request: the caller's identity rights over the tenant's overlaid catalog
     and database, with every dataset's declared PII columns."""
     import snowflake_client
     from roles import role_allows_identity
 
-    return snowflake_client.GuardContext.of(tenant, _catalog_for(tenant)[0], _database_for(tenant),
+    return snowflake_client.GuardContext.of(tenant, _catalog_for(tenant)[0],
                                             allow_identity=role_allows_identity(user))
 
 
@@ -1679,9 +1748,9 @@ def _current_terms(tenant: Tenant) -> list[dict]:
     if cached and time.time() - cached[0] < _TERMS_TTL_SECONDS:
         return cached[1]
     contract = QueryContract(measures=["dataset.terms.v1:terms"], dimensions=["term_name", "term_start", "term_end"], limit=1000)
-    catalog, database = default_catalog(), _database_for(tenant)
-    result = _guarded(compile_query(contract, catalog, database),
-                      GuardContext.of(tenant, catalog, database, allow_identity=False))
+    catalog = default_catalog()
+    ctx = GuardContext.of(tenant, catalog, allow_identity=False)
+    result = _guarded(compile_query(contract, catalog, ctx.database), ctx)
     error = result.message if isinstance(result, Refusal) else result.error
     if error is not None:
         logger.warning("Could not load terms for report defaults: %s", error)

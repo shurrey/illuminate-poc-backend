@@ -14,17 +14,17 @@ from typing import Callable, Iterable, Optional
 from pydantic import ValidationError
 
 import snowflake_client
-from licenses import LEARN_REFUSAL, allows_learn
-from snowflake_client import Compiled, Freehand, GuardContext, Refusal, Result, Spliced, Validated, validate
+from licenses import allows_learn
+from snowflake_client import Compiled, GuardContext, Refusal, Result, Validated, validate
 from tenancy import Tenant
 
 from .compiler import CompileError, compile_query, named_result
 from .dictionary import describe_table
-from .governed_sql import SpliceError, SplicedSql, label
 from .overlays import overlays_used
 from .contract import QueryContract
 from .schema import Catalog
 from .search import search_catalog
+from .sql_service import describe, run_sql
 
 MODEL_ROW_LIMIT = 200
 MIN_REASON_LENGTH = 15
@@ -165,10 +165,6 @@ def _contract(tool_input: dict) -> QueryContract:
     return QueryContract(**{k: v for k, v in tool_input.items() if k in _CONTRACT_FIELDS})
 
 
-def _unique(values: Iterable[str]) -> list[str]:
-    return list(dict.fromkeys(values))
-
-
 def _artifact(artifact_type: str, title: str, data, **extra) -> dict:
     return {"id": uuid.uuid4().hex, "type": artifact_type, "title": title, "data": data, **extra}
 
@@ -187,7 +183,7 @@ class ChatTools:
         self.execute = execute or (lambda v, ctx: snowflake_client.execute(v, ctx))
         self.overlays = list(overlays)
         self.allow_identity, self.identity_audit = allow_identity, identity_audit
-        self.guard = GuardContext.of(tenant, catalog, database, allow_identity=allow_identity)
+        self.guard = GuardContext.of(tenant, catalog, allow_identity=allow_identity)
 
     def _run(self, checked: Validated | Refusal) -> dict:
         """The guard's refusal, or the warehouse result as a dict of columns, rows and truncated."""
@@ -257,74 +253,23 @@ class ChatTools:
         return ToolResult(content, artifacts)
 
     def _tool_describe_cdm_table(self, tool_input: dict) -> ToolResult:
-        schema, table = tool_input.get("schema", ""), tool_input.get("table", "")
-        if schema.upper() == "LEARN" and not allows_learn(self.tenant):
-            return ToolResult({"error": LEARN_REFUSAL})
-        columns = self.describe(schema, table)
-        if not columns:
-            return ToolResult({"error": f"No dictionary entry for {schema.upper()}.{table.upper()}"})
-        return ToolResult({"table": f"{schema.upper()}.{table.upper()}", "columns": columns})
-
-    @staticmethod
-    def _contracts(governed) -> dict[str, QueryContract]:
-        """Raises SpliceError for a malformed `governed` input, naming the part at fault."""
-        if not isinstance(governed, dict):
-            raise SpliceError("governed must be an object mapping governed_1, governed_2, ... to query_semantic inputs")
-        contracts = {}
-        for name, part in governed.items():
-            if not isinstance(part, dict):
-                raise SpliceError(f"{name}: a governed part takes the same fields as query_semantic")
-            try:
-                contracts[name] = _contract(part)
-            except ValidationError as e:
-                raise SpliceError(f"{name}: {e}") from e
-        return contracts
-
-    def _governed_provenance(self, spliced: SplicedSql, columns: list[str], reason: str) -> dict:
-        labels = label(spliced, columns, reason=reason)
-        compiled = [part.compiled.provenance for part in spliced.parts.values()]
-        return {
-            "governed": labels["governance"] == "full", **labels, "reason": reason,
-            "metrics": _unique(m for p in compiled for m in p.metrics),
-            "measures": _unique(m for p in compiled for m in p.measures),
-            "datasets": _unique(d for p in compiled for d in p.datasets),
-            "overlays": _unique(o for p in compiled for o in overlays_used(p, self.catalog, self.overlays)),
-        }
+        out = describe(self.guard, tool_input.get("schema", ""), tool_input.get("table", ""), self.describe)
+        return ToolResult({"error": out["error"]} if "error" in out else out)
 
     def _tool_execute_sql(self, tool_input: dict) -> ToolResult:
         reason = (tool_input.get("reason") or "").strip()
         if len(reason) < MIN_REASON_LENGTH:
             return ToolResult({"error": "execute_sql needs a reason (a sentence) saying why no governed definition fits"})
         sql = tool_input.get("sql", "")
-        if tool_input.get("governed"):
-            try:
-                checked = validate(None, self.guard, Spliced(sql, self._contracts(tool_input["governed"])))
-            except SpliceError as e:
-                return ToolResult({"error": str(e)})
-        else:
-            checked = validate(sql, self.guard, Freehand())
-        spliced = checked.spliced if isinstance(checked, Validated) else None
-        if isinstance(checked, Validated) and self.allow_identity and self.identity_audit:
-            for part in (spliced.parts.values() if spliced else ()):
-                self.identity_audit("governed", part.contract)
-            self.identity_audit("freehand", None)
-        result = self._run(checked)
+        result = run_sql(self.guard, sql=sql, governed=tool_input.get("governed") or None, reason=reason,
+                         overlays=self.overlays, execute=self.execute, identity_audit=self.identity_audit)
         if "error" in result:
-            return ToolResult({"error": result["error"]})
-        rows, columns = result["rows"], result["columns"]
+            return ToolResult({"error": _model_error(result["error"]) if result.get("warehouse") else result["error"]})
+        rows, columns, provenance, cut = result["rows"], result["columns"], result["provenance"], result["truncated"]
         extra = {"kind": "sql", "sql": sql}
-        if spliced:
-            provenance = self._governed_provenance(spliced, columns, reason)
-            extra |= {"executed_sql": spliced.sql, "governed_parts": {
-                name: part.contract.model_dump(mode="json", exclude_unset=True) for name, part in spliced.parts.items()}}
-        else:
-            provenance = {"governed": False, "governance": "none", "rows": "modified", "reason": reason,
-                          "columns": {c: {"governed": False, "reason": reason} for c in columns}}
-        # The warehouse returns at most MAX_ROWS; a cut result is not the governed row set.
-        cut = result["truncated"]
+        if "executed_sql" in result:
+            extra |= {"executed_sql": result["executed_sql"], "governed_parts": result["governed_parts"]}
         if cut:
-            provenance |= {"truncated": True, "rows": "modified", "governed": False,
-                           "governance": "partial" if provenance["governance"] == "full" else provenance["governance"]}
             extra["truncated"] = True
         title = tool_input.get("title") or {
             "full": "Governed query result", "partial": "Partly governed query result",

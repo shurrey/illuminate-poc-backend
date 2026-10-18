@@ -52,6 +52,8 @@ CARD = {"label": f"{MARK_A} card", "description": "d", "longDescription": "ld", 
 QUERY = {"name": f"{MARK_A} query", "prompt": "p", "description": "d", "contract": CONTRACT}
 PREFS = {"favorites": [f"{MARK_A}-fav"], "recentReports": [], "readNotifications": [], "visibleWidgets": ["ai"]}
 REPORT, VISUAL = "report.assessment_grades.v1", "ungraded"
+SQL = "SELECT COUNT(*) AS n FROM CDM_LMS.COURSE"
+DESCRIBE = "/api/v1/schema/describe?schema=LEARN&table=COURSE_MAIN"
 PREVIEW = "/api/v1/dictionary/preview?schema=CDM_LMS&table=COURSE"
 
 
@@ -265,6 +267,39 @@ def test_preview_never_crosses(world):
     r = c.get(PREVIEW, headers=AS_B)
     assert r.status_code == 200 and r.json()["rows"] == [{"TENANT_MARK": MARK_B, "DATABASE": DB_B}]
     _clean(r.text)
+
+
+def test_sql_run_never_crosses(world):
+    c = world.client
+    body = {"sql": SQL}
+    assert MARK_A in c.post("/api/v1/sql/run", headers=AS_A, json=body).text
+    r = c.post("/api/v1/sql/run", headers=AS_B, json=body)
+    assert r.status_code == 200 and r.json()["rows"] == [{"TENANT_MARK": MARK_B, "DATABASE": DB_B}]
+    _clean(r.text)
+    forged = c.post("/api/v1/sql/run", headers=AS_B, params=FORGED_PARAMS, json={**body, "tenant_id": A})
+    assert forged.status_code == 200 and MARK_B in forged.text
+    _clean(forged.text)
+    assert {mark for mark, _ in world.log[-2:]} == {MARK_B}
+    other_db = c.post("/api/v1/sql/run", headers=AS_B, json={"sql": f"SELECT COUNT(*) AS n FROM {DB_A}.CDM_LMS.COURSE"})
+    assert other_db.status_code == 400 and MARK_A not in other_db.text
+
+
+def test_sql_validate_never_crosses(world):
+    c = world.client
+    mine = {"sql": f"SELECT COUNT(*) AS n FROM {DB_B}.CDM_LMS.COURSE"}
+    assert c.post("/api/v1/sql/validate", headers=AS_B, json=mine).json() == {"ok": True}
+    other = c.post("/api/v1/sql/validate", headers=AS_B, json={"sql": f"SELECT COUNT(*) AS n FROM {DB_A}.CDM_LMS.COURSE"})
+    assert other.status_code == 200 and other.json()["ok"] is False and MARK_A not in other.text
+    assert c.post("/api/v1/sql/validate", headers=AS_A, json=mine).json()["ok"] is False
+    assert world.connects == []
+
+
+def test_schema_describe_never_crosses(world):
+    c = world.client
+    assert c.get(DESCRIBE, headers=AS_B).status_code == 200
+    core = c.get(DESCRIBE, headers={"Authorization": "Bearer c2"})
+    assert core.status_code == 403 and core.json() == {"detail": licenses.LEARN_REFUSAL}
+    assert world.connects == []
 
 
 def test_me_never_crosses(world):
@@ -593,8 +628,11 @@ SECRET_ROUTES = [
     ("GET", PREVIEW, {}),
     ("POST", "/api/chat", {"json": {"message": "q"}}),
     ("POST", "/api/chat/stream", {"json": {"message": "q"}}),
+    ("POST", "/api/v1/sql/run", {"json": {"sql": SQL}}),
 ]
 NO_SECRET_ROUTES = [
+    ("POST", "/api/v1/sql/validate", {"json": {"sql": SQL}}),
+    ("GET", DESCRIBE, {}),
     ("GET", "/api/v1/semantic/catalog", {}),
     ("GET", "/api/v1/reports", {}),
     ("GET", "/api/v1/me", {}),
