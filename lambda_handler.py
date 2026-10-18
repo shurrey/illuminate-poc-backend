@@ -726,30 +726,31 @@ async def reset_my_cards(authorization: Optional[str] = Header(None)) -> dict:
 @app.post("/api/v1/me/cards")
 async def create_my_card(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
     """Create a custom card with a server-generated id and append it to the layout; 400 at 100 cards."""
-    import user_items_store
-
     tenant_id, sub = _cards_caller(authorization)
     body = _card_body(payload)
+    return await _blocking(_create_card, tenant_id, sub, body)
 
-    def create() -> dict:
-        if user_items_store.count(tenant_id, sub, "card") >= MAX_CUSTOM_CARDS:
-            raise _bad_request(f"You can have at most {MAX_CUSTOM_CARDS} custom cards")
-        card_id = f"c_{uuid.uuid4().hex[:12]}"
-        saved = user_items_store.put(tenant_id, sub, "card", card_id, body)
 
-        def append(layout: dict, version: int) -> None:
-            if not version:
-                layout["order"] = [c["id"] for c in _default_cards()]
-            layout["order"].append(card_id)
+def _create_card(tenant_id: str, sub: str, body: dict) -> dict:
+    """Save a validated card body under a new id and append it to the layout; 400 at 100 cards."""
+    import user_items_store
 
-        try:
-            _mutate_layout(tenant_id, sub, append)
-        except HTTPException:
-            user_items_store.delete(tenant_id, sub, "card", card_id)
-            raise
-        return _custom_card(saved)
+    if user_items_store.count(tenant_id, sub, "card") >= MAX_CUSTOM_CARDS:
+        raise _bad_request(f"You can have at most {MAX_CUSTOM_CARDS} custom cards")
+    card_id = f"c_{uuid.uuid4().hex[:12]}"
+    saved = user_items_store.put(tenant_id, sub, "card", card_id, body)
 
-    return await _blocking(create)
+    def append(layout: dict, version: int) -> None:
+        if not version:
+            layout["order"] = [c["id"] for c in _default_cards()]
+        layout["order"].append(card_id)
+
+    try:
+        _mutate_layout(tenant_id, sub, append)
+    except HTTPException:
+        user_items_store.delete(tenant_id, sub, "card", card_id)
+        raise
+    return _custom_card(saved)
 
 
 @app.put("/api/v1/me/cards/{card_id}")
@@ -983,18 +984,19 @@ async def get_my_queries(authorization: Optional[str] = Header(None)) -> dict:
 @app.post("/api/v1/me/queries")
 async def create_my_query(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
     """Save a governed or SQL query with a server-generated id; 400 at 500 queries."""
+    user, tenant = _caller(authorization)
+    return await _blocking(_create_query, payload, user, tenant)
+
+
+def _create_query(payload, user: dict, tenant: Tenant) -> dict:
+    """Validate the payload as `user` and save it to their profile under a new id; 400 at 500 queries."""
     import user_items_store
 
-    user, tenant = _caller(authorization)
-
-    def create() -> dict:
-        body = {**_saved_query_body(payload, user, tenant), "createdAt": _now_iso(), "lastUsedAt": None}
-        tenant_id, sub = tenant.tenant_id, user["sub"]
-        if user_items_store.count(tenant_id, sub, "query") >= MAX_QUERIES:
-            raise _bad_request(f"You can save at most {MAX_QUERIES} queries")
-        return _query_view(user_items_store.put(tenant_id, sub, "query", f"q_{uuid.uuid4().hex[:12]}", body))
-
-    return await _blocking(create)
+    body = {**_saved_query_body(payload, user, tenant), "createdAt": _now_iso(), "lastUsedAt": None}
+    tenant_id, sub = tenant.tenant_id, user["sub"]
+    if user_items_store.count(tenant_id, sub, "query") >= MAX_QUERIES:
+        raise _bad_request(f"You can save at most {MAX_QUERIES} queries")
+    return _query_view(user_items_store.put(tenant_id, sub, "query", f"q_{uuid.uuid4().hex[:12]}", body))
 
 
 @app.put("/api/v1/me/queries/{query_id}")
@@ -1021,30 +1023,43 @@ async def run_my_query(query_id: str, authorization: Optional[str] = Header(None
     user, tenant = _caller(authorization)
     item = await _blocking(_query_item, tenant.tenant_id, user["sub"], query_id)
     stored = _stored_query(item)
+    owner = _text(stored, "owner_name")
+    reason = _text(stored, "description") or (f"Written by {owner}" if owner else DEFAULT_REASON)
+    return await _run_stored_query(item, user, tenant, reason, owner_writes=True)
 
-    def text(field: str) -> str:
-        value = stored.get(field)
-        return value.strip() if isinstance(value, str) else ""
 
+def _text(stored: dict, field: str) -> str:
+    value = stored.get(field)
+    return value.strip() if isinstance(value, str) else ""
+
+
+async def _run_contract(contract, user: dict, tenant: Tenant) -> JSONResponse:
+    """Run a stored contract as /semantic/query does; 400 when it no longer validates."""
+    try:
+        parsed = QueryContract.model_validate(contract)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"This saved query is not valid: {e}")
+    compiled = await _blocking(_compile_for, parsed, user, tenant)
+    return _semantic_response(compiled, await _execute(compiled, user, tenant))
+
+
+async def _run_stored_query(item: dict, user: dict, tenant: Tenant, reason: str, *, owner_writes: bool):
+    """Run a stored query row as `user`. owner_writes records lastUsedAt, so only pass it when `user` owns the row."""
+    stored = _stored_query(item)
     if stored["query_kind"] == "sql":
-        owner = text("owner_name")
-        reason = text("description") or (f"Written by {owner}" if owner else DEFAULT_REASON)
         sql = stored.get("sql") if isinstance(stored.get("sql"), str) else ""
         parts = stored.get("governed_parts")
         response = await _run_sql_for(user, tenant, sql, parts if isinstance(parts, dict) and parts else None,
                                       reason[:500])
     else:
+        response = await _run_contract(stored.get("contract"), user, tenant)
+    if owner_writes:
+        now = _now_iso()
         try:
-            contract = QueryContract.model_validate(stored.get("contract"))
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=f"This saved query is not valid: {e}")
-        compiled = await _blocking(_compile_for, contract, user, tenant)
-        response = _semantic_response(compiled, await _execute(compiled, user, tenant))
-    now = _now_iso()
-    try:
-        await _blocking(_replace_query, tenant.tenant_id, user["sub"], query_id, lambda b: b.update(lastUsedAt=now))
-    except HTTPException as e:
-        logger.warning("Could not record lastUsedAt for saved query %s: %s", query_id, e.detail)
+            await _blocking(_replace_query, tenant.tenant_id, user["sub"], item["id"],
+                            lambda b: b.update(lastUsedAt=now))
+        except HTTPException as e:
+            logger.warning("Could not record lastUsedAt for saved query %s: %s", item["id"], e.detail)
     return response
 
 
@@ -1191,6 +1206,153 @@ def _share_routes(plural: str, item_kind: str) -> None:
 
 _share_routes("queries", "query")
 _share_routes("cards", "card")
+
+
+_SHARED_NOT_FOUND = "Shared item not found"
+_SQL_WITHHELD = "The SQL text is hidden because it could not be checked for personal data."
+
+
+def _not_shared() -> HTTPException:
+    return HTTPException(status_code=404, detail=_SHARED_NOT_FOUND)
+
+
+def _shared_with(share: dict, sub: str) -> bool:
+    recipients = share.get("recipients")
+    return share.get("owner_sub") != sub and (
+        share.get("tenant") is True or (isinstance(recipients, list) and sub in recipients))
+
+
+def _owner_display(entry: Optional[dict]) -> str:
+    """The directory name, else the email's local part, else a neutral label."""
+    for value in ((entry or {}).get("name"), ((entry or {}).get("email") or "").split("@")[0]):
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:200]
+    return "A colleague"
+
+
+def _live_item(tenant_id: str, share: dict) -> Optional[dict]:
+    import user_items_store
+
+    try:
+        return user_items_store.get(tenant_id, share["owner_sub"], share["item_kind"], share["item_id"])
+    except (KeyError, ValueError):
+        return None
+
+
+def _shared_item(tenant_id: str, sub: str, share_id: str) -> tuple[dict, dict, str]:
+    """The share, its live item and the owner's display name; one 404 for every reason the caller can't see it."""
+    import user_items_store
+
+    pointer = user_items_store.get_share_pointer(tenant_id, share_id)
+    try:
+        share = pointer and user_items_store.get_share(
+            tenant_id, pointer["owner_sub"], pointer["item_kind"], pointer["item_id"])
+    except (KeyError, ValueError):
+        share = None
+    if not share or share.get("share_id") != share_id or not _shared_with(share, sub):
+        raise _not_shared()
+    item = _live_item(tenant_id, share)
+    if item is None:
+        raise _not_shared()
+    owner = _owner_display(user_items_store.get(tenant_id, share["owner_sub"], "directory"))
+    return share, item, owner
+
+
+def _shared_summary(share: dict, item: dict, owner: str) -> dict:
+    out = {"share_id": share["share_id"], "item_kind": share["item_kind"], "owner": {"name": owner},
+           "owners_note": item.get("description") if isinstance(item.get("description"), str) else "",
+           "shared_at": share.get("shared_at")}
+    if share["item_kind"] == "query":
+        stored = _stored_query(item)
+        out.update(name=item.get("name"), query_kind=stored["query_kind"], governance_hint=_governance_hint(stored))
+    else:
+        out.update(label=item.get("label"), format=item.get("format"))
+    return out
+
+
+def _shared_detail(share: dict, item: dict, owner: str, allow_identity: bool) -> dict:
+    """The live item for viewing. Without identity rights literals and filter values are masked and prompts omitted."""
+    from semantic_layer.redact import redact_contract, redact_sql
+
+    out = {**_shared_summary(share, item, owner), "redacted": not allow_identity}
+    contract = (lambda c: c) if allow_identity else redact_contract
+    if allow_identity and isinstance(item.get("prompt"), str):
+        out["prompt"] = item["prompt"]
+    if share["item_kind"] == "card":
+        out.update(longDescription=item.get("longDescription"), reportLink=item.get("reportLink"),
+                   contract=contract(item.get("contract")))
+        return out
+    stored = _stored_query(item)
+    if stored["query_kind"] != "sql":
+        out["contract"] = contract(stored.get("contract"))
+        return out
+    sql = stored.get("sql") if isinstance(stored.get("sql"), str) else ""
+    parts = stored.get("governed_parts") if isinstance(stored.get("governed_parts"), dict) else {}
+    out["sql"] = sql if allow_identity else redact_sql(sql)
+    out["governed_parts"] = {name: contract(part) for name, part in parts.items()}
+    if out["sql"] is None:
+        out["note"] = _SQL_WITHHELD
+    return out
+
+
+@app.get("/api/v1/shared")
+async def list_shared_with_me(authorization: Optional[str] = Header(None)) -> dict:
+    """Live items others in the caller's tenant shared with them or with everyone, newest share first."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+
+    def load() -> dict:
+        directory = {e["sub"]: e for e in user_items_store.list_directory(tenant_id)}
+        items = []
+        for share in user_items_store.list_tenant_shares(tenant_id):
+            if not _shared_with(share, sub):
+                continue
+            item = _live_item(tenant_id, share)
+            if item is not None:
+                items.append(_shared_summary(share, item, _owner_display(directory.get(share["owner_sub"]))))
+        items.sort(key=lambda i: i["shared_at"] or "", reverse=True)
+        return {"items": items}
+
+    return await _blocking(load)
+
+
+@app.get("/api/v1/shared/{share_id}")
+async def get_shared_with_me(share_id: str, authorization: Optional[str] = Header(None)) -> dict:
+    from roles import role_allows_identity
+
+    user, tenant = _caller(authorization)
+    share, item, owner = await _blocking(_shared_item, tenant.tenant_id, user["sub"], share_id)
+    return _shared_detail(share, item, owner, role_allows_identity(user))
+
+
+@app.post("/api/v1/shared/{share_id}/run")
+async def run_shared_with_me(share_id: str, authorization: Optional[str] = Header(None)):
+    """Run the live item as the caller, under the caller's role and licence; never writes the owner's row."""
+    user, tenant = _caller(authorization)
+    share, item, owner = await _blocking(_shared_item, tenant.tenant_id, user["sub"], share_id)
+    if share["item_kind"] == "card":
+        return await _run_contract(item.get("contract"), user, tenant)
+    note = _text(_stored_query(item), "description")
+    reason = f"Owner's note: {note}" if note else f"Shared by {owner}"
+    return await _run_stored_query(item, user, tenant, reason, owner_writes=False)
+
+
+@app.post("/api/v1/shared/{share_id}/copy")
+async def copy_shared_with_me(share_id: str, authorization: Optional[str] = Header(None)) -> dict:
+    """Save a copy of the live item to the caller's profile through their own create path; 400 with the reason."""
+    user, tenant = _caller(authorization)
+
+    def save() -> dict:
+        share, item, _ = _shared_item(tenant.tenant_id, user["sub"], share_id)
+        if share["item_kind"] == "card":
+            return _create_card(tenant.tenant_id, user["sub"], _card_body(item))
+        stored = _stored_query(item)
+        fields = ("name", "description", "query_kind", "sql", "governed_parts") if stored["query_kind"] == "sql" \
+            else ("name", "prompt", "description", "contract")
+        return _create_query({k: stored.get(k) for k in fields}, user, tenant)
+
+    return await _blocking(save)
 
 
 _PREF_LISTS = ("favorites", "recentReports", "readNotifications")

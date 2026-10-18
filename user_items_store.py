@@ -279,19 +279,43 @@ def update_share(tenant_id: str, owner_sub: str, item_kind: str, item_id: str, c
     return get_share(tenant_id, owner_sub, item_kind, item_id)
 
 
+def list_tenant_shares(tenant_id: str) -> list[dict]:
+    """Every share in the tenant, from every owner, in key order."""
+    if not tenant_id:
+        raise ValueError("tenant_id is required")
+    kwargs = {"KeyConditionExpression": Key("tenant_id").eq(tenant_id) & Key("item_key").begins_with("share#"),
+              "ConsistentRead": True}
+    items = []
+    while True:
+        resp = _get_table().query(**kwargs)
+        items += resp.get("Items", [])
+        if "LastEvaluatedKey" not in resp:
+            return [_from_item(i) for i in items]
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+
 def delete_share(tenant_id: str, owner_sub: str, item_kind: str, item_id: str) -> bool:
-    """Delete the share and its pointer in one transaction. True when a share was removed."""
+    """Delete the share and its pointer in one transaction. True when a share was removed.
+    A cancelled transaction is retried once; anything but a failed condition (already gone) is re-raised."""
     key = _share_key(tenant_id, owner_sub, item_kind, item_id)
-    current = get_share(tenant_id, owner_sub, item_kind, item_id)
-    if current is None:
-        return False
     table = _get_table().name
-    try:
-        _transact([
-            {"Delete": {"TableName": table, "Key": {"tenant_id": tenant_id, "item_key": key},
-                        "ConditionExpression": "attribute_exists(item_key)"}},
-            {"Delete": {"TableName": table, "Key": {"tenant_id": tenant_id, "item_key": _shareid_key(current["share_id"])}}},
-        ], key)
-    except Conflict:
-        return False
-    return True
+    for attempt in range(2):
+        current = get_share(tenant_id, owner_sub, item_kind, item_id)
+        if current is None:
+            return False
+        try:
+            _get_table().meta.client.transact_write_items(TransactItems=[
+                {"Delete": {"TableName": table, "Key": {"tenant_id": tenant_id, "item_key": key},
+                            "ConditionExpression": "attribute_exists(item_key)"}},
+                {"Delete": {"TableName": table,
+                            "Key": {"tenant_id": tenant_id, "item_key": _shareid_key(current["share_id"])}}},
+            ])
+            return True
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "TransactionCanceledException":
+                raise
+            reasons = [r.get("Code") for r in e.response.get("CancellationReasons", [])]
+            if "ConditionalCheckFailed" in reasons:
+                return False
+            if attempt == 1:
+                raise
