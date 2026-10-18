@@ -274,7 +274,7 @@ def test_legacy_owner_without_tenant_is_unreadable(as_user, conversations):
 
 
 def test_cancel_from_other_tenant_is_404(as_user, monkeypatch):
-    monkeypatch.setattr(lambda_handler, "_request_owners", {"r1": _owner_a()})
+    monkeypatch.setattr(lambda_handler, "_request_owners", {(_owner_a(), "r1")})
     monkeypatch.setattr(lambda_handler, "_cancelled_requests", set())
     assert as_user(user_of(TENANT_B)).post("/api/chat/cancel/r1", headers=AUTH).status_code == 404
     assert as_user(user_of(TENANT_A)).post("/api/chat/cancel/r1", headers=AUTH).status_code == 200

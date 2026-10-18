@@ -331,6 +331,9 @@ def _with_queries(text: str, queries: list[dict]) -> str:
     return f"<previous_queries>{json.dumps(queries)}</previous_queries>\n\n{text}"
 
 
+CHAT_FAILED = "Something went wrong; try again."
+
+
 def _engine_kwargs(tenant: Tenant, user: dict) -> dict:
     """The chat engine's tools and system prompt over the tenant's overlaid catalog and database."""
     from semantic_layer.chat_tools import ChatTools
@@ -419,9 +422,9 @@ async def send_message_streaming(
 
     except TenantNotReady:
         yield {"type": "error", "message": NOT_READY}
-    except Exception as e:
-        logger.error(f"Chat engine error: {e}")
-        yield {"type": "error", "message": str(e)}
+    except Exception:
+        logger.exception("Chat engine error")
+        yield {"type": "error", "message": CHAT_FAILED}
 
 
 # =============================================================================
@@ -527,11 +530,10 @@ app.add_middleware(
     expose_headers=["ETag"],
 )
 
-# Track cancelled request IDs
-_cancelled_requests: set[str] = set()
-# request_id -> Cognito sub of the user streaming it. Per Lambda instance, so a cancel that
-# lands on a different instance than its stream finds nothing and returns 404.
-_request_owners: dict[str, str] = {}
+# (owner, request_id) pairs: streams in progress, and those asked to stop. Request ids are client-chosen, so the
+# owner is part of the key. Per Lambda instance, so a cancel that lands on another instance finds nothing (404).
+_request_owners: set[tuple[str, str]] = set()
+_cancelled_requests: set[tuple[str, str]] = set()
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -972,6 +974,46 @@ async def pin_shared_card(payload: dict, authorization: Optional[str] = Header(N
         return _cards_view(tenant_id, sub, identity)
 
     return await _blocking(pin)
+
+
+def _card_not_found() -> HTTPException:
+    return HTTPException(status_code=404, detail="Card not found")
+
+
+def _card_contract(tenant_id: str, sub: str, card_id: str):
+    """The contract of a built-in card or the caller's own; 404 for any other id."""
+    import user_items_store
+
+    builtin = next((c for c in _default_cards() if c["id"] == card_id), None)
+    if builtin is not None:
+        return builtin["contract"]
+    item = user_items_store.get(tenant_id, sub, "card", card_id) if _CARD_ID.fullmatch(card_id) else None
+    if item is None:
+        raise _card_not_found()
+    return item.get("contract")
+
+
+def _is_pinned(tenant_id: str, sub: str, share_id: str) -> bool:
+    layout, _ = _load_layout(tenant_id, sub)
+    return share_id in layout["order"] or share_id in layout["disabled"]
+
+
+@app.post("/api/v1/me/cards/{card_id}/run")
+async def run_my_card(card_id: str, authorization: Optional[str] = Header(None)):
+    """Run a built-in or own card's contract as the caller, or a pinned shared card through the shared run (which
+    masks it for a Viewer); one 404 for unknown, not the caller's, unpinned and no longer shared."""
+    user, tenant = _caller(authorization)
+    if _SHARE_ID.fullmatch(card_id):
+        if not await _blocking(_is_pinned, tenant.tenant_id, user["sub"], card_id):
+            raise _card_not_found()
+        try:
+            return await run_shared_with_me(card_id, authorization)
+        except HTTPException as e:
+            if e.status_code == 404 and e.detail == _SHARED_NOT_FOUND:
+                raise _card_not_found()
+            raise
+    contract = await _blocking(_card_contract, tenant.tenant_id, user["sub"], card_id)
+    return await _governed_success(await _run_contract(contract, user, tenant))
 
 
 MAX_QUERIES = 500
@@ -1921,9 +1963,9 @@ async def chat(
 
     except (HTTPException, TenantNotReady):
         raise
-    except Exception as e:
-        logger.error(f"Chat engine error: {e}")
-        raise HTTPException(status_code=502, detail=str(e))
+    except Exception:
+        logger.exception("Chat engine error")
+        raise HTTPException(status_code=502, detail=CHAT_FAILED)
 
 
 @app.post("/api/chat/stream")
@@ -1954,8 +1996,9 @@ async def chat_stream(
     tenant = tenant_for(user)
     engine_kwargs = await asyncio.get_running_loop().run_in_executor(None, _engine_kwargs, tenant, user)
 
+    key = (_owner(user, tenant), request_id)
     if request_id:
-        _request_owners[request_id] = _owner(user, tenant)
+        _request_owners.add(key)
 
     async def event_generator():
         """Relay SSE events from chat_engine to the frontend."""
@@ -1967,14 +2010,14 @@ async def chat_stream(
                 engine_kwargs=engine_kwargs,
             ):
                 # Check if request was cancelled
-                if request_id and request_id in _cancelled_requests:
+                if request_id and key in _cancelled_requests:
                     logger.info(f"Request {request_id} was cancelled")
                     cancelled_event = json.dumps({
                         "type": "cancelled",
                         "message": "Request cancelled by user"
                     })
                     yield f"data: {cancelled_event}\n\n"
-                    _cancelled_requests.discard(request_id)
+                    _cancelled_requests.discard(key)
                     break
 
                 # Tool artifacts carry Snowflake Decimal/date/binary values that plain json.dumps rejects.
@@ -1983,17 +2026,13 @@ async def chat_stream(
 
         except TenantNotReady:
             yield f"data: {json.dumps({'type': 'error', 'message': NOT_READY})}\n\n"
-        except Exception as e:
-            logger.error(f"Error in streaming relay: {e}")
-            error_event = json.dumps({
-                "type": "error",
-                "message": str(e)
-            })
-            yield f"data: {error_event}\n\n"
+        except Exception:
+            logger.exception("Error in streaming relay")
+            yield f"data: {json.dumps({'type': 'error', 'message': CHAT_FAILED})}\n\n"
         finally:
             if request_id:
-                _cancelled_requests.discard(request_id)
-                _request_owners.pop(request_id, None)
+                _cancelled_requests.discard(key)
+                _request_owners.discard(key)
 
     return StreamingResponse(
         event_generator(),
@@ -2015,11 +2054,12 @@ async def cancel_chat(
     user = _get_user_from_token(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    if _request_owners.get(request_id) != _owner(user, tenant_for(user)):
+    key = (_owner(user, tenant_for(user)), request_id)
+    if key not in _request_owners:
         raise HTTPException(status_code=404, detail="No such request in progress")
 
     logger.info(f"Cancelling request: {request_id}")
-    _cancelled_requests.add(request_id)
+    _cancelled_requests.add(key)
     return {"success": True, "request_id": request_id}
 
 
@@ -2323,6 +2363,55 @@ async def semantic_catalog(
     if if_none_match and _etag_matches(if_none_match, etag):
         return Response(status_code=304, headers=headers)
     return JSONResponse(body, headers=headers)
+
+
+MAX_SEARCH_QUESTION = 200
+DEFAULT_SEARCH_LIMIT = 8
+MAX_SEARCH_LIMIT = 25
+
+
+@app.get("/api/v1/semantic/search")
+async def semantic_search(q: str = "", limit: int = DEFAULT_SEARCH_LIMIT,
+                          authorization: Optional[str] = Header(None)) -> dict:
+    """The chat's search_catalog over the caller's tenant catalog; a limit over 25 is treated as 25."""
+    from semantic_layer.search import search_catalog
+
+    _, tenant = _caller(authorization)
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="q is required")
+    if len(q) > MAX_SEARCH_QUESTION:
+        raise HTTPException(status_code=400, detail=f"q must be at most {MAX_SEARCH_QUESTION} characters")
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be at least 1")
+    catalog = (await _blocking(_catalog_for, tenant))[0]
+    return {"results": search_catalog(q, catalog, min(limit, MAX_SEARCH_LIMIT))}
+
+
+def _entity_id_pattern() -> re.Pattern:
+    from semantic_layer.schema import DATASET_ID_PATTERN, METRIC_ID_PATTERN
+
+    dataset, metric = DATASET_ID_PATTERN.strip("^$"), METRIC_ID_PATTERN.strip("^$")
+    return re.compile(f"{dataset}|{metric}|{dataset}:[a-z][a-z0-9_]*")
+
+
+_ENTITY_ID = _entity_id_pattern()
+
+
+@app.get("/api/v1/semantic/entity/{entity_id}")
+async def semantic_entity(entity_id: str, authorization: Optional[str] = Header(None)) -> dict:
+    """One dataset, metric, measure or dimension of the caller's tenant catalog, as the catalog describes it."""
+    from semantic_layer.catalog_view import entity_view
+
+    from roles import role_allows_identity
+
+    user, tenant = _caller(authorization)
+    found = None
+    if _ENTITY_ID.fullmatch(entity_id):
+        catalog = (await _blocking(_catalog_for, tenant))[0]
+        found = entity_view(catalog, entity_id, allow_identity=role_allows_identity(user))
+    if found is None:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    return found
 
 
 @app.post("/api/v1/semantic/query")
