@@ -1098,6 +1098,7 @@ async def put_my_prefs(payload: dict, authorization: Optional[str] = Header(None
 
 MAX_IMPORT_CARDS = 1000
 MAX_IMPORT_QUERIES = 2000
+MAX_IMPORT_SQL_CHECKS = 100  # each SQL item is validated (parsed and spliced) as the importing user
 
 
 def _import_id(prefix: str, sub: str, kind: str, source_id) -> str:
@@ -1192,16 +1193,20 @@ def _import_queries(user: dict, tenant: Tenant, queries: list, skipped: list) ->
     import user_items_store
 
     room = MAX_QUERIES - user_items_store.count(tenant_id, sub, "query")
-    created = 0
+    created = sql_checked = 0
     for i, query in enumerate(queries):
         name = _name_of(query, "name")
         try:
             if not isinstance(query, dict):
                 raise _bad_request("query must be an object")
-            body = _saved_query_body({**query, "query_kind": "sql" if "sql" in (query.get("query_kind"), query.get("kind"))
-                                      else "governed"}, user, tenant)
             if room <= 0:
                 raise _bad_request(f"You can save at most {MAX_QUERIES} queries")
+            is_sql = "sql" in (query.get("query_kind"), query.get("kind"))
+            if is_sql:
+                if sql_checked >= MAX_IMPORT_SQL_CHECKS:
+                    raise _bad_request("Too many SQL queries in one import")
+                sql_checked += 1
+            body = _saved_query_body({**query, "query_kind": "sql" if is_sql else "governed"}, user, tenant)
         except HTTPException as e:
             skipped.append({"kind": "query", "name": name, "reason": _skip_reason(e)})
             continue
