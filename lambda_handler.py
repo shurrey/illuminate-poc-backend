@@ -479,13 +479,18 @@ async def _governed_success(response):
     return response
 
 
-def _require_mcp_sql_allowed(body: "SqlRequest") -> None:
-    """Governed first and a real reason, for raw SQL from an MCP-audience caller; 400 otherwise."""
+def _require_mcp_governed() -> None:
+    """400 unless this MCP request carries a session that has already made a governed call."""
     session = _mcp_session.get()
     if session is None:
         raise HTTPException(status_code=400, detail=mcp_access.SESSION_REQUIRED)
     if not session[1].get("governed"):
         raise HTTPException(status_code=400, detail=mcp_access.GOVERNED_FIRST_REFUSAL)
+
+
+def _require_mcp_sql_allowed(body: "SqlRequest") -> None:
+    """Governed first and a real reason, for raw SQL from an MCP-audience caller; 400 otherwise."""
+    _require_mcp_governed()
     # The model's default reason is the web app's label, so an MCP caller that omits one has given none.
     reason = body.reason.strip() if "reason" in body.model_fields_set else ""
     if len(reason) < mcp_access.MIN_REASON:
@@ -1191,6 +1196,8 @@ async def run_my_query(query_id: str, authorization: Optional[str] = Header(None
     stored = _stored_query(item)
     owner = _text(stored, "owner_name")
     reason = _text(stored, "description") or (f"Written by {owner}" if owner else DEFAULT_REASON)
+    if user.get("_via_mcp") and stored["query_kind"] == "sql":
+        _require_mcp_governed()
     response = await _run_stored_query(item, user, tenant, reason, owner_writes=True)
     return response if stored["query_kind"] == "sql" else await _governed_success(response)
 
@@ -1522,6 +1529,9 @@ async def run_shared_with_me(share_id: str, authorization: Optional[str] = Heade
     user, tenant = _caller(authorization)
     share, item, owner = await _blocking(_shared_item, tenant.tenant_id, user["sub"], share_id)
     identity = role_allows_identity(user)
+    governed = share["item_kind"] == "card" or _stored_query(item)["query_kind"] != "sql"
+    if user.get("_via_mcp") and not governed:
+        _require_mcp_governed()
     try:
         if share["item_kind"] == "card":
             response = await _run_contract(item.get("contract"), user, tenant)
@@ -1534,7 +1544,6 @@ async def run_shared_with_me(share_id: str, authorization: Optional[str] = Heade
             raise
         hidden = _stored_values(share["item_kind"], item)
         raise HTTPException(status_code=e.status_code, detail=_scrub(_masked_run(e.detail), hidden))
-    governed = share["item_kind"] == "card" or _stored_query(item)["query_kind"] != "sql"
     if identity:
         return await _governed_success(response) if governed else response
     masked = _masked_run(response)

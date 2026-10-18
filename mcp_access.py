@@ -121,7 +121,8 @@ def session(session_id: str, tenant_id: str, sub: str, now: float | None = None)
         fresh = {**key, "tenant_id": tenant_id, "sub": sub, "governed": False,
                  "expires_at": int(now) + SESSION_SECONDS}
         try:
-            _sessions().put_item(Item=fresh, ConditionExpression="attribute_not_exists(pk) OR expires_at <= :now",
+            _sessions().put_item(Item=fresh, ConditionExpression=("attribute_not_exists(pk) OR attribute_not_exists(expires_at) "
+                                                      "OR expires_at <= :now"),
                                  ExpressionAttributeValues={":now": int(now)})
             return fresh
         except ClientError as e:

@@ -31,9 +31,10 @@ class FakeSessionTable(FakeSessions):
         return {"Item": dict(item)} if item else {}
 
     def put_item(self, Item, ConditionExpression, ExpressionAttributeValues):
-        assert ConditionExpression == "attribute_not_exists(pk) OR expires_at <= :now"
+        assert ConditionExpression == ("attribute_not_exists(pk) OR attribute_not_exists(expires_at) "
+                                       "OR expires_at <= :now")
         current = self.items.get(Item["pk"])
-        if current and current["expires_at"] > ExpressionAttributeValues[":now"]:
+        if current and "expires_at" in current and current["expires_at"] > ExpressionAttributeValues[":now"]:
             raise _conditional_failure()
         self.items[Item["pk"]] = dict(Item)
 
@@ -147,21 +148,72 @@ def test_a_governed_saved_query_run_is_a_governed_call(w, monkeypatch):
     assert item(w)["governed"] is True
 
 
-def test_an_sql_saved_query_run_is_not_a_governed_call(w, monkeypatch):
-    _saved(monkeypatch, {"id": "q_1", "query_kind": "sql", "sql": FREEHAND})
-    assert w.client.post("/api/v1/me/queries/q_1/run", headers=H()).status_code == 200
-    assert item(w)["governed"] is False
+SQL_ROW = {"id": "q_1", "query_kind": "sql", "sql": FREEHAND, "description": "Courses per term"}
 
 
-@pytest.mark.parametrize("kind,row,marks", [
-    ("card", {"id": "c_1", "contract": CONTRACT}, True),
-    ("query", {"id": "q_1", "query_kind": "governed", "contract": CONTRACT}, True),
-    ("query", {"id": "q_1", "query_kind": "sql", "sql": FREEHAND}, False),
+def _sql_kind(monkeypatch, route):
+    """Install an SQL-kind query behind route ('saved' or 'shared'); returns the path that runs it."""
+    if route == "saved":
+        _saved(monkeypatch, SQL_ROW)
+        return "/api/v1/me/queries/q_1/run"
+    monkeypatch.setattr(lambda_handler, "_shared_item", lambda t, s, i: ({"item_kind": "query"}, SQL_ROW, "Owner"))
+    return "/api/v1/shared/sh_1/run"
+
+
+@pytest.mark.parametrize("route", ["saved", "shared"])
+def test_an_sql_kind_run_is_refused_before_a_governed_call(w, monkeypatch, route):
+    r = w.client.post(_sql_kind(monkeypatch, route), headers=H())
+    assert (r.status_code, r.json()) == (400, {"detail": GOVERNED_FIRST})
+    assert w.executed == [] and item(w)["governed"] is False
+
+
+@pytest.mark.parametrize("route", ["saved", "shared"])
+def test_an_sql_kind_run_is_allowed_after_a_governed_call_and_marks_nothing(w, monkeypatch, route):
+    path = _sql_kind(monkeypatch, route)
+    governed(w)
+    w.sessions.items["session#s-1"]["governed"] = True
+    r = w.client.post(path, headers=H())
+    assert r.status_code == 200 and w.executed[-1] == FREEHAND
+
+
+@pytest.mark.parametrize("route", ["saved", "shared"])
+def test_an_sql_kind_run_needs_the_session_header(w, monkeypatch, route):
+    r = w.client.post(_sql_kind(monkeypatch, route), headers=AUTH)
+    assert (r.status_code, r.json()) == (400, {"detail": mcp_access.SESSION_REQUIRED}) and w.executed == []
+
+
+@pytest.mark.parametrize("route", ["saved", "shared"])
+def test_a_web_app_token_runs_an_sql_kind_query_without_a_session(w, monkeypatch, route):
+    w.as_user({"sub": "u1", "custom:tenant_id": "tb", "cognito:groups": []})
+    assert w.client.post(_sql_kind(monkeypatch, route), headers=AUTH).status_code == 200
+    assert w.executed == [FREEHAND]
+
+
+@pytest.mark.parametrize("kind,row", [
+    ("card", {"id": "c_1", "contract": CONTRACT}),
+    ("query", {"id": "q_1", "query_kind": "governed", "contract": CONTRACT}),
 ])
-def test_a_shared_run_is_governed_unless_it_is_sql(w, monkeypatch, kind, row, marks):
+def test_a_shared_governed_run_is_a_governed_call(w, monkeypatch, kind, row):
     monkeypatch.setattr(lambda_handler, "_shared_item", lambda t, s, i: ({"item_kind": kind}, row, "Owner"))
     assert w.client.post("/api/v1/shared/sh_1/run", headers=H()).status_code == 200
-    assert item(w)["governed"] is marks
+    assert item(w)["governed"] is True
+
+
+def test_a_report_run_that_ran_nothing_does_not_mark_the_session(w, monkeypatch):
+    from pathlib import Path
+    from semantic_layer.reports import load_reports
+    monkeypatch.setattr(lambda_handler, "_reports", lambda: load_reports(Path(__file__).parent / "fixtures" / "reports"))
+    monkeypatch.setattr(lambda_handler, "_current_terms", lambda tenant: [])
+    r = w.client.post("/api/v1/reports/report.sample.v1/run", headers=H(),
+                      json={"visual": "roster", "query": "main", "values": {}})
+    assert r.json() == {"unavailable": "Requires Author access"} and item(w)["governed"] is False
+
+
+def test_a_failed_mark_still_returns_the_governed_result(w, monkeypatch):
+    def throttled(*a):
+        raise ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "UpdateItem")
+    monkeypatch.setattr(mcp_access, "mark_governed", throttled)
+    assert governed(w).status_code == 200 and item(w)["governed"] is False
 
 
 def test_a_governed_call_without_a_session_header_works_and_writes_nothing(w):
@@ -287,6 +339,20 @@ def test_a_lost_race_to_the_same_owner_returns_their_session(table, monkeypatch)
         put(**kw)
     monkeypatch.setattr(table, "put_item", racing_put)
     assert mcp_access.session("s", "ta", "u1", now=100.0)["governed"] is True
+
+
+def test_a_session_that_keeps_losing_the_creation_race_is_a_409(table, monkeypatch):
+    def always_lose(**kw):
+        raise _conditional_failure()
+    monkeypatch.setattr(table, "put_item", always_lose)
+    with pytest.raises(HTTPException) as e:
+        mcp_access.session("s", "ta", "u1", now=100.0)
+    assert e.value.status_code == 409
+
+
+def test_an_item_without_an_expiry_is_replaced(table):
+    table.items["session#s"] = {"pk": "session#s", "tenant_id": "tb", "sub": "u2", "governed": True}
+    assert mcp_access.session("s", "ta", "u1", now=100.0)["tenant_id"] == "ta"
 
 
 def test_mark_governed_never_marks_a_session_that_changed_owner(table):
