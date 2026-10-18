@@ -36,6 +36,10 @@ class Clients:
             TableName=f"illuminate-conversations-{ENV}", BillingMode="PAY_PER_REQUEST",
             KeySchema=[{"AttributeName": "context_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "context_id", "AttributeType": "S"}])
+        self.dynamodb.create_table(
+            TableName=f"illuminate-user-items-{ENV}", BillingMode="PAY_PER_REQUEST",
+            KeySchema=[{"AttributeName": "tenant_id", "KeyType": "HASH"}, {"AttributeName": "item_key", "KeyType": "RANGE"}],
+            AttributeDefinitions=[{"AttributeName": "tenant_id", "AttributeType": "S"}, {"AttributeName": "item_key", "AttributeType": "S"}])
         self.secrets.create_secret(Name=f"illuminate/{ENV}/snowflake", SecretString=json.dumps(SECRET))
 
     def user(self, email, tenant):
@@ -53,6 +57,11 @@ class Clients:
     def keys(self, name, tenant):
         items = self.table(name).scan()["Items"]
         return sorted(i["metric_id"] for i in items if i["tenant_id"] == tenant)
+
+    def directory(self, tenant):
+        items = self.table("user-items").scan()["Items"]
+        return {i["body"]["email"]: i["body"]["name"] for i in items
+                if i["tenant_id"] == tenant and i["item_key"].startswith("directory#")}
 
     def migrate(self, **kw):
         return tenant_admin.migrate_current(
@@ -643,3 +652,41 @@ def test_migrate_refuses_a_tenant_secret_scheduled_for_deletion(aws):
     aws.secrets.delete_secret(SecretId=f"illuminate/tenants/{tid}/snowflake", RecoveryWindowInDays=7)
     with pytest.raises(ValueError, match="scheduled for deletion"):
         aws.migrate()
+
+
+def test_create_tenant_writes_a_directory_entry_per_user_named_from_the_email(aws):
+    _groups(aws)
+    tid = _create(aws, users=[("ann.lee@x.edu", "Admin"), ("v@x.edu", "Viewer")])["tenant_id"]
+    assert aws.directory(tid) == {"ann.lee@x.edu": "ann.lee", "v@x.edu": "v"}
+    item = aws.table("user-items").scan()["Items"][0]
+    assert item["item_key"] == f"directory#{item['body']['sub']}"
+
+
+def test_add_users_writes_entries_for_new_and_existing_members_but_not_refused_ones(aws):
+    _groups(aws)
+    tid = _t1(aws)
+    aws.user("other@y.edu", "someone-else")
+    kw = dict(dynamodb=aws.dynamodb, env=ENV, cognito=aws.cognito, user_pool_id=aws.pool, tenant_id=tid)
+    tenant_admin.add_users(users=[("a@x.edu", "Viewer")], **kw)
+    aws.table("user-items").delete_item(Key={"tenant_id": tid, "item_key": f"directory#{_claims(aws, 'a@x.edu')['sub']}"})
+    tenant_admin.add_users(users=[("a@x.edu", "Viewer"), ("other@y.edu", "Viewer")], **kw)
+    assert aws.directory(tid) == {"a@x.edu": "a"}
+
+
+def test_add_users_uses_the_cognito_name_when_there_is_one(aws):
+    tid = _t1(aws)
+    aws.cognito.admin_create_user(UserPoolId=aws.pool, Username="n@x.edu", UserAttributes=[
+        {"Name": "email", "Value": "n@x.edu"}, {"Name": "name", "Value": "Nora Named"},
+        {"Name": "custom:tenant_id", "Value": tid}])
+    tenant_admin.add_users(dynamodb=aws.dynamodb, env=ENV, cognito=aws.cognito, user_pool_id=aws.pool, tenant_id=tid,
+                           users=[("n@x.edu", "Viewer")])
+    assert aws.directory(tid) == {"n@x.edu": "Nora Named"}
+
+
+def test_migrate_writes_entries_for_moved_users_only_and_dry_run_writes_none(aws):
+    seeded(aws)
+    aws.migrate(dry_run=True)
+    assert aws.table("user-items").scan()["Items"] == []
+    tid = aws.migrate()["tenant_id"]
+    assert aws.directory(tid) == {"a@x.edu": "a", "b@x.edu": "b"}
+    assert len(aws.table("user-items").scan()["Items"]) == 2
