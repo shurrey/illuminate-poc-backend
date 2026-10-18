@@ -6,6 +6,7 @@ import { ConversationTable } from './conversation-table';
 import { OverlayTable } from './overlay-table';
 import { UserItemsTable } from './user-items-table';
 import { TenantTable } from './tenant-table';
+import { McpSessionsTable } from './mcp-sessions-table';
 import { Discovery } from '../base/discovery';
 
 export interface ApiStackProps extends cdk.StackProps {
@@ -38,6 +39,10 @@ export class ApiStack extends cdk.Stack {
       environment: props.environment,
     });
 
+    const mcpSessionsTable = new McpSessionsTable(this, 'McpSessionsTable', {
+      environment: props.environment,
+    });
+
     const proxy = new LambdaProxy(this, 'LambdaProxy', {
       environment: props.environment,
       conversationTableArn: conversationTable.table.tableArn,
@@ -48,6 +53,8 @@ export class ApiStack extends cdk.Stack {
       userItemsTableName: userItemsTable.tableName,
       tenantTableArn: tenantTable.table.tableArn,
       tenantTableName: tenantTable.tableName,
+      mcpSessionsTableArn: mcpSessionsTable.table.tableArn,
+      mcpSessionsTableName: mcpSessionsTable.tableName,
       userPoolId: props.userPoolId,
       userPoolClientId: props.userPoolClientId,
     });
