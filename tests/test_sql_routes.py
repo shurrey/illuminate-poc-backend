@@ -184,3 +184,14 @@ def test_validate_previews_the_label_a_run_would_get(as_user, executed, sql, pre
     r = as_user().post("/api/v1/sql/validate", headers=AUTH, json={"sql": sql, "governed": {"governed_1": PART}})
     assert r.json() == {"ok": True, "governance_preview": preview}
     assert executed == []
+
+
+def test_a_too_deeply_nested_spliced_statement_is_a_refusal_not_a_500(as_user, executed):
+    sql = "SELECT term_name FROM " + "(SELECT term_name FROM " * 150 + "governed_1" + ") AS s" * 150
+    c = as_user()
+    body = {"sql": sql, "governed": {"governed_1": PART}}
+    assert c.post("/api/v1/sql/validate", headers=AUTH, json=body).json() == {
+        "ok": False, "error": "The query is too complex to check."}
+    r = c.post("/api/v1/sql/run", headers=AUTH, json=body)
+    assert r.status_code == 400 and r.json()["detail"] == "The query is too complex to check."
+    assert executed == []

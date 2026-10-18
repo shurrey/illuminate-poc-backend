@@ -570,6 +570,7 @@ class Result:
 _issued: "weakref.WeakSet[Validated]" = weakref.WeakSet()
 
 COMPILED_MISMATCH = "The SQL does not match the query the server compiled."
+TOO_COMPLEX = "The query is too complex to check."
 
 
 def _canonical(stmt) -> str:
@@ -594,6 +595,10 @@ def validate(sql: str | None, ctx: GuardContext, mode: Mode) -> Validated | Refu
                              allow_identity=ctx.allow_identity)
         except SpliceError as e:
             return Refusal(str(e))
+        except Exception as e:
+            # Very deep nesting raises RecursionError inside sqlglot.
+            logger.warning("Splice failed (%s); refusing", type(e).__name__)
+            return Refusal(TOO_COMPLEX)
         sql = spliced.sql
     elif not isinstance(mode, (Freehand, Compiled)):
         raise TypeError(f"unknown guard mode {mode!r}")
