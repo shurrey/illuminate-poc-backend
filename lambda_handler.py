@@ -491,6 +491,7 @@ def _record_in_directory(tenant_id: str, user: dict) -> None:
 
 
 MAX_DIRECTORY_RESULTS = 25
+MAX_DIRECTORY_QUERY = 100
 
 
 @app.get("/api/v1/directory")
@@ -499,7 +500,7 @@ async def search_directory(q: str = "", authorization: Optional[str] = Header(No
     import user_items_store
 
     tenant_id, sub = _cards_caller(authorization)
-    needle = q.strip().casefold()
+    needle = q.strip()[:MAX_DIRECTORY_QUERY].casefold()
 
     def search() -> dict:
         found = [
@@ -630,8 +631,9 @@ def _cards_view(tenant_id: str, sub: str) -> dict:
 
     layout, version = _load_layout(tenant_id, sub)
     by_id = {c["id"]: {**c, "isBuiltIn": True} for c in _default_cards() if c["id"] not in layout["hidden"]}
+    shared = _share_summaries(tenant_id, sub, "card")
     for item in user_items_store.list_kind(tenant_id, sub, "card"):
-        by_id[item["id"]] = _custom_card(item)
+        by_id[item["id"]] = {**_custom_card(item), "shared": shared.get(item["id"], _NOT_SHARED)}
     ordered = [i for i in dict.fromkeys(layout["order"]) if i in by_id]
     ordered += [i for i in by_id if i not in ordered]
     return {
@@ -791,7 +793,7 @@ async def delete_my_card(card_id: str, authorization: Optional[str] = Header(Non
 
         if card_id in {c["id"] for c in _default_cards()}:
             _mutate_layout(tenant_id, sub, hide)
-        elif _CARD_ID.fullmatch(card_id) and user_items_store.delete(tenant_id, sub, "card", card_id):
+        elif _CARD_ID.fullmatch(card_id) and _delete_item_and_share(tenant_id, sub, "card", card_id):
             _mutate_layout(tenant_id, sub, forget)
         else:
             raise HTTPException(status_code=404, detail="Card not found")
@@ -972,7 +974,8 @@ async def get_my_queries(authorization: Optional[str] = Header(None)) -> dict:
     def load() -> dict:
         items = user_items_store.list_kind(tenant_id, sub, "query")
         items.sort(key=lambda i: i.get("createdAt") or "", reverse=True)
-        return {"queries": [_query_view(i) for i in items]}
+        shared = _share_summaries(tenant_id, sub, "query")
+        return {"queries": [{**_query_view(i), "shared": shared.get(i["id"], _NOT_SHARED)} for i in items]}
 
     return await _blocking(load)
 
@@ -1060,11 +1063,134 @@ async def delete_my_query(query_id: str, authorization: Optional[str] = Header(N
     tenant_id, sub = _cards_caller(authorization)
 
     def remove() -> dict:
-        if not (_QUERY_ID.fullmatch(query_id) and user_items_store.delete(tenant_id, sub, "query", query_id)):
+        if not (_QUERY_ID.fullmatch(query_id) and _delete_item_and_share(tenant_id, sub, "query", query_id)):
             raise HTTPException(status_code=404, detail="Query not found")
         return {"deleted": query_id}
 
     return await _blocking(remove)
+
+
+MAX_SHARE_RECIPIENTS = 200
+_NOT_SHARED = {"tenant": False, "count": 0}
+
+
+def _share_summaries(tenant_id: str, sub: str, item_kind: str) -> dict[str, dict]:
+    import user_items_store
+
+    return {s["item_id"]: {"tenant": bool(s.get("tenant")), "count": len(s.get("recipients", []))}
+            for s in user_items_store.list_shares(tenant_id, sub) if s["item_kind"] == item_kind}
+
+
+def _delete_item_and_share(tenant_id: str, sub: str, item_kind: str, item_id: str) -> bool:
+    """The share goes first, so a failure part-way leaves an unshared item rather than a share on a deleted one."""
+    import user_items_store
+
+    user_items_store.delete_share(tenant_id, sub, item_kind, item_id)
+    return user_items_store.delete(tenant_id, sub, item_kind, item_id)
+
+
+def _require_shareable(tenant_id: str, sub: str, item_kind: str, item_id: str) -> None:
+    import user_items_store
+
+    if item_kind == "card" and item_id in {c["id"] for c in _default_cards()}:
+        raise _bad_request("Built-in cards can't be shared")
+    pattern = _CARD_ID if item_kind == "card" else _QUERY_ID
+    if not (pattern.fullmatch(item_id) and user_items_store.get(tenant_id, sub, item_kind, item_id)):
+        raise HTTPException(status_code=404, detail=f"{item_kind.capitalize()} not found")
+
+
+def _share_view(share: Optional[dict], names: dict[str, str]) -> dict:
+    if share is None:
+        return {"share_id": None, "recipients": [], "tenant": False}
+    return {"share_id": share["share_id"], "tenant": bool(share.get("tenant")),
+            "recipients": [{"sub": r, "name": names.get(r, r)} for r in share.get("recipients", [])]}
+
+
+def _share_recipients(payload, tenant_id: str, sub: str, names: dict[str, str]) -> tuple[list[str], bool]:
+    if not isinstance(payload, dict):
+        raise _bad_request("Body must be an object with recipients and tenant")
+    recipients, tenant = payload.get("recipients"), payload.get("tenant")
+    if not isinstance(recipients, list):
+        raise _bad_request("recipients must be a list")
+    if not isinstance(tenant, bool):
+        raise _bad_request("tenant must be true or false")
+    if len(recipients) > MAX_SHARE_RECIPIENTS:
+        raise _bad_request(f"You can share with at most {MAX_SHARE_RECIPIENTS} people")
+    if len(set(map(str, recipients))) != len(recipients):
+        raise _bad_request("A recipient is listed twice")
+    if sub in recipients:
+        raise _bad_request("You can't share with yourself")
+    if not all(isinstance(r, str) and r in names for r in recipients):
+        raise _bad_request("Every recipient must be in your tenant directory")
+    return recipients, tenant
+
+
+def _directory_names(tenant_id: str) -> dict[str, str]:
+    import user_items_store
+
+    return {e["sub"]: e["name"] for e in user_items_store.list_directory(tenant_id)}
+
+
+def _set_share(tenant_id: str, sub: str, item_kind: str, item_id: str, payload) -> dict:
+    """Create, update or (empty recipients and tenant false) remove the item's share. Re-sharing keeps the share id."""
+    import user_items_store
+
+    _require_shareable(tenant_id, sub, item_kind, item_id)
+    names = _directory_names(tenant_id)
+    recipients, tenant = _share_recipients(payload, tenant_id, sub, names)
+    if not recipients and not tenant:
+        user_items_store.delete_share(tenant_id, sub, item_kind, item_id)
+        return _share_view(None, names)
+    for attempt in range(3):
+        current = user_items_store.get_share(tenant_id, sub, item_kind, item_id)
+        try:
+            if current is None:
+                saved = user_items_store.put_share(tenant_id, sub, item_kind, item_id,
+                                                   {"recipients": recipients, "tenant": tenant})
+            else:
+                saved = user_items_store.update_share(tenant_id, sub, item_kind, item_id,
+                                                      {"recipients": recipients, "tenant": tenant}, current["version"])
+            return _share_view(saved, names)
+        except user_items_store.Conflict:
+            if attempt == 2:
+                raise HTTPException(status_code=409, detail="This share changed elsewhere; reload and try again")
+
+
+def _share_routes(plural: str, item_kind: str) -> None:
+    import user_items_store
+
+    path = f"/api/v1/me/{plural}/{{item_id}}/share"
+
+    @app.put(path, name=f"put_{item_kind}_share")
+    async def put_share(item_id: str, payload: dict, authorization: Optional[str] = Header(None)) -> dict:
+        """Share the caller's item with people in their tenant, or with everyone in it; empty unshares."""
+        tenant_id, sub = _cards_caller(authorization)
+        return await _blocking(_set_share, tenant_id, sub, item_kind, item_id, payload)
+
+    @app.get(path, name=f"get_{item_kind}_share")
+    async def get_share(item_id: str, authorization: Optional[str] = Header(None)) -> dict:
+        tenant_id, sub = _cards_caller(authorization)
+
+        def load() -> dict:
+            _require_shareable(tenant_id, sub, item_kind, item_id)
+            return _share_view(user_items_store.get_share(tenant_id, sub, item_kind, item_id), _directory_names(tenant_id))
+
+        return await _blocking(load)
+
+    @app.delete(path, name=f"delete_{item_kind}_share")
+    async def delete_share(item_id: str, authorization: Optional[str] = Header(None)) -> dict:
+        tenant_id, sub = _cards_caller(authorization)
+
+        def remove() -> dict:
+            _require_shareable(tenant_id, sub, item_kind, item_id)
+            user_items_store.delete_share(tenant_id, sub, item_kind, item_id)
+            return _share_view(None, {})
+
+        return await _blocking(remove)
+
+
+_share_routes("queries", "query")
+_share_routes("cards", "card")
 
 
 _PREF_LISTS = ("favorites", "recentReports", "readNotifications")
