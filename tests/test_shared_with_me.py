@@ -1,4 +1,6 @@
 import pytest
+
+import lambda_handler
 from botocore.exceptions import ClientError
 
 import user_items_store as store
@@ -365,6 +367,13 @@ def test_delete_share_treats_a_failed_condition_as_nothing_removed(world, monkey
      "SELECT TOP 5 a FROM t SAMPLE (10) FETCH FIRST 3 ROWS ONLY"),
     ("SELECT a FROM t TABLESAMPLE BERNOULLI (20 ROWS) SEED (7)",
      "SELECT a FROM t TABLESAMPLE BERNOULLI (20 ROWS) SEED (7)"),
+    ("SELECT seed(12345), repeatable (678) FROM t", "SELECT seed('…'), repeatable ('…') FROM t"),
+    ("SELECT a FROM t SAMPLE (10) QUALIFY seed(5) > 1", "SELECT a FROM t SAMPLE (10) QUALIFY seed('…') > '…'"),
+    ("SELECT a FROM t SAMPLE (10) UNION ALL SELECT seed(5) FROM u",
+     "SELECT a FROM t SAMPLE (10) UNION ALL SELECT seed('…') FROM u"),
+    ("SELECT a FROM t TABLESAMPLE BERNOULLI (10) REPEATABLE (7)",
+     "SELECT a FROM t TABLESAMPLE BERNOULLI (10) REPEATABLE (7)"),
+    ("SELECT a FROM t SAMPLE (10) SEED (7) WHERE b = 1", "SELECT a FROM t SAMPLE (10) SEED (7) WHERE b = '…'"),
     ("SELECT a -- for jane@x.edu\nFROM t /* jane */ WHERE b = 1",
      "SELECT a\nFROM t WHERE b = '…'"),
     ("SELECT a FROM t -- trailing jane", "SELECT a FROM t"),
@@ -380,7 +389,7 @@ def test_redact_contract_replaces_every_filter_value_and_keeps_the_rest():
     contract = {"metrics": ["m"], "filters": [{"dimension": "d", "op": "in", "values": ["a", 2, True]},
                                               {"dimension": "e", "op": "is_null"}], "limit": 5}
     assert redact_contract(contract) == {"metrics": ["m"], "limit": 5, "filters": [
-        {"dimension": "d", "op": "in", "values": ["…", "…", "…"]}, {"dimension": "e", "op": "is_null", "values": []}]}
+        {"dimension": "d", "op": "in", "values": ["…", "…", "…"]}, {"dimension": "e", "op": "is_null"}]}
     assert contract["filters"][0]["values"] == ["a", 2, True]
     assert redact_contract("tampered") == {}
     assert redact_contract({"metrics": ["m"], "filters": "x"}) == {"metrics": ["m"], "filters": []}
@@ -395,3 +404,177 @@ def test_delete_share_never_removes_a_newer_share(world, monkeypatch):
     monkeypatch.setattr(store, "get_share", real)
     assert store.get_share(T, "owner", "query", "q_a")["share_id"] == newer["share_id"]
     assert store.get_share_pointer(T, newer["share_id"]) is not None
+
+
+def test_a_governed_item_without_a_contract_hides_nothing_so_a_viewer_can_copy_it(world):
+    for kind, item in (("card", {"label": "x"}), ("query", {"query_kind": "governed", "name": "n"})):
+        assert lambda_handler._hides_values(kind, item) is False
+    assert lambda_handler._hides_values("card", {"contract": "tampered"}) is True
+
+
+# --- pinned shared cards on the home page ---
+
+PIN = "/api/v1/me/cards/pin-shared"
+
+
+def pin(client, sid):
+    return client.post(PIN, headers=AUTH, json={"share_id": sid})
+
+
+def home(client):
+    r = client.get("/api/v1/me/cards", headers=AUTH)
+    assert r.status_code == 200
+    return r.json()
+
+
+def shared_cards(client):
+    return [c for c in home(client)["cards"] if c.get("shared") is True]
+
+
+def test_pin_view_and_run_a_shared_card(world, monkeypatch):
+    o = world(OWNER)
+    cid = make(o, "cards", NEW)
+    sid = share(o, "cards", cid, ["ann"])
+    a = world(ANN)
+    r = pin(a, sid)
+    assert r.status_code == 200
+    assert shared_cards(a) == [{"label": "Mine", "description": "d", "longDescription": "ld", "format": "number",
+                                "contract": NEW["contract"], "id": sid, "shared": True,
+                                "owner": {"name": "Olive Owner"}, "isBuiltIn": False, "enabled": True}]
+    assert cid not in a.get("/api/v1/me/cards", headers=AUTH).text
+    assert [c["id"] for c in r.json()["cards"]][-1] == sid
+    assert store.list_kind(T, "ann", "card") == []
+
+    seen = []
+
+    async def fake(contract, user, tenant):
+        seen.append((contract, user["sub"]))
+        return {"ok": True}
+
+    monkeypatch.setattr(lambda_handler, "_run_contract", fake)
+    assert run(a, sid).status_code == 200 and seen == [(NEW["contract"], "ann")]
+
+
+def test_pinning_is_idempotent_and_survives_a_layout_put_and_reset(world):
+    o = world(OWNER)
+    sid = share(o, "cards", make(o, "cards", NEW), ["ann"])
+    a = world(ANN)
+    pin(a, sid)
+    first = pin(a, sid).json()
+    assert [c["id"] for c in first["cards"]].count(sid) == 1
+    order = [c["id"] for c in first["cards"]]
+    put = a.put("/api/v1/me/cards/layout", headers=AUTH,
+                json={"order": order[::-1], "disabled": [sid], "hidden": [], "expected_version": first["version"]})
+    assert put.status_code == 200
+    assert [c["id"] for c in put.json()["cards"]][0] == sid and put.json()["disabled"] == [sid]
+    reset = a.post("/api/v1/me/cards/reset", headers=AUTH)
+    assert sid in [c["id"] for c in reset.json()["cards"]] and reset.json()["disabled"] == [sid]
+
+
+def test_remove_a_pinned_card_through_delete(world):
+    o = world(OWNER)
+    sid = share(o, "cards", make(o, "cards", NEW), ["ann"])
+    a = world(ANN)
+    pin(a, sid)
+    r = a.delete(f"/api/v1/me/cards/{sid}", headers=AUTH)
+    assert r.status_code == 200 and sid not in [c["id"] for c in r.json()["cards"]]
+    assert a.delete(f"/api/v1/me/cards/{sid}", headers=AUTH).status_code == 404
+    assert view(a, sid).status_code == 200
+
+
+def test_unsharing_or_deleting_removes_the_card_without_rewriting_the_layout(world):
+    o = world(OWNER)
+    cid = make(o, "cards", NEW)
+    sid = share(o, "cards", cid, ["ann"])
+    pin(world(ANN), sid)
+    before = store.get(T, "ann", "layout")
+    assert world(OWNER).delete(f"/api/v1/me/cards/{cid}/share", headers=AUTH).status_code == 200
+    a = world(ANN)
+    assert shared_cards(a) == [] and sid not in a.get("/api/v1/me/cards", headers=AUTH).text
+    assert store.get(T, "ann", "layout") == before
+    sid2 = share(world(OWNER), "cards", cid, ["ann"])
+    assert sid2 != sid and shared_cards(world(ANN)) == []
+
+
+def test_the_owners_edit_is_reflected_and_a_removed_member_loses_the_card(world):
+    o = world(OWNER)
+    cid = make(o, "cards", NEW)
+    sid = share(o, "cards", cid, ["ann", "bob"])
+    pin(world(ANN), sid)
+    o = world(OWNER)
+    assert o.put(f"/api/v1/me/cards/{cid}", headers=AUTH, json={**NEW, "label": "Renamed"}).status_code == 200
+    assert [c["label"] for c in shared_cards(world(ANN))] == ["Renamed"]
+    share(world(OWNER), "cards", cid, ["bob"])
+    assert shared_cards(world(ANN)) == []
+
+
+def test_a_non_member_a_query_share_and_junk_cannot_be_pinned(world):
+    o = world(OWNER)
+    sid = share(o, "cards", make(o, "cards", NEW), ["ann"])
+    qsid = share(o, "queries", make(o, "queries", Q), ["bob"])
+    for who, target in ((BOB, sid), (BOB, qsid), (OWNER, sid), (ANN, "sh_0000000000000000"), (ANN, "nope")):
+        r = pin(world(who), target)
+        assert r.status_code == 404 and r.json() == NOT_FOUND
+    assert pin(world(ANN), 7).status_code == 404
+    for who, target in ((BOB, sid), (ANN, qsid), (BOB, "sh_0000000000000000")):
+        c = world(who)
+        r = c.put("/api/v1/me/cards/layout", headers=AUTH,
+                  json={"order": [target], "disabled": [], "hidden": [], "expected_version": 0})
+        assert r.status_code == 400
+    assert store.get(T, "bob", "layout") is None
+
+
+def test_a_viewer_sees_a_pinned_card_redacted_and_an_admin_the_stored_one(world):
+    o = world(OWNER)
+    sid = share(o, "cards", make(o, "cards", {**NEW, "contract": PII_CONTRACT}), ["ann", "ada"])
+    for who in (ANN, ADA):
+        c = world(who)
+        pin(c, sid)
+    viewer, admin = shared_cards(world(ANN))[0], shared_cards(world(ADA))[0]
+    assert "prompt" not in viewer and viewer["contract"]["filters"][0]["values"] == ["…"]
+    assert "jane@example.edu" not in str(viewer)
+    assert admin["prompt"] == "p" and admin["contract"] == PII_CONTRACT
+
+
+def test_the_owners_own_card_listing_is_unchanged_by_recipients_pinning(world):
+    o = world(OWNER)
+    cid = make(o, "cards", NEW)
+    sid = share(o, "cards", cid, ["ann"])
+    before = home(o)
+    pin(world(ANN), sid)
+    assert home(world(OWNER)) == before
+    assert [c["id"] for c in before["cards"] if c.get("shared") is True] == []
+
+
+def test_at_most_fifty_shared_cards_can_be_pinned(world):
+    o = world(OWNER)
+    sids = [share(o, "cards", make(o, "cards", {**NEW, "label": f"c{i}"}), ["ann"]) for i in range(51)]
+    a = world(ANN)
+    assert all(pin(a, s).status_code == 200 for s in sids[:50])
+    r = pin(a, sids[50])
+    assert r.status_code == 400 and "50" in str(r.json())
+    assert pin(a, sids[0]).status_code == 200
+    layout = home(a)
+    over = a.put("/api/v1/me/cards/layout", headers=AUTH, json={
+        "order": [c["id"] for c in layout["cards"]] + [sids[50]], "disabled": [], "hidden": [],
+        "expected_version": layout["version"]})
+    assert over.status_code == 400
+
+
+def test_delete_removes_a_pin_that_is_only_disabled_and_pin_prunes_dead_pins(world):
+    o = world(OWNER)
+    c1, c2 = make(o, "cards", NEW), make(o, "cards", {**NEW, "label": "two"})
+    s1, s2 = share(o, "cards", c1, ["ann"]), share(world(OWNER), "cards", c2, ["ann"])
+    a = world(ANN)
+    pin(a, s1)
+    pin(a, s2)
+    layout = store.get(T, "ann", "layout")
+    store.put(T, "ann", "layout", None, {"order": [i for i in layout["order"] if i != s1], "disabled": [s1],
+                                         "hidden": []}, expected_version=layout["version"])
+    assert a.delete(f"/api/v1/me/cards/{s1}", headers=AUTH).status_code == 200
+    assert s1 not in store.get(T, "ann", "layout")["disabled"]
+
+    pin(a, s1)
+    world(OWNER).delete(f"/api/v1/me/cards/{c2}/share", headers=AUTH)
+    pin(world(ANN), s1)
+    assert s2 not in store.get(T, "ann", "layout")["order"]

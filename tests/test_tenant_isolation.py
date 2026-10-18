@@ -677,6 +677,7 @@ NO_SECRET_ROUTES = [
     ("PUT", "/api/v1/me/cards/c_000000000000", {"json": CARD}),
     ("DELETE", "/api/v1/me/cards/c_000000000000", {}),
     ("POST", "/api/v1/me/cards/reset", {}),
+    ("POST", "/api/v1/me/cards/pin-shared", {"json": {"share_id": "sh_0000000000000000"}}),
     ("GET", "/api/v1/me/queries", {}),
     ("POST", "/api/v1/me/queries", {"json": QUERY}),
     ("PUT", "/api/v1/me/queries/q_000000000000", {"json": QUERY}),
@@ -817,3 +818,25 @@ def test_shared_never_crosses(world):
                 _clean(r.text)
         assert len(world.log) == before
     assert user_items_store.list_kind(B, "u2", "query") == [] and user_items_store.list_kind(B, "u2", "card") == []
+
+
+def test_pinned_shared_cards_never_cross(world):
+    c = world.client
+    everyone = {"recipients": [], "tenant": True}
+    cid = c.post("/api/v1/me/cards", headers=AS_A, json=CARD).json()["id"]
+    sid = c.put(f"/api/v1/me/cards/{cid}/share", headers=AS_A, json=everyone).json()["share_id"]
+    as_av = {"Authorization": "Bearer av"}
+    assert c.post("/api/v1/me/cards/pin-shared", headers=as_av, json={"share_id": sid}).status_code == 200
+    assert sid in c.get("/api/v1/me/cards", headers=as_av).text
+
+    for headers in (AS_B, {"Authorization": "Bearer bv"}):
+        r = c.post("/api/v1/me/cards/pin-shared", headers=headers, json={"share_id": sid})
+        assert r.status_code == 404 and r.json() == {"detail": "Shared item not found"}
+        _clean(r.text)
+        r = c.put("/api/v1/me/cards/layout", headers=headers,
+                  json={"order": [sid], "disabled": [], "hidden": [], "expected_version": 0})
+        assert r.status_code == 400
+        cards = c.get("/api/v1/me/cards", headers=headers)
+        assert sid not in cards.text
+        _clean(cards.text)
+    assert user_items_store.get(B, "u2", "layout") is None and user_items_store.get(B, "u1", "layout") is None
