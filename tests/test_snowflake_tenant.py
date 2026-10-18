@@ -209,7 +209,7 @@ def test_secret_without_database_raises_before_connecting(aws):
 
 
 @pytest.mark.parametrize("call", [
-    lambda: snowflake_client.GuardContext.of(catalog=fixture_catalog(), database="DB", allow_identity=False),
+    lambda: snowflake_client.GuardContext.of(catalog=fixture_catalog(), allow_identity=False),
     lambda: snowflake_client.query_sql("SELECT 1"),
     lambda: snowflake_client.query_preview("CDM_LMS", "T"),
 ])

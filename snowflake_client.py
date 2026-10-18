@@ -509,11 +509,12 @@ class GuardContext:
     database: str
 
     @classmethod
-    def of(cls, tenant: Tenant, catalog: Catalog, database: str, *, allow_identity: bool) -> "GuardContext":
-        """extra_pii is every dataset's declared PII columns, upper-cased."""
+    def of(cls, tenant: Tenant, catalog: Catalog, *, allow_identity: bool) -> "GuardContext":
+        """The database is the tenant's own; extra_pii is every dataset's declared PII columns, upper-cased.
+        Raises TenantNotReady when the tenant has no usable warehouse secret."""
         extra_pii = frozenset(c.upper() for ds in catalog.datasets.values() for c in ds.pii_columns)
         return cls(tenant=tenant, allow_identity=allow_identity, extra_pii=extra_pii, catalog=catalog,
-                   database=database)
+                   database=tenant_database(tenant))
 
 
 @dataclass(frozen=True)
@@ -580,6 +581,9 @@ def validate(sql: str | None, ctx: GuardContext, mode: Mode) -> Validated | Refu
     """
     spliced = None
     if isinstance(mode, Spliced):
+        for name, part in mode.governed.items():
+            if not isinstance(part, QueryContract):
+                return Refusal(f"{name}: a governed part must be a query contract.")
         try:
             spliced = splice(mode.outer_sql, mode.governed, ctx.catalog, ctx.database,
                              allow_identity=ctx.allow_identity)
