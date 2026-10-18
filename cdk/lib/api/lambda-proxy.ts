@@ -86,10 +86,16 @@ export class LambdaProxy extends Construct {
       resources: [props.userItemsTableArn],
     }));
 
-    // Tenant registry (read only)
+    // Tenant registry: reads, and the admin MCP setting's single-row update
     role.addToPolicy(new iam.PolicyStatement({
-      actions: ['dynamodb:GetItem'],
+      actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
       resources: [props.tenantTableArn],
+    }));
+
+    // MCP discovery (client id and URL published by the MCP stack)
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:parameter/illuminate/${props.environment}/mcp-*`],
     }));
 
     // Per-tenant Snowflake credentials
@@ -133,7 +139,7 @@ export class LambdaProxy extends Construct {
           command: [
             'bash', '-c', [
               'pip install -q -t /asset-output --platform manylinux2014_x86_64 --implementation cp --python-version 3.11 --only-binary=:all: -r requirements-lambda.txt',
-              'cp lambda_handler.py chat_engine.py conversation_store.py snowflake_client.py overlay_store.py user_items_store.py roles.py tenancy.py licenses.py run.sh /asset-output/',
+              'cp lambda_handler.py chat_engine.py conversation_store.py snowflake_client.py overlay_store.py user_items_store.py roles.py tenancy.py licenses.py mcp_access.py run.sh /asset-output/',
               // Semantic layer: the package (with its dictionary snapshot) and the canonical definitions
               'cp -r semantic_layer /asset-output/',
               'cp -r canonical /asset-output/',
@@ -150,6 +156,7 @@ export class LambdaProxy extends Construct {
         OVERLAY_TABLE: props.overlayTableName,
         USER_ITEMS_TABLE: props.userItemsTableName,
         TENANT_TABLE: props.tenantTableName,
+        ENVIRONMENT: props.environment,
         BEDROCK_MODEL_ID: 'us.anthropic.claude-sonnet-4-6',
         USER_POOL_ID: props.userPoolId,
         USER_POOL_CLIENT_ID: props.userPoolClientId,

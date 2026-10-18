@@ -302,6 +302,34 @@ def test_schema_describe_never_crosses(world):
     assert world.connects == []
 
 
+def test_mcp_setting_never_crosses(world):
+    c = world.client
+    assert c.get("/api/v1/admin/settings/mcp", headers=AS_B).json() == {"enabled": False}
+    assert c.put("/api/v1/admin/settings/mcp", headers=AS_A, json={"enabled": True}).json() == {"enabled": True}
+    assert c.get("/api/v1/admin/settings/mcp", headers=AS_A).json() == {"enabled": True}
+    assert c.get("/api/v1/admin/settings/mcp", headers=AS_B).json() == {"enabled": False}
+    assert tenancy.get_tenant(B).mcp_enabled is False
+    forged = c.put("/api/v1/admin/settings/mcp", headers=AS_B, params={"tenant_id": A},
+                   json={"enabled": False, "tenant_id": A})
+    assert forged.json() == {"enabled": False}
+    assert c.get("/api/v1/admin/settings/mcp", headers=AS_A).json() == {"enabled": True}
+    assert c.put("/api/v1/admin/settings/mcp", headers={"Authorization": "Bearer av"},
+                 json={"enabled": True}).status_code == 403
+    assert c.put("/api/v1/admin/settings/mcp", headers={"Authorization": "Bearer ghost"},
+                 json={"enabled": True}).status_code == 403
+
+
+def test_mcp_setup_never_crosses(world, monkeypatch):
+    import mcp_access
+
+    monkeypatch.setattr(mcp_access, "_mcp_discovery", lambda: ("cid", "https://mcp.example.com/mcp"))
+    c = world.client
+    r = c.get("/api/v1/admin/mcp/setup", headers=AS_B)
+    assert r.status_code == 200 and r.json()["deployed"] is True
+    _clean(r.text)
+    assert c.get("/api/v1/admin/mcp/setup", headers={"Authorization": "Bearer bv"}).status_code == 403
+
+
 def test_me_never_crosses(world):
     c = world.client
     a_resp = c.get("/api/v1/me", headers=AS_A)
@@ -700,6 +728,9 @@ NO_SECRET_ROUTES = [
     ("DELETE", f"/api/v1/admin/overlay/{MEASURE}?expected_version=1", {}),
     ("GET", f"/api/v1/admin/overlay/{MEASURE}/history", {}),
     ("POST", f"/api/v1/admin/overlay/{MEASURE}/revert", {"json": {"version": 1, "expected_version": 1}}),
+    ("GET", "/api/v1/admin/settings/mcp", {}),
+    ("PUT", "/api/v1/admin/settings/mcp", {"json": {"enabled": True}}),
+    ("GET", "/api/v1/admin/mcp/setup", {}),
     ("POST", "/api/chat/cancel/r1", {}),
 ]
 TENANT_ROUTES = SECRET_ROUTES + NO_SECRET_ROUTES
