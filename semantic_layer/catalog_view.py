@@ -48,3 +48,33 @@ def public_catalog(catalog: Catalog, allow_identity: bool = False) -> dict:
             for m in catalog.metrics.values() if m.dataset_id in public
         ],
     }
+
+
+def _dataset_summary(ds: dict) -> dict:
+    return {"id": ds["id"], "display_name": ds["display_name"], "grain": ds["grain"]}
+
+
+def entity_view(catalog: Catalog, entity_id: str, allow_identity: bool = False) -> dict | None:
+    """One public dataset, metric, measure or dimension ('<dataset id>:<name>') as public_catalog shows it, with its
+    kind; a metric or measure also lists the dimensions it can be broken down by. None when there is no such entity."""
+    view = public_catalog(catalog, allow_identity)
+    datasets = {d["id"]: d for d in view["datasets"]}
+    if entity_id in datasets:
+        return {"kind": "dataset", **datasets[entity_id]}
+    metric = next((m for m in view["metrics"] if m["id"] == entity_id), None)
+    if metric is not None:
+        ds = datasets[metric["measure"].split(":", 1)[0]]
+        return {"kind": "metric", **metric, "dataset": _dataset_summary(ds),
+                "dimensions": ds["dimensions"], "joins": ds["joins"]}
+    ds_id, _, name = entity_id.partition(":")
+    ds = datasets.get(ds_id)
+    if ds is None or not name:
+        return None
+    measure = next((m for m in ds["measures"] if m["name"] == name), None)
+    if measure is not None:
+        return {"kind": "measure", "id": entity_id, **measure, "dataset": _dataset_summary(ds),
+                "dimensions": ds["dimensions"], "joins": ds["joins"]}
+    dimension = next((d for d in ds["dimensions"] if d["name"] == name), None)
+    if dimension is not None:
+        return {"kind": "dimension", "id": entity_id, **dimension, "dataset": _dataset_summary(ds)}
+    return None

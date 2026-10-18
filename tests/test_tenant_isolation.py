@@ -692,11 +692,14 @@ SECRET_ROUTES = [
     ("POST", "/api/v1/me/queries", {"json": {"name": "n", "query_kind": "sql", "sql": SQL, "governed_parts": {}}}),
     ("POST", "/api/v1/me/queries/q_000000000000/run", {}),
     ("POST", "/api/v1/shared/sh_0000000000000000/run", {}),
+    ("POST", "/api/v1/me/cards/active-students/run", {}),
 ]
 NO_SECRET_ROUTES = [
     ("POST", "/api/v1/sql/validate", {"json": {"sql": SQL}}),
     ("GET", DESCRIBE, {}),
     ("GET", "/api/v1/semantic/catalog", {}),
+    ("GET", "/api/v1/semantic/search?q=courses", {}),
+    ("GET", "/api/v1/semantic/entity/dataset.student_grade.v1", {}),
     ("GET", "/api/v1/reports", {}),
     ("GET", "/api/v1/me", {}),
     ("GET", "/api/v1/directory", {}),
@@ -850,6 +853,37 @@ def test_shared_never_crosses(world):
                 _clean(r.text)
         assert len(world.log) == before
     assert user_items_store.list_kind(B, "u2", "query") == [] and user_items_store.list_kind(B, "u2", "card") == []
+
+
+def test_tool_routes_never_cross(world):
+    _seed_a_overlays()
+    c = world.client
+    entity = "/api/v1/semantic/entity/dataset.student_grade.v1"
+    measure_entity = f"/api/v1/semantic/entity/{MEASURE.partition(':')[2]}"
+    assert MARK_A in c.get(entity, headers=AS_A).text
+    assert c.get(measure_entity, headers=AS_A).json()["expr"] == "ROUND(GRADE_PERCENTAGE, 0)"
+    cid = c.post("/api/v1/me/cards", headers=AS_A, json=CARD).json()["id"]
+    sid = c.put(f"/api/v1/me/cards/{cid}/share", headers=AS_A,
+                json={"recipients": [], "tenant": True}).json()["share_id"]
+    assert MARK_A in c.post(f"/api/v1/me/cards/{cid}/run", headers=AS_A).text
+
+    as_bv = {"Authorization": "Bearer bv"}
+    for headers in (AS_B, as_bv):
+        for path in (entity, "/api/v1/semantic/search?q=average+grade+percentage&limit=25"):
+            r = c.get(path, headers=headers)
+            assert r.status_code == 200
+            _clean(r.text)
+            assert "alpha_honours" not in r.text
+        assert c.get(measure_entity, headers=headers).json()["expr"] != "ROUND(GRADE_PERCENTAGE, 0)"
+        before = len(world.log)
+        for card_id in (cid, sid):
+            r = c.post(f"/api/v1/me/cards/{card_id}/run", headers=headers)
+            assert r.status_code == 404 and r.json() == {"detail": "Card not found"}
+            _clean(r.text)
+        assert len(world.log) == before
+    r = c.post("/api/v1/me/cards/active-students/run", headers=AS_B)
+    assert r.status_code == 200 and MARK_B in r.text and f"{DB_B}." in r.json()["sql"]
+    _clean(r.text)
 
 
 def test_pinned_shared_cards_never_cross(world):
