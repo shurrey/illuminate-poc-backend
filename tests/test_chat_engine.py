@@ -147,7 +147,7 @@ def test_a_partly_governed_turn_is_replayed_so_a_follow_up_can_resend_its_parts(
            " CROSS JOIN (SELECT COUNT(*) AS N FROM DB.CDM_LMS.COURSE) c")
     request = {"sql": sql, "reason": "No governed metric counts every course row", "governed": parts}
     wh = FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "N": 7}])
-    tools = ChatTools(load_catalog(), "DB", tenant=TENANT_A, execute=wh)
+    tools = ChatTools(load_catalog(), tenant=TENANT_A, execute=wh)
 
     bedrock = ScriptedBedrock(_tool("search_catalog", {"question": "courses"}, "t1"),
                               _tool("execute_sql", request, "t2"), _text("Governed: term_name, reportable_courses."))

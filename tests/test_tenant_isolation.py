@@ -287,7 +287,7 @@ def test_sql_run_never_crosses(world):
 def test_sql_validate_never_crosses(world):
     c = world.client
     mine = {"sql": f"SELECT COUNT(*) AS n FROM {DB_B}.CDM_LMS.COURSE"}
-    assert c.post("/api/v1/sql/validate", headers=AS_B, json=mine).json() == {"ok": True}
+    assert c.post("/api/v1/sql/validate", headers=AS_B, json=mine).json() == {"ok": True, "governance_preview": "none"}
     other = c.post("/api/v1/sql/validate", headers=AS_B, json={"sql": f"SELECT COUNT(*) AS n FROM {DB_A}.CDM_LMS.COURSE"})
     assert other.status_code == 200 and other.json()["ok"] is False and MARK_A not in other.text
     assert c.post("/api/v1/sql/validate", headers=AS_A, json=mine).json()["ok"] is False
@@ -629,6 +629,8 @@ SECRET_ROUTES = [
     ("POST", "/api/chat", {"json": {"message": "q"}}),
     ("POST", "/api/chat/stream", {"json": {"message": "q"}}),
     ("POST", "/api/v1/sql/run", {"json": {"sql": SQL}}),
+    ("POST", "/api/v1/me/queries", {"json": {"name": "n", "query_kind": "sql", "sql": SQL, "governed_parts": {}}}),
+    ("POST", "/api/v1/me/queries/q_000000000000/run", {}),
 ]
 NO_SECRET_ROUTES = [
     ("POST", "/api/v1/sql/validate", {"json": {"sql": SQL}}),
@@ -696,3 +698,29 @@ def test_unknown_tenant_403_everywhere(world, route):
     assert "ghost" not in r.text
     assert world.connects == [] and world.bedrock.calls == []
     assert overlay_store.list_overlays("ghost") == []
+
+
+def test_saved_sql_run_never_crosses(world):
+    c = world.client
+    made = c.post("/api/v1/me/queries", headers=AS_A, json={
+        "name": f"{MARK_A} sql", "query_kind": "sql", "sql": SQL, "governed_parts": {}, "description": ""})
+    assert made.status_code == 200
+    qid = made.json()["id"]
+    assert MARK_A in c.post(f"/api/v1/me/queries/{qid}/run", headers=AS_A).text
+
+    # Same sub, other tenant: A's id does not exist in B's store.
+    before = len(world.log)
+    crossed = c.post(f"/api/v1/me/queries/{qid}/run", headers=AS_B)
+    assert crossed.status_code == 404 and len(world.log) == before
+    _clean(crossed.text)
+
+    mine = c.post("/api/v1/me/queries", headers=AS_B, json={
+        "name": "mine", "query_kind": "sql", "sql": SQL, "governed_parts": {}, "description": ""}).json()["id"]
+    before = len(world.log)
+    r = c.post(f"/api/v1/me/queries/{mine}/run", headers=AS_B)
+    assert len(world.log) == before + 1
+    assert r.status_code == 200 and r.json()["rows"] == [{"TENANT_MARK": MARK_B, "DATABASE": DB_B}]
+    _clean(r.text)
+    assert world.log[-1][0] == MARK_B
+    assert user_items_store.get(A, "u1", "query", qid)["lastUsedAt"]
+    assert user_items_store.get(B, "u1", "query", qid) is None

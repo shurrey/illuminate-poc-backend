@@ -321,14 +321,8 @@ def _engine_kwargs(tenant: Tenant, user: dict) -> dict:
     database = _database_for(tenant)
     allow_identity = role_allows_identity(user)
 
-    def audit(kind: str, subject) -> None:
-        if kind == "freehand":
-            logger.info("identity_query sub=%s freehand=true", user.get("sub"))
-        elif _selects_identity(subject, catalog):
-            _log_identity_query(user, subject)
-
-    tools = ChatTools(catalog, database, tenant=tenant, overlays=overlays,
-                      allow_identity=allow_identity, identity_audit=audit)
+    tools = ChatTools(catalog, tenant=tenant, overlays=overlays, allow_identity=allow_identity,
+                      identity_audit=_identity_audit(user, catalog))
     return {"tools": tools,
             "system_prompt": build_system_prompt(catalog, database, learn=allows_learn(tenant),
                                             allow_identity=allow_identity)}
@@ -609,6 +603,14 @@ def _cards_view(tenant_id: str, sub: str) -> dict:
     }
 
 
+def _caller(authorization: Optional[str]) -> tuple[dict, Tenant]:
+    """The authenticated user and their registered tenant."""
+    user = _get_user_from_token(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return user, tenant_for(user)
+
+
 def _cards_caller(authorization: Optional[str]) -> tuple[str, str]:
     user = _get_user_from_token(authorization)
     if not user:
@@ -807,6 +809,75 @@ def _query_body(payload) -> dict:
     return body
 
 
+QUERY_KINDS = ("governed", "sql")
+_KIND_FIELDS = ("prompt", "contract", "sql", "governed_parts", "owner_name")
+MAX_SQL_CHARS = 20_000
+DEFAULT_REASON = "Written in the query builder"
+
+
+def _sql_query_body(payload: dict, user: dict, tenant: Tenant) -> dict:
+    """The validated SQL query fields, checked against the guard as `user` (the saver); 400 on any problem."""
+    from semantic_layer.sql_service import validate_sql
+
+    errors = []
+    name, sql = payload.get("name"), payload.get("sql")
+    description = "" if payload.get("description") is None else payload["description"]
+    parts = payload.get("governed_parts", {})
+    if not isinstance(name, str) or not name.strip():
+        errors.append("name is required")
+    elif len(name) > 200:
+        errors.append("name must be at most 200 characters")
+    if not isinstance(description, str):
+        errors.append("description must be a string")
+    elif len(description) > 4000:
+        errors.append("description must be at most 4000 characters")
+    if not isinstance(sql, str) or not sql.strip():
+        errors.append("sql is required")
+    elif len(sql) > MAX_SQL_CHARS:
+        errors.append(f"sql must be at most {MAX_SQL_CHARS} characters")
+    if not isinstance(parts, dict):
+        errors.append("governed_parts must be an object")
+    else:
+        for part_name, part in parts.items():
+            if not isinstance(part, dict):
+                errors.append(f"{part_name}: a governed part must be an object")
+            elif len(json.dumps(part)) > MAX_CONTRACT_BYTES:
+                errors.append(f"{part_name}: must be at most {MAX_CONTRACT_BYTES // 1024} KB")
+    if errors:
+        raise _bad_request(*errors)
+    checked = validate_sql(guard_context(tenant, user), sql=sql, governed=parts or None)
+    if not checked["ok"]:
+        raise _bad_request(checked["error"])
+    from semantic_layer.sql_service import contract_of
+
+    parts = {n: contract_of(p).model_dump(mode="json", exclude_unset=True) for n, p in parts.items()}
+    body = {"name": name, "description": description, "query_kind": "sql", "sql": sql, "governed_parts": parts}
+    owner = user.get("name") or user.get("email")
+    if isinstance(owner, str) and owner.strip():
+        body["owner_name"] = owner.strip()[:200]
+    errors = _size_errors(body)
+    if errors:
+        raise _bad_request(*errors)
+    return body
+
+
+def _saved_query_body(payload, user: dict, tenant: Tenant) -> dict:
+    """Governed or SQL fields per `query_kind` (default governed); other-kind fields are not kept."""
+    if not isinstance(payload, dict):
+        raise _bad_request("body must be an object")
+    kind = payload.get("query_kind", "governed")
+    if kind not in QUERY_KINDS:
+        raise _bad_request(f"query_kind must be one of {', '.join(QUERY_KINDS)}")
+    return _sql_query_body(payload, user, tenant) if kind == "sql" else {**_query_body(payload), "query_kind": "governed"}
+
+
+def _governance_hint(item: dict) -> str:
+    """A label guess for lists only; the run's provenance is the real one."""
+    if item["query_kind"] != "sql":
+        return "governed"
+    return "partial" if item.get("governed_parts") else "ungoverned"
+
+
 def _stored_query(item: dict) -> dict:
     """The query's body fields; rows saved before the rename carry `kind` instead of `query_kind`."""
     body = {k: v for k, v in item.items() if k not in ("id", "version", "updated_at", "kind")}
@@ -815,7 +886,8 @@ def _stored_query(item: dict) -> dict:
 
 
 def _query_view(item: dict) -> dict:
-    return {**_stored_query(item), "id": item["id"]}
+    body = _stored_query(item)
+    return {**body, "id": item["id"], "governance_hint": _governance_hint(body)}
 
 
 def _query_item(tenant_id: str, sub: str, query_id: str) -> dict:
@@ -860,13 +932,14 @@ async def get_my_queries(authorization: Optional[str] = Header(None)) -> dict:
 
 @app.post("/api/v1/me/queries")
 async def create_my_query(payload: dict, authorization: Optional[str] = Header(None)) -> dict:
-    """Save a governed query with a server-generated id; 400 at 500 queries."""
+    """Save a governed or SQL query with a server-generated id; 400 at 500 queries."""
     import user_items_store
 
-    tenant_id, sub = _cards_caller(authorization)
-    body = {**_query_body(payload), "query_kind": "governed", "createdAt": _now_iso(), "lastUsedAt": None}
+    user, tenant = _caller(authorization)
 
     def create() -> dict:
+        body = {**_saved_query_body(payload, user, tenant), "createdAt": _now_iso(), "lastUsedAt": None}
+        tenant_id, sub = tenant.tenant_id, user["sub"]
         if user_items_store.count(tenant_id, sub, "query") >= MAX_QUERIES:
             raise _bad_request(f"You can save at most {MAX_QUERIES} queries")
         return _query_view(user_items_store.put(tenant_id, sub, "query", f"q_{uuid.uuid4().hex[:12]}", body))
@@ -876,10 +949,53 @@ async def create_my_query(payload: dict, authorization: Optional[str] = Header(N
 
 @app.put("/api/v1/me/queries/{query_id}")
 async def update_my_query(query_id: str, payload: dict, authorization: Optional[str] = Header(None)) -> dict:
-    """Update name, description, prompt and contract of one of the caller's queries."""
-    tenant_id, sub = _cards_caller(authorization)
-    body = _query_body(payload)
-    return await _blocking(_replace_query, tenant_id, sub, query_id, lambda b: b.update(body))
+    """Replace the content of one of the caller's queries; its dates are kept and the other kind's fields dropped."""
+    user, tenant = _caller(authorization)
+
+    def update() -> dict:
+        body = _saved_query_body(payload, user, tenant)
+
+        def change(stored: dict) -> None:
+            for field in _KIND_FIELDS:
+                stored.pop(field, None)
+            stored.update(body)
+
+        return _replace_query(tenant.tenant_id, user["sub"], query_id, change)
+
+    return await _blocking(update)
+
+
+@app.post("/api/v1/me/queries/{query_id}/run")
+async def run_my_query(query_id: str, authorization: Optional[str] = Header(None)):
+    """Run a saved query as the caller, whoever saved it; same response as /semantic/query or /sql/run."""
+    user, tenant = _caller(authorization)
+    item = await _blocking(_query_item, tenant.tenant_id, user["sub"], query_id)
+    stored = _stored_query(item)
+
+    def text(field: str) -> str:
+        value = stored.get(field)
+        return value.strip() if isinstance(value, str) else ""
+
+    if stored["query_kind"] == "sql":
+        owner = text("owner_name")
+        reason = text("description") or (f"Written by {owner}" if owner else DEFAULT_REASON)
+        sql = stored.get("sql") if isinstance(stored.get("sql"), str) else ""
+        parts = stored.get("governed_parts")
+        response = await _run_sql_for(user, tenant, sql, parts if isinstance(parts, dict) and parts else None,
+                                      reason[:500])
+    else:
+        try:
+            contract = QueryContract.model_validate(stored.get("contract"))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"This saved query is not valid: {e}")
+        compiled = await _blocking(_compile_for, contract, user, tenant)
+        response = _semantic_response(compiled, await _execute(compiled, user, tenant))
+    now = _now_iso()
+    try:
+        await _blocking(_replace_query, tenant.tenant_id, user["sub"], query_id, lambda b: b.update(lastUsedAt=now))
+    except HTTPException as e:
+        logger.warning("Could not record lastUsedAt for saved query %s: %s", query_id, e.detail)
+    return response
 
 
 @app.post("/api/v1/me/queries/{query_id}/used")
@@ -1062,7 +1178,9 @@ def _import_cards(tenant_id: str, sub: str, cards: list, skipped: list) -> int:
     return created
 
 
-def _import_queries(tenant_id: str, sub: str, queries: list, skipped: list) -> int:
+def _import_queries(user: dict, tenant: Tenant, queries: list, skipped: list) -> int:
+    """SQL queries (query_kind "sql") are checked against the guard as the importing user."""
+    tenant_id, sub = tenant.tenant_id, user["sub"]
     import user_items_store
 
     room = MAX_QUERIES - user_items_store.count(tenant_id, sub, "query")
@@ -1070,14 +1188,17 @@ def _import_queries(tenant_id: str, sub: str, queries: list, skipped: list) -> i
     for i, query in enumerate(queries):
         name = _name_of(query, "name")
         try:
-            body = _query_body(query)
+            if not isinstance(query, dict):
+                raise _bad_request("query must be an object")
+            body = _saved_query_body({**query, "query_kind": "sql" if "sql" in (query.get("query_kind"), query.get("kind"))
+                                      else "governed"}, user, tenant)
             if room <= 0:
                 raise _bad_request(f"You can save at most {MAX_QUERIES} queries")
         except HTTPException as e:
             skipped.append({"kind": "query", "name": name, "reason": _skip_reason(e)})
             continue
         source_id = query.get("id") if isinstance(query.get("id"), str) else f"index-{i}"
-        body.update(query_kind="governed", createdAt=_iso_or(query.get("createdAt"), _now_iso()),
+        body.update(createdAt=_iso_or(query.get("createdAt"), _now_iso()),
                     lastUsedAt=_iso_or(query.get("lastUsedAt"), None))
         try:
             user_items_store.put(tenant_id, sub, "query", _import_id("q_", sub, "query", source_id), body)
@@ -1125,7 +1246,8 @@ async def import_my_items(payload: dict, authorization: Optional[str] = Header(N
     `partial` (no marker written) when a store error skipped an item, so the browser keeps its copy and retries."""
     import user_items_store
 
-    tenant_id, sub = _cards_caller(authorization)
+    user, tenant = _caller(authorization)
+    tenant_id, sub = tenant.tenant_id, user["sub"]
     cards, queries, prefs = payload.get("cards", []), payload.get("queries", []), payload.get("prefs")
     if not isinstance(cards, list) or len(cards) > MAX_IMPORT_CARDS:
         raise _bad_request(f"cards must be a list of at most {MAX_IMPORT_CARDS}")
@@ -1137,7 +1259,7 @@ async def import_my_items(payload: dict, authorization: Optional[str] = Header(N
             return {"status": "already_imported"}
         skipped: list = []
         n_cards = _import_cards(tenant_id, sub, cards, skipped)
-        n_queries = _import_queries(tenant_id, sub, queries, skipped)
+        n_queries = _import_queries(user, tenant, queries, skipped)
         _import_prefs(tenant_id, sub, prefs, skipped)
         retry = [s.pop("_retry", False) for s in skipped]
         if any(retry):
@@ -1604,6 +1726,10 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
     compiled = _compile_for(contract, user, tenant)
     result = await _execute(compiled, user, tenant)
 
+    return _semantic_response(compiled, result)
+
+
+def _semantic_response(compiled, result: dict) -> JSONResponse:
     # jsonable_encoder turns Snowflake's Decimal into numbers; response-model serialisation makes them strings.
     return JSONResponse(_json_safe({
         "columns": result["columns"],
@@ -1616,7 +1742,7 @@ async def semantic_query(contract: QueryContract, authorization: Optional[str] =
 class SqlRequest(BaseModel):
     sql: str = Field(max_length=20_000)
     governed: Optional[dict[str, dict]] = None
-    reason: str = Field(default="Written in the query builder", max_length=500)
+    reason: str = Field(default=DEFAULT_REASON, max_length=500)
 
 
 def _identity_audit(user: dict, catalog):
@@ -1629,20 +1755,15 @@ def _identity_audit(user: dict, catalog):
     return audit
 
 
-@app.post("/api/v1/sql/run")
-async def sql_run(body: SqlRequest, authorization: Optional[str] = Header(None)):
-    """Run SQL through the execution guard as the caller; `governed` parts are spliced from query contracts."""
+async def _run_sql_for(user: dict, tenant: Tenant, sql: str, governed: Optional[dict], reason: str) -> JSONResponse:
+    """Run SQL through the guard as `user`; a refusal is a 400 and a warehouse failure a 502."""
     from semantic_layer.sql_service import run_sql
 
-    user = _get_user_from_token(authorization)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    tenant = tenant_for(user)
-
     def work():
-        ctx = guard_context(tenant, user)
-        return run_sql(ctx, sql=body.sql, governed=body.governed, reason=body.reason.strip(),
-                       overlays=_catalog_for(tenant)[1], identity_audit=_identity_audit(user, ctx.catalog))
+        catalog, overlays = _catalog_for(tenant)
+        ctx = guard_context(tenant, user, catalog)
+        return run_sql(ctx, sql=sql, governed=governed, reason=reason, overlays=overlays,
+                       identity_audit=_identity_audit(user, catalog))
 
     result = await _blocking(work)
     if "error" in result:
@@ -1651,6 +1772,13 @@ async def sql_run(body: SqlRequest, authorization: Optional[str] = Header(None))
             raise HTTPException(status_code=502, detail="The warehouse could not run this query.")
         raise HTTPException(status_code=400, detail=result["error"])
     return JSONResponse(_json_safe(result))
+
+
+@app.post("/api/v1/sql/run")
+async def sql_run(body: SqlRequest, authorization: Optional[str] = Header(None)):
+    """Run SQL through the execution guard as the caller; `governed` parts are spliced from query contracts."""
+    user, tenant = _caller(authorization)
+    return await _run_sql_for(user, tenant, body.sql, body.governed, body.reason.strip() or DEFAULT_REASON)
 
 
 @app.post("/api/v1/sql/validate")
@@ -1682,13 +1810,13 @@ async def schema_describe(schema: str, table: str, authorization: Optional[str] 
     return result
 
 
-def guard_context(tenant: Tenant, user: dict):
+def guard_context(tenant: Tenant, user: dict, catalog=None):
     """The SQL guard's context for this request: the caller's identity rights over the tenant's overlaid catalog
-    and database, with every dataset's declared PII columns."""
+    (pass `catalog` when already fetched) and database, with every dataset's declared PII columns."""
     import snowflake_client
     from roles import role_allows_identity
 
-    return snowflake_client.GuardContext.of(tenant, _catalog_for(tenant)[0],
+    return snowflake_client.GuardContext.of(tenant, _catalog_for(tenant)[0] if catalog is None else catalog,
                                             allow_identity=role_allows_identity(user))
 
 

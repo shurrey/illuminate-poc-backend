@@ -30,7 +30,7 @@ SEARCHED = ("search_catalog",)
 
 
 def _tools(warehouse=None):
-    return ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=warehouse or FakeWarehouse())
+    return ChatTools(CATALOG, tenant=TENANT_A, execute=warehouse or FakeWarehouse())
 
 
 def test_specs_name_every_tool_once():
@@ -113,7 +113,7 @@ DICTIONARY = {
 
 
 def _fallback(warehouse=None):
-    return ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=warehouse or FakeWarehouse(),
+    return ChatTools(CATALOG, tenant=TENANT_A, execute=warehouse or FakeWarehouse(),
                      describe=lambda schema, table: DICTIONARY.get((schema.upper(), table.upper())))
 
 
@@ -162,7 +162,7 @@ def test_specs_include_the_fallback_tools():
 
 def test_only_governed_queries_run_with_the_compiled_guard():
     wh = FakeWarehouse()
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=wh)
+    tools = ChatTools(CATALOG, tenant=TENANT_A, execute=wh)
     tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
     tools.dispatch("execute_sql", {"sql": "SELECT COUNT(*) AS N FROM CDM_LMS.COURSE", "reason": "no governed metric counts all course rows"}, called=SEARCHED)
     assert [type(v.mode).__name__ for v in wh.validated] == ["Compiled", "Freehand"]
@@ -203,7 +203,7 @@ def test_filter_values_schema_names_the_value_types():
 
 def test_warehouse_errors_reach_the_model_without_internal_object_or_role_names():
     raw = "002003 (42S02): SQL compilation error:\nObject 'PROD_DB.SECRET_SCHEMA.T' does not exist or not authorized, role BBDATA_ROLE"
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=FakeWarehouse(error=raw))
+    tools = ChatTools(CATALOG, tenant=TENANT_A, execute=FakeWarehouse(error=raw))
     out = tools.dispatch("execute_sql", {"sql": "SELECT 1", "reason": "testing the error path"}, called=SEARCHED)
     assert "SECRET_SCHEMA" not in out.content["error"] and "BBDATA_ROLE" not in out.content["error"]
     assert "does not exist" in out.content["error"]
@@ -213,7 +213,7 @@ def test_query_semantic_provenance_lists_the_tenant_overlays_it_used():
     from semantic_layer.overlays import Overlay
     used = Overlay(target="metric:metric.reportable_courses.v1", default_filters=[], version=3)
     unused = Overlay(target="metric:metric.average_grade.v1", default_filters=[], version=1)
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=FakeWarehouse([{"REPORTABLE_COURSES": 3}]), overlays=[used, unused])
+    tools = ChatTools(CATALOG, tenant=TENANT_A, execute=FakeWarehouse([{"REPORTABLE_COURSES": 3}]), overlays=[used, unused])
     out = tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
     assert out.content["provenance"]["overlays"] == ["metric:metric.reportable_courses.v1@v3"]
     assert all(a["provenance"]["overlays"] == ["metric:metric.reportable_courses.v1@v3"] for a in out.artifacts)
@@ -223,7 +223,7 @@ def test_chat_tools_execute_with_their_tenant(monkeypatch):
     seen = []
     monkeypatch.setattr(snowflake_client, "query_sql",
                         lambda sql, params=None, **k: seen.append(k["tenant"]) or {"columns": ["N"], "rows": [{"N": 1}]})
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_B)
+    tools = ChatTools(CATALOG, tenant=TENANT_B)
     tools.dispatch("execute_sql", {"sql": "SELECT 1 AS N FROM DB.CDM_LMS.COURSE",
                                    "reason": "No dataset covers raw course counts"}, called=SEARCHED)
     tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
@@ -231,20 +231,20 @@ def test_chat_tools_execute_with_their_tenant(monkeypatch):
 
 
 def test_core_tool_specs_never_mention_learn():
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_CORE)
+    tools = ChatTools(CATALOG, tenant=TENANT_CORE)
     assert "learn" not in str(tools.specs).lower()
 
 
 def test_premium_tool_specs_mention_learn_and_keep_the_tool_names():
     specs = _tools().specs
-    assert [s["name"] for s in specs] == [s["name"] for s in ChatTools(CATALOG, "DB", tenant=TENANT_CORE).specs]
+    assert [s["name"] for s in specs] == [s["name"] for s in ChatTools(CATALOG, tenant=TENANT_CORE).specs]
     assert "LEARN" in {s["name"]: s for s in specs}["describe_cdm_table"]["description"]
     assert "LEARN" in {s["name"]: s for s in specs}["execute_sql"]["description"]
     assert not any("{" in s["description"] for s in specs)
 
 
 def test_core_describe_learn_refused():
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_CORE)
+    tools = ChatTools(CATALOG, tenant=TENANT_CORE)
     assert tools.dispatch("describe_cdm_table", {"schema": "learn", "table": "USERS"}).content == {"error": LEARN_REFUSAL}
 
 
@@ -260,13 +260,13 @@ IDENTITY_CONTRACT = {"measures": ["dataset.course_student_activity.v1:students"]
 
 def test_chat_refuses_an_identity_dimension_for_a_viewer_and_runs_nothing():
     wh = FakeWarehouse()
-    out = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=wh).dispatch("query_semantic", IDENTITY_CONTRACT)
+    out = ChatTools(CATALOG, tenant=TENANT_A, execute=wh).dispatch("query_semantic", IDENTITY_CONTRACT)
     assert "personally identifiable" in out.content["error"] and wh.sql == []
 
 
 def test_chat_runs_an_identity_dimension_for_an_allowed_role_and_audits_it():
     wh, audited = FakeWarehouse(), []
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, execute=wh, allow_identity=True,
+    tools = ChatTools(CATALOG, tenant=TENANT_A, execute=wh, allow_identity=True,
                       identity_audit=lambda kind, subject: audited.append(kind))
     out = tools.dispatch("query_semantic", IDENTITY_CONTRACT)
     assert "error" not in out.content and "PERSON_EMAIL" in wh.sql[0]
@@ -280,7 +280,7 @@ def test_chat_passes_allow_identity_to_the_guard_for_governed_and_freehand_sql(m
                         or Result(columns=["N"], rows=[{"N": 1}]))
     reason = "no governed metric covers this question"
     for allow in (False, True):
-        tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, allow_identity=allow)
+        tools = ChatTools(CATALOG, tenant=TENANT_A, allow_identity=allow)
         tools.dispatch("query_semantic", {"metrics": ["metric.reportable_courses.v1"]})
         tools.dispatch("execute_sql", {"sql": "SELECT 1", "reason": reason}, called=SEARCHED)
     assert seen == [(True, False), (False, False), (True, True), (False, True)]
@@ -348,7 +348,7 @@ def test_provenance_unions_the_parts_and_lists_the_overlays_they_used():
     from semantic_layer.overlays import Overlay
     used = Overlay(target="metric:metric.reportable_courses.v1", default_filters=[], version=3)
     unused = Overlay(target="metric:metric.average_grade.v1", default_filters=[], version=1)
-    tools = ChatTools(CATALOG, "DB", tenant=TENANT_A, overlays=[used, unused],
+    tools = ChatTools(CATALOG, tenant=TENANT_A, overlays=[used, unused],
                       execute=FakeWarehouse([{"TERM_NAME": "Fall", "REPORTABLE_COURSES": 3, "STUDENTS": 9}]))
     out = tools.dispatch("execute_sql", {
         "sql": "SELECT a.term_name, a.reportable_courses, b.students FROM governed_1 a JOIN governed_2 b"
@@ -398,10 +398,10 @@ def test_governed_parts_compile_and_run_with_the_callers_identity_rights(monkeyp
                         lambda v, ctx: seen.append((v, ctx)) or Result(columns=["PERSON_EMAIL"], rows=[]))
     email = {"governed_1": {"measures": ["dataset.course_student_activity.v1:students"], "dimensions": ["person_email"]}}
     request = {"sql": "SELECT person_email FROM governed_1", "reason": MIXED_REASON, "governed": email}
-    viewer = ChatTools(CATALOG, "DB", tenant=TENANT_A).dispatch("execute_sql", request, called=SEARCHED)
+    viewer = ChatTools(CATALOG, tenant=TENANT_A).dispatch("execute_sql", request, called=SEARCHED)
     assert "personally identifiable" in viewer.content["error"] and seen == []
     audited = []
-    admin = ChatTools(CATALOG, "DB", tenant=TENANT_A, allow_identity=True,
+    admin = ChatTools(CATALOG, tenant=TENANT_A, allow_identity=True,
                       identity_audit=lambda kind, subject: audited.append(kind))
     assert "error" not in admin.dispatch("execute_sql", request, called=SEARCHED).content
     v, ctx = seen[0]
@@ -412,7 +412,7 @@ def test_governed_parts_compile_and_run_with_the_callers_identity_rights(monkeyp
 
 def test_execute_sql_spec_describes_governed_parts_for_every_licence():
     for tenant in (TENANT_A, TENANT_CORE):
-        spec = next(s for s in ChatTools(CATALOG, "DB", tenant=tenant).specs if s["name"] == "execute_sql")
+        spec = next(s for s in ChatTools(CATALOG, tenant=tenant).specs if s["name"] == "execute_sql")
         assert "governed_1" in spec["description"]
         governed = spec["inputSchema"]["json"]["properties"]["governed"]
         assert governed["type"] == "object"
