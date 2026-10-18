@@ -638,6 +638,7 @@ NO_SECRET_ROUTES = [
     ("GET", "/api/v1/semantic/catalog", {}),
     ("GET", "/api/v1/reports", {}),
     ("GET", "/api/v1/me", {}),
+    ("GET", "/api/v1/directory", {}),
     ("GET", "/api/v1/me/cards", {}),
     ("PUT", "/api/v1/me/cards/layout", {"json": {"order": [], "disabled": [], "hidden": [], "expected_version": 0}}),
     ("POST", "/api/v1/me/cards", {"json": CARD}),
@@ -698,6 +699,31 @@ def test_unknown_tenant_403_everywhere(world, route):
     assert "ghost" not in r.text
     assert world.connects == [] and world.bedrock.calls == []
     assert overlay_store.list_overlays("ghost") == []
+
+
+def test_directory_never_crosses(world, monkeypatch):
+    c = world.client
+    monkeypatch.setitem(USERS, "Bearer av", {**USERS["Bearer av"], "name": f"{MARK_A} Person", "email": "p@alpha.edu"})
+    monkeypatch.setitem(USERS, "Bearer bv", {**USERS["Bearer bv"], "name": f"{MARK_B} Person", "email": "p@beta.edu"})
+    monkeypatch.setitem(USERS, "Bearer a", {**USERS["Bearer a"], "name": "Admin Alpha", "email": "u1@alpha.edu"})
+    monkeypatch.setitem(USERS, "Bearer b", {**USERS["Bearer b"], "name": "Admin Beta", "email": "u1@beta.edu"})
+    monkeypatch.setitem(USERS, "Bearer nt", {"sub": "u9", "name": "No Tenant", "email": "n@none.edu", "cognito:groups": []})
+    # u1 is the same sub in A and B.
+    for token in ("a", "b", "av", "bv", "nt"):
+        c.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
+
+    from_b = c.get("/api/v1/directory", headers=AS_B)
+    assert from_b.status_code == 200
+    assert [u["name"] for u in from_b.json()["users"]] == [f"{MARK_B} Person"]
+    for leaked in (MARK_A, "alpha.edu", "No Tenant", "none.edu"):
+        assert leaked not in from_b.text
+    from_a = c.get("/api/v1/directory", headers=AS_A, params={"q": "person"})
+    assert [u["name"] for u in from_a.json()["users"]] == [f"{MARK_A} Person"]
+    assert MARK_B not in from_a.text
+    assert [e["sub"] for e in user_items_store.list_directory(A)] == ["u1", "u2"]
+    assert [e["sub"] for e in user_items_store.list_directory(B)] == ["u1", "u2"]
+    assert user_items_store.list_directory("no-such-tenant") == []
+    assert c.get("/api/v1/directory", headers={"Authorization": "Bearer nt"}).status_code == 403
 
 
 def test_saved_sql_run_never_crosses(world):

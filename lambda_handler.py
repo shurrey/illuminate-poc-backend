@@ -467,11 +467,50 @@ async def get_me(authorization: Optional[str] = Header(None)):
     if not user_roles:
         user_roles = [roles.role_of(user)]
 
+    await _blocking(_record_in_directory, tenant.tenant_id, user)
+
     return {
         "tenant": {"name": tenant.name, "license": tenant.license},
         "roles": user_roles,
         "is_admin": ADMIN_GROUP in groups,
     }
+
+
+def _record_in_directory(tenant_id: str, user: dict) -> None:
+    """Best-effort: a directory failure is logged and never fails the caller's request."""
+    import user_items_store
+
+    email = user.get("email") or ""
+    name = user.get("name") or email.split("@")[0]
+    if not (user.get("sub") and name):
+        return
+    try:
+        user_items_store.upsert_directory(tenant_id, user["sub"], name, email)
+    except Exception:
+        logger.warning("directory upsert failed", exc_info=True)
+
+
+MAX_DIRECTORY_RESULTS = 25
+
+
+@app.get("/api/v1/directory")
+async def search_directory(q: str = "", authorization: Optional[str] = Header(None)) -> dict:
+    """Other users of the caller's tenant whose name or email contains q (case-insensitive), by name, at most 25."""
+    import user_items_store
+
+    tenant_id, sub = _cards_caller(authorization)
+    needle = q.strip().casefold()
+
+    def search() -> dict:
+        found = [
+            {"sub": e["sub"], "name": e["name"], "email": e["email"]}
+            for e in user_items_store.list_directory(tenant_id)
+            if e["sub"] != sub and needle in f"{e['name']}\n{e['email']}".casefold()
+        ]
+        found.sort(key=lambda e: (e["name"].casefold(), e["sub"]))
+        return {"users": found[:MAX_DIRECTORY_RESULTS]}
+
+    return await _blocking(search)
 
 
 CARD_FORMATS = ("number", "ratio", "percent")

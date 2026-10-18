@@ -52,6 +52,18 @@ def _attr(user: dict, name: str):
     return next((a["Value"] for a in user.get("Attributes", []) if a["Name"] == name), None)
 
 
+def _record_in_directory(dynamodb, env: str, tenant_id: str, attributes: list[dict]) -> None:
+    """Write the user's directory entry from their Cognito attributes; the name defaults to the email's local part."""
+    import user_items_store
+
+    attrs = {a["Name"]: a["Value"] for a in attributes}
+    sub, email = attrs.get("sub"), attrs.get("email")
+    if not (sub and email):
+        return
+    user_items_store.upsert_directory(tenant_id, sub, attrs.get("name") or email.split("@")[0], email,
+                                      table=dynamodb.Table(f"illuminate-user-items-{env}"))
+
+
 def _is_code(exc: ClientError, *codes: str) -> bool:
     return exc.response["Error"]["Code"] in codes
 
@@ -251,6 +263,11 @@ def migrate_current(*, dynamodb, secrets, cognito, user_pool_id: str, env: str, 
     # Overlays first, so no user lands on a tenant whose overlays are only partly copied.
     overlays, conflicts = _move_overlays(dynamodb, env, old_tenant_id, tenant_id, dry_run)
     moved_users = _move_users(cognito, user_pool_id, users, old_tenant_id, tenant_id, dry_run)
+    if not dry_run:
+        # Every member of the tenant, not just those moved now, so a rerun after a failure completes the directory.
+        for user in users:
+            if _attr(user, "custom:tenant_id") == tenant_id:
+                _record_in_directory(dynamodb, env, tenant_id, user["Attributes"])
     conversations, orphaned, other_tenant, ownerless = _rekey_conversations(dynamodb, env, users, tenant_id, dry_run)
     return {
         "tenant_id": tenant_id, "created": created, "secret_copied": secret_copied, "users": moved_users,
@@ -367,6 +384,8 @@ def add_users(*, dynamodb, env: str, cognito, user_pool_id: str, tenant_id: str,
                 UserAttributes=[{"Name": "email", "Value": email}, {"Name": "email_verified", "Value": "true"},
                                 {"Name": "custom:tenant_id", "Value": tenant_id}])
             created.append(email)
+            existing = cognito.admin_get_user(UserPoolId=user_pool_id, Username=email)
+        _record_in_directory(dynamodb, env, tenant_id, existing["UserAttributes"])
         if group:
             current = cognito.admin_list_groups_for_user(UserPoolId=user_pool_id, Username=email)["Groups"]
             if group not in {g["GroupName"] for g in current}:

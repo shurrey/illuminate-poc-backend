@@ -19,6 +19,8 @@ from botocore.exceptions import ClientError
 TABLE_NAME = os.environ.get("USER_ITEMS_TABLE", "")
 KEYED_KINDS = ("card", "query")
 SINGLETON_KINDS = ("layout", "prefs", "imported")
+DIRECTORY_KIND = "directory"
+DIRECTORY_PREFIX = "directory#"
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 _table = None
@@ -44,6 +46,10 @@ def _key(tenant_id: str, sub: str, kind: str, id: Optional[str]) -> str:
     if not tenant_id:
         raise ValueError("tenant_id is required")
     _validate_sub(sub)
+    if kind == DIRECTORY_KIND:
+        if id is not None:
+            raise ValueError("directory takes no id")
+        return f"{DIRECTORY_PREFIX}{sub}"
     if kind in KEYED_KINDS:
         if id is None or not _ID.fullmatch(id):
             raise ValueError("id must match [A-Za-z0-9_-]{1,64}")
@@ -99,8 +105,8 @@ def _query(tenant_id: str, sub: str, kind: str, **extra) -> list[dict]:
         kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
 
-def get(tenant_id: str, sub: str, kind: str, id: Optional[str] = None) -> Optional[dict]:
-    item = _get_table().get_item(Key={"tenant_id": tenant_id, "item_key": _key(tenant_id, sub, kind, id)}, ConsistentRead=True).get("Item")
+def get(tenant_id: str, sub: str, kind: str, id: Optional[str] = None, *, table=None) -> Optional[dict]:
+    item = (table or _get_table()).get_item(Key={"tenant_id": tenant_id, "item_key": _key(tenant_id, sub, kind, id)}, ConsistentRead=True).get("Item")
     return _from_item(item) if item else None
 
 
@@ -113,7 +119,8 @@ def count(tenant_id: str, sub: str, kind: str) -> int:
     return len(_query(tenant_id, sub, kind, ProjectionExpression="item_key"))
 
 
-def put(tenant_id: str, sub: str, kind: str, id: Optional[str], body: dict, *, expected_version: Optional[int] = None) -> dict:
+def put(tenant_id: str, sub: str, kind: str, id: Optional[str], body: dict, *, expected_version: Optional[int] = None,
+        table=None) -> dict:
     """Create (expected_version None, Conflict if it exists) or replace the item when its version matches."""
     item_key = _key(tenant_id, sub, kind, id)
     version = 1 if expected_version is None else expected_version + 1
@@ -126,7 +133,7 @@ def put(tenant_id: str, sub: str, kind: str, id: Optional[str], body: dict, *, e
         {"ConditionExpression": "version = :expected", "ExpressionAttributeValues": {":expected": expected_version}}
     )
     try:
-        _get_table().put_item(Item=_to_dynamo(item), **condition)
+        (table or _get_table()).put_item(Item=_to_dynamo(item), **condition)
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise Conflict(item_key) from e
@@ -138,3 +145,28 @@ def delete(tenant_id: str, sub: str, kind: str, id: Optional[str] = None) -> boo
     """True when an item was removed."""
     resp = _get_table().delete_item(Key={"tenant_id": tenant_id, "item_key": _key(tenant_id, sub, kind, id)}, ReturnValues="ALL_OLD")
     return "Attributes" in resp
+
+
+def list_directory(tenant_id: str) -> list[dict]:
+    """Every directory entry in the tenant, `{sub, name, email, version, updated_at}`, in sub order."""
+    if not tenant_id:
+        raise ValueError("tenant_id is required")
+    kwargs = {"KeyConditionExpression": Key("tenant_id").eq(tenant_id) & Key("item_key").begins_with(DIRECTORY_PREFIX),
+              "ConsistentRead": True}
+    items = []
+    while True:
+        resp = _get_table().query(**kwargs)
+        items += resp.get("Items", [])
+        if "LastEvaluatedKey" not in resp:
+            return [_from_item(i) for i in items]
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+
+def upsert_directory(tenant_id: str, sub: str, name: str, email: str, *, table=None) -> bool:
+    """Write the user's directory entry unless it already holds this name and email. True when written."""
+    body = {"sub": sub, "name": name, "email": email}
+    current = get(tenant_id, sub, DIRECTORY_KIND, table=table)
+    if current and (current["name"], current["email"]) == (name, email):
+        return False
+    put(tenant_id, sub, DIRECTORY_KIND, None, body, expected_version=current["version"] if current else None, table=table)
+    return True
