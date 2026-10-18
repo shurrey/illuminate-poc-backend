@@ -272,11 +272,19 @@ class BrokenSsm:
         raise RuntimeError("AccessDenied")
 
 
-def test_any_ssm_error_reads_as_not_deployed_and_is_not_cached(monkeypatch):
+def test_any_ssm_error_reads_as_not_deployed_for_30_seconds(monkeypatch):
+    clock = types.SimpleNamespace(now=500.0)
+    monkeypatch.setattr(mcp_access, "time", types.SimpleNamespace(monotonic=lambda: clock.now))
     monkeypatch.setattr(mcp_access, "_ssm", BrokenSsm())
     monkeypatch.setattr(mcp_access, "_discovery", None)
     assert mcp_access._mcp_discovery() == (None, None)
-    assert mcp_access._discovery is None
+    monkeypatch.setattr(mcp_access, "_ssm", None)
+    clock.now += 30
+    assert mcp_access._mcp_discovery() == (None, None)
+    monkeypatch.setattr(mcp_access, "_ssm", types.SimpleNamespace(
+        exceptions=BrokenSsm.exceptions, get_parameter=lambda Name: {"Parameter": {"Value": Name}}))
+    clock.now += 1
+    assert mcp_access._mcp_discovery() == ("/illuminate/dev/mcp-client-id", "/illuminate/dev/mcp-url")
 
 
 def test_setup_route_survives_an_ssm_error(monkeypatch):
@@ -288,3 +296,60 @@ def test_setup_route_survives_an_ssm_error(monkeypatch):
                         lambda a: {"sub": "a", "custom:tenant_id": "ta", "cognito:groups": ["illuminate-admins"]})
     r = TestClient(lambda_handler.app).get("/api/v1/admin/mcp/setup", headers=AUTH)
     assert r.status_code == 200 and r.json() == {"deployed": False}
+
+
+# --- one validation per request ---------------------------------------------------------------------------------
+
+def _flaky(value):
+    """Raises on the first call and returns value after that."""
+    calls = []
+
+    def call():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("transient")
+        return value
+    return call
+
+
+@pytest.fixture
+def real_tokens(world, decoding, monkeypatch):
+    decodes = []
+
+    def use(claims):
+        def decode(*a, **k):
+            decodes.append(1)
+            return dict(claims)
+        monkeypatch.setattr(lambda_handler.jwt, "decode", decode)
+    world.use, world.decodes = use, decodes
+    return world
+
+
+@pytest.mark.parametrize("source", ["discovery", "jwks"])
+@pytest.mark.parametrize("tenant", ["ta", "tb"])
+def test_a_transient_lookup_failure_never_lets_an_mcp_token_skip_the_gate(real_tokens, monkeypatch, source, tenant):
+    w = real_tokens
+    if source == "discovery":
+        monkeypatch.setattr(mcp_access, "_mcp_discovery", _flaky((MCP_ID, "https://mcp.example.com/mcp")))
+    else:
+        monkeypatch.setattr(lambda_handler, "_get_jwks", _flaky({"keys": [{"kid": "k1"}]}))
+    w.use({"token_use": "id", "aud": MCP_ID, "sub": "u1", "custom:tenant_id": tenant})
+
+    first = w.client.get("/api/v1/me", headers=AUTH)
+    assert (first.status_code, first.json()) == (401, {"detail": "Invalid or expired token"})
+    assert w.decodes == [1] if source == "discovery" else w.decodes == []
+    assert w.sessions.calls == []
+
+    second = w.client.get("/api/v1/me", headers=AUTH)
+    if tenant == "ta":
+        assert (second.status_code, second.json()) == (403, {"detail": mcp_access.MCP_REFUSAL})
+        assert w.sessions.calls == []
+    else:
+        assert second.status_code == 200 and len(w.sessions.calls) == 1
+
+
+def test_a_request_validates_its_token_once(real_tokens):
+    w = real_tokens
+    w.use({"token_use": "id", "aud": WEB_ID, "sub": "u1", "custom:tenant_id": "ta"})
+    assert w.client.get("/api/v1/me", headers=AUTH).status_code == 200
+    assert w.decodes == [1]

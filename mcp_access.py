@@ -18,11 +18,12 @@ MCP_RATE_REFUSAL = "Too many MCP requests; try again shortly"
 RATE_LIMIT = 120
 SESSIONS_TABLE = os.environ.get("MCP_SESSIONS_TABLE", "illuminate-mcp-sessions-dev")
 _DISCOVERY_SECONDS = 300
+_DISCOVERY_ERROR_SECONDS = 30
 
 logger = logging.getLogger(__name__)
 _ssm = None
 _sessions_table = None
-_discovery: tuple[float, tuple[str | None, str | None]] | None = None
+_discovery: tuple[float, tuple[str | None, str | None]] | None = None  # (expires at, result)
 
 
 def may_use_mcp(tenant: Tenant, user: dict) -> bool:
@@ -32,10 +33,10 @@ def may_use_mcp(tenant: Tenant, user: dict) -> bool:
 
 def _mcp_discovery() -> tuple[str | None, str | None]:
     """(client_id, url) from SSM, cached 300 s per instance. Missing reads as None; any other SSM error
-    reads as (None, None) and is not cached, so the next call retries."""
+    reads as (None, None), cached 30 s."""
     global _ssm, _discovery
     now = time.monotonic()
-    if _discovery and now - _discovery[0] <= _DISCOVERY_SECONDS:
+    if _discovery and now <= _discovery[0]:
         return _discovery[1]
     try:
         if _ssm is None:
@@ -51,8 +52,9 @@ def _mcp_discovery() -> tuple[str | None, str | None]:
         result = (read("mcp-client-id"), read("mcp-url"))
     except Exception:
         logger.warning("MCP discovery failed", exc_info=True)
+        _discovery = (now + _DISCOVERY_ERROR_SECONDS, (None, None))
         return None, None
-    _discovery = (now, result)
+    _discovery = (now + _DISCOVERY_SECONDS, result)
     return result
 
 

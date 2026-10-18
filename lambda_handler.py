@@ -17,6 +17,7 @@ import logging
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Optional
 
@@ -168,8 +169,16 @@ def _validate_token(token: str) -> Optional[dict]:
         return None
 
 
+# (Authorization header, its claims or None) as decided once by _mcp_gate for the current request.
+_request_auth: ContextVar[Optional[tuple[Optional[str], Optional[dict]]]] = ContextVar("_request_auth", default=None)
+
+
 def _get_user_from_token(authorization: Optional[str]) -> Optional[dict]:
-    """Extract and validate user from Authorization header."""
+    """Extract and validate user from Authorization header. Within a request this returns the gate's
+    decision and never re-validates, so a transient JWKS or SSM failure can't make two readers disagree."""
+    decided = _request_auth.get()
+    if decided is not None:
+        return decided[1] if decided[0] == authorization else None
     if not authorization:
         return None
 
@@ -420,18 +429,25 @@ async def send_message_streaming(
 _now = time.time
 
 
-def _mcp_gate(request: Request) -> None:
-    """App-wide dependency: an MCP-audience request needs its tenant's MCP access, is never an admin
-    request, and is rate limited. Runs before every route's own work; web-app requests pass untouched."""
-    user = _get_user_from_token(request.headers.get("authorization"))
+async def _mcp_gate(request: Request) -> None:
+    """App-wide dependency, run before every route's own work. It validates the token once for the request
+    (a header that doesn't validate is a 401), then holds an MCP-audience request to its tenant's MCP access,
+    refuses admin routes and rate limits it. Web-app requests pass untouched.
+    Async so the ContextVar it sets is visible to the endpoint; a threadpool dependency's set would be lost."""
+    authorization = request.headers.get("authorization")
+    _request_auth.set(None)
+    user = _get_user_from_token(authorization)
+    _request_auth.set((authorization, user))
+    if authorization and not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
     if not user or not user.get("_via_mcp"):
         return
-    tenant = tenant_for(user)
+    tenant = await _blocking(tenant_for, user)
     if not mcp_access.may_use_mcp(tenant, user):
         raise HTTPException(status_code=403, detail=mcp_access.MCP_REFUSAL)
     if request.url.path.startswith("/api/v1/admin/"):
         raise HTTPException(status_code=403, detail=mcp_access.MCP_ADMIN_REFUSAL)
-    retry = mcp_access.charge(tenant.tenant_id, user["sub"], _now())
+    retry = await _blocking(mcp_access.charge, tenant.tenant_id, user["sub"], _now())
     if retry is not None:
         raise HTTPException(status_code=429, detail=mcp_access.MCP_RATE_REFUSAL,
                             headers={"Retry-After": str(retry)})
