@@ -93,7 +93,7 @@ def test_chat_execute_passes_every_dataset_pii_column(monkeypatch):
     monkeypatch.setattr(snowflake_client, "execute",
                         lambda v, ctx: seen.append(ctx) or snowflake_client.Result(columns=[], rows=[]))
     catalog = load_catalog()
-    ChatTools(catalog, "DB", tenant=TENANT_A).dispatch(
+    ChatTools(catalog, tenant=TENANT_A).dispatch(
         "execute_sql", {"sql": "SELECT COUNT(*) AS n FROM CDM_LMS.COURSE", "reason": "no governed metric fits this"},
         called=("search_catalog",))
     declared = {c.upper() for ds in catalog.datasets.values() for c in ds.pii_columns}

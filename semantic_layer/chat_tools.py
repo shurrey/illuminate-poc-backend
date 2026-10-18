@@ -21,15 +21,13 @@ from tenancy import Tenant
 from .compiler import CompileError, compile_query, named_result
 from .dictionary import describe_table
 from .overlays import overlays_used
-from .contract import QueryContract
 from .schema import Catalog
 from .search import search_catalog
-from .sql_service import describe, run_sql
+from .sql_service import contract_of, describe, run_sql
 
 MODEL_ROW_LIMIT = 200
 MIN_REASON_LENGTH = 15
 _GOVERNED_TOOLS = {"search_catalog", "query_semantic"}
-_CONTRACT_FIELDS = set(QueryContract.model_fields)
 
 _FILTER_SCHEMA = {
     "type": "object",
@@ -161,16 +159,12 @@ def _model_error(message: str) -> str:
     return re.sub(r",?\s*role \S+", "", message)
 
 
-def _contract(tool_input: dict) -> QueryContract:
-    return QueryContract(**{k: v for k, v in tool_input.items() if k in _CONTRACT_FIELDS})
-
-
 def _artifact(artifact_type: str, title: str, data, **extra) -> dict:
     return {"id": uuid.uuid4().hex, "type": artifact_type, "title": title, "data": data, **extra}
 
 
 class ChatTools:
-    def __init__(self, catalog: Catalog, database: str, *, tenant: Tenant,
+    def __init__(self, catalog: Catalog, *, tenant: Tenant,
                  execute: Optional[Callable[[Validated, GuardContext], Result]] = None,
                  describe: Callable[[str, str], Optional[list[dict]]] = describe_table,
                  overlays: Iterable = (), allow_identity: bool = False,
@@ -179,11 +173,12 @@ class ChatTools:
         allow_identity: the caller's role may see PII columns (governed and freehand).
         identity_audit: for an identity-capable query, called with ("governed", contract) before a governed query
         runs, and once the guard accepts execute_sql with ("governed", contract) per part, then ("freehand", None)."""
-        self.catalog, self.database, self.tenant, self.describe = catalog, database, tenant, describe
+        self.catalog, self.tenant, self.describe = catalog, tenant, describe
         self.execute = execute or (lambda v, ctx: snowflake_client.execute(v, ctx))
         self.overlays = list(overlays)
         self.allow_identity, self.identity_audit = allow_identity, identity_audit
         self.guard = GuardContext.of(tenant, catalog, allow_identity=allow_identity)
+        self.database = self.guard.database
 
     def _run(self, checked: Validated | Refusal) -> dict:
         """The guard's refusal, or the warehouse result as a dict of columns, rows and truncated."""
@@ -214,7 +209,7 @@ class ChatTools:
 
     def _tool_query_semantic(self, tool_input: dict) -> ToolResult:
         try:
-            contract = _contract(tool_input)
+            contract = contract_of(tool_input)
             compiled = compile_query(contract, self.catalog, self.database, allow_identity=self.allow_identity)
         except (ValidationError, CompileError) as e:
             return ToolResult({"error": str(e)})

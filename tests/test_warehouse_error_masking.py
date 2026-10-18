@@ -64,7 +64,7 @@ def test_warehouse_text_is_cut_at_the_first_quote_like_character(raw, shown):
 
 def test_a_viewers_chat_tool_result_and_its_log_line_never_carry_the_value(warehouse_fails, caplog):
     caplog.set_level(logging.DEBUG)
-    tools = ChatTools(load_catalog(), "DB", tenant=TENANT_A)
+    tools = ChatTools(load_catalog(), tenant=TENANT_A)
     use = {"toolUseId": "t1", "name": "execute_sql",
            "input": {"sql": VIEWER_SQL, "reason": "no governed metric parses first names"}}
     artifacts = []

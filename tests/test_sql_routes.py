@@ -126,9 +126,9 @@ def test_validate_accepts_and_refuses_without_a_warehouse_call(as_user, executed
     monkeypatch.setattr(snowflake_client, "execute", lambda *a: pytest.fail("reached the warehouse"))
     client = as_user()
     ok = client.post("/api/v1/sql/validate", headers=AUTH, json={"sql": FREEHAND})
-    assert ok.status_code == 200 and ok.json() == {"ok": True}
+    assert ok.status_code == 200 and ok.json() == {"ok": True, "governance_preview": "none"}
     spliced = client.post("/api/v1/sql/validate", headers=AUTH, json={"sql": OUTER, "governed": {"governed_1": PART}})
-    assert spliced.json() == {"ok": True}
+    assert spliced.json() == {"ok": True, "governance_preview": "partial"}
     bad = client.post("/api/v1/sql/validate", headers=AUTH, json={"sql": "SELECT EMAIL FROM CDM_LMS.PERSON"})
     assert bad.status_code == 200 and bad.json()["ok"] is False and bad.json()["error"]
     bad_part = client.post("/api/v1/sql/validate", headers=AUTH,
@@ -166,3 +166,9 @@ def test_describe_learn_is_premium_only(as_user):
 
 def test_describe_rejects_unsafe_identifiers(as_user):
     assert _describe(as_user(), "CDM_LMS;DROP", "COURSE").status_code == 400
+
+
+@pytest.mark.parametrize("reason", ["", "   "])
+def test_a_blank_reason_falls_back_to_the_default(as_user, executed, reason):
+    body = _run(as_user(), sql=FREEHAND, reason=reason).json()
+    assert body["provenance"]["reason"] == "Written in the query builder"

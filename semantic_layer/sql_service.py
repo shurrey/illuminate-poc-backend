@@ -54,9 +54,13 @@ def _check(ctx: GuardContext, sql: str, governed: dict | None) -> Validated | Re
 
 
 def validate_sql(ctx: GuardContext, *, sql: str, governed: dict | None = None) -> dict:
-    """{"ok": True} when the guard accepts the statement for this caller, else {"ok": False, "error"}. No warehouse call."""
+    """{"ok": True, "governance_preview"} when the guard accepts the statement for this caller, else
+    {"ok": False, "error"}. The preview is "partial" with governed parts, else "none"; a run's label can be lower.
+    No warehouse call."""
     checked = _check(ctx, sql, governed)
-    return {"ok": False, "error": checked.message} if isinstance(checked, Refusal) else {"ok": True}
+    if isinstance(checked, Refusal):
+        return {"ok": False, "error": checked.message}
+    return {"ok": True, "governance_preview": "partial" if governed else "none"}
 
 
 def _unique(values: Iterable[str]) -> list[str]:
