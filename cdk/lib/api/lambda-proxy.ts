@@ -15,6 +15,8 @@ export interface LambdaProxyProps {
   userItemsTableName: string;
   tenantTableArn: string;
   tenantTableName: string;
+  mcpSessionsTableArn: string;
+  mcpSessionsTableName: string;
   userPoolId: string;
   userPoolClientId: string;
   /** CloudFront origin URL to add to CORS allowed origins */
@@ -92,6 +94,12 @@ export class LambdaProxy extends Construct {
       resources: [props.tenantTableArn],
     }));
 
+    // MCP sessions and per-user rate counters
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem'],
+      resources: [props.mcpSessionsTableArn],
+    }));
+
     // MCP discovery (client id and URL published by the MCP stack)
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['ssm:GetParameter'],
@@ -156,6 +164,7 @@ export class LambdaProxy extends Construct {
         OVERLAY_TABLE: props.overlayTableName,
         USER_ITEMS_TABLE: props.userItemsTableName,
         TENANT_TABLE: props.tenantTableName,
+        MCP_SESSIONS_TABLE: props.mcpSessionsTableName,
         ENVIRONMENT: props.environment,
         BEDROCK_MODEL_ID: 'us.anthropic.claude-sonnet-4-6',
         USER_POOL_ID: props.userPoolId,

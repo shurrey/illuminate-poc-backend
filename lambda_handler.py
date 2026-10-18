@@ -15,17 +15,19 @@ import json
 import math
 import logging
 import re
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Body, FastAPI, HTTPException, Header, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from semantic_layer.contract import QueryContract
+import mcp_access
 import tenancy
 from licenses import PREVIEW_REFUSAL, allows_learn
 from tenancy import NOT_READY, Tenant, TenantNotReady
@@ -149,10 +151,18 @@ def _validate_token(token: str) -> Optional[dict]:
             issuer=f"https://cognito-idp.{AWS_REGION}.amazonaws.com/{USER_POOL_ID}",
             options={"verify_aud": False}
         )
+        claims.pop("_via_mcp", None)
         # Only ID tokens carry the tenant and group claims the API relies on.
-        if claims.get("token_use") != "id" or claims.get("aud") != USER_POOL_CLIENT_ID:
+        if claims.get("token_use") != "id":
             return None
-        return claims
+        aud = claims.get("aud")
+        if aud == USER_POOL_CLIENT_ID:
+            return claims
+        # Discovery is consulted only for non-web audiences, so an SSM failure never touches web-app tokens.
+        if aud and aud == mcp_access.mcp_client_id():
+            claims["_via_mcp"] = True
+            return claims
+        return None
 
     except (JWTError, Exception):
         return None
@@ -407,8 +417,29 @@ async def send_message_streaming(
 # FastAPI Application
 # =============================================================================
 
+_now = time.time
+
+
+def _mcp_gate(request: Request) -> None:
+    """App-wide dependency: an MCP-audience request needs its tenant's MCP access, is never an admin
+    request, and is rate limited. Runs before every route's own work; web-app requests pass untouched."""
+    user = _get_user_from_token(request.headers.get("authorization"))
+    if not user or not user.get("_via_mcp"):
+        return
+    tenant = tenant_for(user)
+    if not mcp_access.may_use_mcp(tenant, user):
+        raise HTTPException(status_code=403, detail=mcp_access.MCP_REFUSAL)
+    if request.url.path.startswith("/api/v1/admin/"):
+        raise HTTPException(status_code=403, detail=mcp_access.MCP_ADMIN_REFUSAL)
+    retry = mcp_access.charge(tenant.tenant_id, user["sub"], _now())
+    if retry is not None:
+        raise HTTPException(status_code=429, detail=mcp_access.MCP_RATE_REFUSAL,
+                            headers={"Retry-After": str(retry)})
+
+
 _API_DOCS = os.environ.get("API_DOCS", "on") == "on"
 app = FastAPI(
+    dependencies=[Depends(_mcp_gate)],
     title="Illuminate Conversational Intelligence - API",
     description="Semantic-layer queries, catalog, admin overlays and Bedrock chat",
     version="0.4.0",
@@ -2503,6 +2534,8 @@ ADMIN_GROUP = "illuminate-admins"
 
 
 def _require_admin(user: Optional[dict]) -> None:
+    if (user or {}).get("_via_mcp"):
+        raise HTTPException(status_code=403, detail=mcp_access.MCP_ADMIN_REFUSAL)
     if ADMIN_GROUP not in (user or {}).get("cognito:groups", []):
         raise HTTPException(status_code=403, detail=f"Requires membership of the {ADMIN_GROUP} group.")
 

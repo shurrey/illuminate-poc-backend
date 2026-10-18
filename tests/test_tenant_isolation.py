@@ -17,6 +17,7 @@ import chat_engine
 import conversation_store
 import lambda_handler
 import licenses
+import mcp_access
 import overlay_store
 import snowflake_client
 import tenancy
@@ -871,3 +872,45 @@ def test_pinned_shared_cards_never_cross(world):
         assert sid not in cards.text
         _clean(cards.text)
     assert user_items_store.get(B, "u2", "layout") is None and user_items_store.get(B, "u1", "layout") is None
+
+
+def _mcp_world(world, monkeypatch):
+    """Both tenants have MCP on; Bearer am / bm are MCP-audience tokens; rate counters go to a moto table."""
+    sessions = _table(boto3.resource("dynamodb", region_name="us-east-1"), "mcp-sessions-test", ["pk"])
+    monkeypatch.setattr(mcp_access, "_sessions_table", sessions)
+    for tid in (A, B):
+        tenancy._table.update_item(Key={"tenant_id": tid}, UpdateExpression="SET mcp_enabled = :e",
+                                   ExpressionAttributeValues={":e": True})
+    tenancy._cache.clear()
+    monkeypatch.setitem(USERS, "Bearer am", {**USERS["Bearer av"], "_via_mcp": True})
+    monkeypatch.setitem(USERS, "Bearer bm", {**USERS["Bearer bv"], "_via_mcp": True})
+    return sessions
+
+
+def test_an_mcp_token_never_crosses(world, monkeypatch):
+    _mcp_world(world, monkeypatch)
+    c = world.client
+    as_am, as_bm = {"Authorization": "Bearer am"}, {"Authorization": "Bearer bm"}
+    _seed_a_overlays()
+    _save_a_conversation()
+    assert c.post("/api/v1/me/cards", headers=as_am, json=CARD).status_code == 200
+    assert MARK_A in _query(c, as_am).text
+
+    r = _query(c, as_bm)
+    assert r.status_code == 200 and r.json()["rows"] == [{"tenant_mark": MARK_B, "database": DB_B}]
+    _clean(r.text)
+    for path in ("/api/v1/semantic/catalog", "/api/v1/me/cards", "/api/v1/me/queries", "/api/v1/shared",
+                 "/api/conversations", "/api/conversations/c1", "/api/v1/me", f"/api/v1/reports/{REPORT}"):
+        r = c.get(path, headers=as_bm)
+        assert r.status_code in (200, 404), (path, r.text)
+        _clean(r.text)
+
+
+def test_mcp_rate_counters_are_per_tenant(world, monkeypatch):
+    sessions = _mcp_world(world, monkeypatch)
+    c = world.client
+    for _ in range(3):
+        assert c.get("/api/v1/me", headers={"Authorization": "Bearer am"}).status_code == 200
+    assert c.get("/api/v1/me", headers={"Authorization": "Bearer bm"}).status_code == 200
+    counts = {i["pk"].rsplit("#", 1)[0]: int(i["n"]) for i in sessions.scan()["Items"]}
+    assert counts == {f"rate#{A}#u2": 3, f"rate#{B}#u2": 1}
