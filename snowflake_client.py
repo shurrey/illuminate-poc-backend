@@ -23,7 +23,7 @@ from semantic_layer.compiler import is_bounded_generator_call
 from semantic_layer.contract import CompiledQuery, QueryContract
 from semantic_layer.governed_sql import SpliceError, SplicedSql, splice
 from semantic_layer.learn import learn_columns, learn_pii
-from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate
+from semantic_layer.pii import PII_COLUMN_NAMES, inside_counting_aggregate, used_exactly
 from semantic_layer.schema import Catalog
 from tenancy import Tenant, TenantNotReady
 
@@ -624,7 +624,8 @@ def _check(stripped: str, ctx: GuardContext, mode: Mode, spliced: SplicedSql | N
     (PII-checked at definition time) in the outermost projection.
     allow_identity (callers whose role may see identity) lifts the PII-column check for compiled and
     freehand SQL. Freehand SQL's structural refusals (star, positional, IDENTIFIER, alias-list,
-    whole-row) and every other check still apply to every role. extra_pii adds dataset-declared PII
+    whole-row) and every other check still apply to every role. Without identity rights, freehand PII may also be
+    matched only by exact value (=, <>, IN, IS NULL), counted or partitioned on, in filters too. extra_pii adds dataset-declared PII
     column names to the check; freehand SQL also treats columns the CDM or LEARN dictionary flags,
     and LEARN columns it does not list, as PII. spliced: each of its part and helper CTEs must appear in the
     statement exactly as splice built it. Those bodies get the compiled PII rule (a part's own projection is its
@@ -735,6 +736,7 @@ def _check(stripped: str, ctx: GuardContext, mode: Mode, spliced: SplicedSql | N
     pii_names = PII_COLUMN_NAMES | {name.upper() for name in ctx.extra_pii}
     scopes: list = []
     freehand: list = []  # the columns the dictionary check also covers
+    exact: list = []  # every freehand column, held to exact use when it is PII
     if compiled:
         if not allow_identity:
             outer = stmt.find(exp.Select)
@@ -771,24 +773,39 @@ def _check(stripped: str, ctx: GuardContext, mode: Mode, spliced: SplicedSql | N
         if whole_row:
             return WHOLE_ROW_REFUSAL
         if not allow_identity:
-            freehand = [col for col in stmt.find_all(exp.Column) if not _in_filter(col) and id(col) not in inside]
+            exact = [col for col in stmt.find_all(exp.Column) if id(col) not in inside]
+            freehand = [col for col in exact if not _in_filter(col)]
             scopes = [(col, stmt) for col in freehand]
             for part in parts:
                 select = part.this if isinstance(part.this, exp.Select) else part.this.find(exp.Select)
                 scopes += [(col, sel) for sel in (select.expressions if select else []) for col in sel.find_all(exp.Column)]
-    if scopes:
+    if scopes or exact:
         try:
-            dictionary_pii_ids = _dictionary_pii_columns(stmt, freehand) if freehand else set()
+            dictionary_pii_ids = _dictionary_pii_columns(stmt, exact or freehand) if (exact or freehand) else set()
         except Exception:
             logger.exception("Dictionary PII resolution failed; treating every column as PII")
-            dictionary_pii_ids = {id(col) for col, _ in scopes}
+            dictionary_pii_ids = {id(col) for col, _ in scopes} | {id(col) for col in exact}
+
+        def name_of(col_node) -> str:
+            return col_node.name.upper().strip('"').strip("'")
+
+        def is_pii(col_node) -> bool:
+            return name_of(col_node) in pii_names or id(col_node) in dictionary_pii_ids
+
         for col_node, scope in scopes:
-            col_name = col_node.name.upper().strip('"').strip("'")
-            if (col_name in pii_names or id(col_node) in dictionary_pii_ids) and not inside_counting_aggregate(col_node, scope):
+            if is_pii(col_node) and not inside_counting_aggregate(col_node, scope):
                 return (
-                    f"Column '{col_name}' contains personally identifiable information (PII). "
+                    f"Column '{name_of(col_node)}' contains personally identifiable information (PII). "
                     "FERPA rules allow PII columns only inside COUNT, COUNT_IF or "
                     "APPROX_COUNT_DISTINCT. Please revise your query to count this data."
+                )
+        # Filters and counts may read PII, but a pattern, range or function would reveal it a guess at a time.
+        for col_node in exact:
+            if is_pii(col_node) and not used_exactly(col_node):
+                return (
+                    f"Column '{name_of(col_node)}' contains personally identifiable information (PII). "
+                    "Without identity access it may be matched only by exact value (=, <>, IN, IS NULL) or "
+                    "counted; patterns, ranges and functions on it are not allowed."
                 )
 
     # Enforce LIMIT <= 1000

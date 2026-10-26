@@ -215,6 +215,11 @@ PII is handled in layers:
      (`WHERE`, `HAVING`, `QUALIFY`, `JOIN ... ON`), which may test PII without returning it. This
      covers `UNPIVOT`, `PIVOT`, `FLATTEN`, `MATCH_RECOGNIZE`, `ORDER BY` and `GROUP BY`. Star
      projections are refused except inside `COUNT(*)`.
+   - For callers without identity rights, a freehand PII column, in a filter or inside a count, may
+     only meet an exact comparison (`=`, `<>`, `IN`, `IS [NOT] NULL`), a count or a window's
+     `PARTITION BY`, through casts, `LOWER`/`UPPER`/`TRIM`, `COALESCE` or a `CASE`/`IFF` result.
+     `LIKE`, ranges, `SUBSTR`, `LENGTH` and the like would reveal the value one guess at a time,
+     matching the compiler's exact-value rule for PII filters.
 4. **Row cap.** At most 1000 rows are fetched per query; results report `truncated`.
 5. **Response scrub.** Chat text is passed through regexes that redact SSNs, email addresses, phone
    numbers and card numbers before it is stored in the conversation or returned to the client.

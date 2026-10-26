@@ -11,7 +11,8 @@ from semantic_layer.chat_tools import ChatTools
 from tests.guard_fakes import guard
 from tests.tenant_fakes import TENANT_A, install_tenants, user_of
 
-VIEWER_SQL = "SELECT COUNT(TO_NUMBER(CONCAT('x'' ', p.FIRST_NAME))) AS n FROM CDM_LMS.PERSON p"
+# Passes the guard for a Viewer; the fake warehouse then fails with an error that echoes a value.
+VIEWER_SQL = "SELECT COUNT(*) AS n FROM CDM_LMS.PERSON p WHERE p.FIRST_NAME = 'Alice'"
 ECHOES = [
     "Numeric value 'x' Alice' is not recognized",
     "Numeric value x'Alice' is not recognized",
