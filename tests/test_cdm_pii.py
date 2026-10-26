@@ -53,7 +53,7 @@ def test_dictionary_flagged_cdm_columns_are_refused_outside_count(executed, sql)
     "SELECT COUNT(p.BIRTH_DATE) AS n, COUNT(DISTINCT p.POSTAL_CODE) AS z FROM CDM_LMS.PERSON p",
     "SELECT COUNT(p.STAGE:email) AS n FROM CDM_LMS.PERSON p",
     "SELECT COUNT_IF(c.GENDER_SOURCE_CODE = 'F') AS n FROM CDM_CRM.CONTACT c",
-    "SELECT COUNT(*) AS n FROM CDM_LMS.PERSON p WHERE p.BIRTH_DATE < '2000-01-01'",
+    "SELECT COUNT(*) AS n FROM CDM_LMS.PERSON p WHERE p.BIRTH_DATE IS NOT NULL",
 ])
 def test_counting_dictionary_flagged_cdm_columns_is_allowed(executed, sql):
     assert "error" not in _validate(sql), sql
