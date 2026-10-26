@@ -353,3 +353,33 @@ def test_a_request_validates_its_token_once(real_tokens):
     w.use({"token_use": "id", "aud": WEB_ID, "sub": "u1", "custom:tenant_id": "ta"})
     assert w.client.get("/api/v1/me", headers=AUTH).status_code == 200
     assert w.decodes == [1]
+
+
+# --- real signatures ------------------------------------------------------------------------------------------
+
+@pytest.fixture
+def signer(monkeypatch):
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from jose import jwk, jwt as jose_jwt
+
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_jwk = {**jwk.RSAKey(private.public_key(), "RS256").to_dict(), "kid": "k1"}
+    monkeypatch.setattr(lambda_handler, "USER_POOL_CLIENT_ID", WEB_ID)
+    monkeypatch.setattr(lambda_handler, "_get_jwks", lambda: {"keys": [public_jwk]})
+    monkeypatch.setattr(mcp_access, "_mcp_discovery", lambda: (MCP_ID, "https://mcp.example.com/mcp"))
+    issuer = f"https://cognito-idp.{lambda_handler.AWS_REGION}.amazonaws.com/{lambda_handler.USER_POOL_ID}"
+
+    def sign(**claims):
+        now = int(lambda_handler.time.time())
+        body = {"iss": issuer, "token_use": "id", "sub": "u1", "iat": now, "exp": now + 3600, **claims}
+        return jose_jwt.encode(body, private, algorithm="RS256", headers={"kid": "k1"})
+    return sign
+
+
+@pytest.mark.parametrize("aud", [WEB_ID, MCP_ID])
+def test_hosted_ui_id_tokens_with_at_hash_are_accepted(signer, aud):
+    # Cognito's authorization-code flow adds at_hash; the API never sees the matching access token.
+    claims = lambda_handler._validate_token(signer(aud=aud, at_hash="dGVzdC1hdC1oYXNo"))
+
+    assert claims is not None and claims["aud"] == aud
+    assert claims.get("_via_mcp", False) == (aud == MCP_ID)
