@@ -150,7 +150,8 @@ def _validate_token(token: str) -> Optional[dict]:
             key,
             algorithms=["RS256"],
             issuer=f"https://cognito-idp.{AWS_REGION}.amazonaws.com/{USER_POOL_ID}",
-            options={"verify_aud": False}
+            # Hosted-UI ID tokens carry at_hash, which jose can check only against the access token.
+            options={"verify_aud": False, "verify_at_hash": False}
         )
         claims.pop("_via_mcp", None)
         # Only ID tokens carry the tenant and group claims the API relies on.
