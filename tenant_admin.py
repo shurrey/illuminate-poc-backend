@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from botocore.exceptions import ClientError
 
 from licenses import LICENSES
-from roles import GROUP_ROLES
+from roles import ACCESS_GROUP, GROUP_ROLES
 
 
 def _scan(table, **kwargs) -> list[dict]:
@@ -364,7 +364,8 @@ def add_users(*, dynamodb, env: str, cognito, user_pool_id: str, tenant_id: str,
     """Create each (email, role) user in the tenant; returns {users_created, users_refused}.
 
     An email that exists with another tenant or none is refused and left unchanged.
-    An existing user of this tenant only gains the role's group if missing. The tenant, roles and emails are checked first.
+    Every user gets the Illuminate access group and the role's group; an existing user of this tenant only gains
+    those it lacks. The tenant, roles and emails are checked first.
     """
     users = _check_users(users, send_email, temporary_password)
     _tenant_row(dynamodb, env, tenant_id)
@@ -386,10 +387,11 @@ def add_users(*, dynamodb, env: str, cognito, user_pool_id: str, tenant_id: str,
             created.append(email)
             existing = cognito.admin_get_user(UserPoolId=user_pool_id, Username=email)
         _record_in_directory(dynamodb, env, tenant_id, existing["UserAttributes"])
-        if group:
-            current = cognito.admin_list_groups_for_user(UserPoolId=user_pool_id, Username=email)["Groups"]
-            if group not in {g["GroupName"] for g in current}:
-                cognito.admin_add_user_to_group(UserPoolId=user_pool_id, Username=email, GroupName=group)
+        current = {g["GroupName"] for g in
+                   cognito.admin_list_groups_for_user(UserPoolId=user_pool_id, Username=email)["Groups"]}
+        for wanted in (ACCESS_GROUP, group):
+            if wanted and wanted not in current:
+                cognito.admin_add_user_to_group(UserPoolId=user_pool_id, Username=email, GroupName=wanted)
     return {"users_created": created, "users_refused": refused}
 
 

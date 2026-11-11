@@ -24,6 +24,8 @@ class Clients:
         self.secrets = boto3.client("secretsmanager", region_name="us-east-1")
         self.cognito = boto3.client("cognito-idp", region_name="us-east-1")
         self.pool = self.cognito.create_user_pool(PoolName="p")["UserPool"]["Id"]
+        # The live pool's access group is created by the platform identity stack, not by tenant_admin.
+        self.cognito.create_group(UserPoolId=self.pool, GroupName="illuminate-users")
         self.dynamodb.create_table(
             TableName=f"illuminate-tenants-{ENV}", BillingMode="PAY_PER_REQUEST",
             KeySchema=[{"AttributeName": "tenant_id", "KeyType": "HASH"}],
@@ -331,8 +333,8 @@ def test_create_tenant_with_copied_connection_and_two_users(aws):
     assert row["created_at"] == row["updated_at"]
     claims = _claims(aws, "a@x.edu")
     assert claims["custom:tenant_id"] == tid and claims["email_verified"] == "true"
-    assert _user_groups(aws, "a@x.edu") == ["illuminate-admins"]
-    assert _user_groups(aws, "v@x.edu") == []
+    assert _user_groups(aws, "a@x.edu") == ["illuminate-admins", "illuminate-users"]
+    assert _user_groups(aws, "v@x.edu") == ["illuminate-users"]
 
 
 def test_create_tenant_writes_the_row_only_after_the_secret(aws):
@@ -379,7 +381,7 @@ def test_add_users_refuses_other_tenant_email(aws):
     assert aws.user_tenant("other@x.edu") == "someone-else"
     assert aws.user_tenant("none@x.edu") is None
     assert _user_groups(aws, "other@x.edu") == [] and _user_groups(aws, "none@x.edu") == []
-    assert _user_groups(aws, "new@x.edu") == ["illuminate-authors"]
+    assert _user_groups(aws, "new@x.edu") == ["illuminate-authors", "illuminate-users"]
 
 
 def test_add_users_is_idempotent_for_same_tenant(aws):
@@ -390,9 +392,9 @@ def test_add_users_is_idempotent_for_same_tenant(aws):
     assert tenant_admin.add_users(users=users, **kw)["users_created"] == ["a@x.edu"]
     again = tenant_admin.add_users(users=users, **kw)
     assert again == {"users_created": [], "users_refused": []}
-    assert _user_groups(aws, "a@x.edu") == ["illuminate-developers"]
+    assert _user_groups(aws, "a@x.edu") == ["illuminate-developers", "illuminate-users"]
     tenant_admin.add_users(users=[("a@x.edu", "Admin")], **kw)
-    assert _user_groups(aws, "a@x.edu") == ["illuminate-admins", "illuminate-developers"]
+    assert _user_groups(aws, "a@x.edu") == ["illuminate-admins", "illuminate-developers", "illuminate-users"]
 
 
 def test_add_users_no_email_requires_and_uses_a_temporary_password(aws):
@@ -516,6 +518,14 @@ def test_set_snowflake_secret_rejects_non_uuid(tmp_path):
         bad = subprocess.run([str(script), bad_id], env=env, capture_output=True, text=True)
         assert bad.returncode != 0 and "UUID" in bad.stderr
     assert not log.exists()
+
+
+def test_add_users_gives_an_existing_member_of_the_tenant_access(aws):
+    T1 = _t1(aws)
+    aws.user("old@x.edu", T1)
+    kw = dict(dynamodb=aws.dynamodb, env=ENV, cognito=aws.cognito, user_pool_id=aws.pool, tenant_id=T1)
+    assert tenant_admin.add_users(users=[("old@x.edu", "Viewer")], **kw)["users_created"] == []
+    assert _user_groups(aws, "old@x.edu") == ["illuminate-users"]
 
 
 def test_add_users_refuses_an_unregistered_tenant_before_any_write(aws):
