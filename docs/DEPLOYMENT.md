@@ -103,7 +103,7 @@ a recovery window, during which its name stays reserved. Nothing reads it.
 CDK sets the Lambda's `ALLOWED_ORIGINS` to fixed defaults:
 
 - `prod`: `https://illuminate.anthology.com`
-- other environments: `http://localhost:3000`, `http://localhost:5173` and `https://dm5zbussw00dg.cloudfront.net`
+- other environments: `http://localhost:3000`, `http://localhost:5173`, `https://dm5zbussw00dg.cloudfront.net` and `https://illuminate.hurrey.dev`
 
 The frontend's infrastructure stack appends its own CloudFront origin to `ALLOWED_ORIGINS` with a
 custom resource. **Redeploying this API stack resets `ALLOWED_ORIGINS` to the defaults above**, so

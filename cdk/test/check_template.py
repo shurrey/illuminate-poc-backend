@@ -12,7 +12,11 @@ import sys
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / "cdk.out"
-WEB_ORIGINS = ["https://d3bydnqg0mo45h.cloudfront.net", "http://localhost:3000"]
+WEB_ORIGINS = [
+    "https://d3bydnqg0mo45h.cloudfront.net",
+    "https://illuminate.hurrey.dev",
+    "http://localhost:3000",
+]
 
 
 def resources(stack: str, kind: str) -> list[dict]:
