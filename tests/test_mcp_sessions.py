@@ -184,7 +184,7 @@ def test_an_sql_kind_run_needs_the_session_header(w, monkeypatch, route):
 
 @pytest.mark.parametrize("route", ["saved", "shared"])
 def test_a_web_app_token_runs_an_sql_kind_query_without_a_session(w, monkeypatch, route):
-    w.as_user({"sub": "u1", "custom:tenant_id": "tb", "cognito:groups": []})
+    w.as_user({"sub": "u1", "custom:tenant_id": "tb", "cognito:groups": ["illuminate-users"]})
     assert w.client.post(_sql_kind(monkeypatch, route), headers=AUTH).status_code == 200
     assert w.executed == [FREEHAND]
 
@@ -287,7 +287,7 @@ def test_after_a_refusal_the_owner_starts_again_ungoverned(w):
 
 
 def test_web_app_tokens_ignore_the_header(w):
-    w.as_user({"sub": "u1", "custom:tenant_id": "tb", "cognito:groups": []})
+    w.as_user({"sub": "u1", "custom:tenant_id": "tb", "cognito:groups": ["illuminate-users"]})
     assert w.client.get("/api/v1/me", headers=H("not a valid id")).status_code == 200
     r = w.client.post("/api/v1/sql/run", headers=H("x"), json={"sql": FREEHAND})
     assert r.status_code == 200 and w.sessions.items == {}

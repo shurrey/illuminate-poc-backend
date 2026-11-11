@@ -182,7 +182,7 @@ def test_delete_builtin_hides_it_and_reset_restores_order(as_user):
 
 
 def test_not_ready_tenant_is_403(as_user):
-    c = as_user({"sub": "u1", "custom:tenant_id": "ghost"})
+    c = as_user({"sub": "u1", "custom:tenant_id": "ghost", "cognito:groups": ["illuminate-users"]})
     for method, path in (("GET", "/api/v1/me/cards"), ("POST", "/api/v1/me/cards/reset"),
                          ("DELETE", "/api/v1/me/cards/average-grade")):
         r = c.request(method, path, headers=AUTH)

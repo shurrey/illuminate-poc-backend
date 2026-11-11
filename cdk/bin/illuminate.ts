@@ -44,6 +44,8 @@ const base = new BaseStack(app, `IlluminateBase-${environment}`, {
   // INITIAL_TENANT_ID overrides the per-environment map in cdk.json; neither set means no seed user.
   initialTenantId:
     process.env.INITIAL_TENANT_ID || envVars['INITIAL_TENANT_ID'] || app.node.tryGetContext('initialTenantIds')?.[environment],
+  // Hosted sign-in callback and sign-out origins, per environment in cdk.json.
+  webAppOrigins: app.node.tryGetContext('webAppOrigins')?.[environment],
 });
 
 // =============================================================================

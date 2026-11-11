@@ -434,11 +434,18 @@ async def send_message_streaming(
 
 _now = time.time
 
+NO_ACCESS = "NO_ACCESS"
+NO_ACCESS_MESSAGE = "You don't have access to Illuminate"
+
+
+class NoAccess(Exception):
+    """A valid token whose user lacks the Illuminate access group."""
+
 
 async def _mcp_gate(request: Request) -> None:
     """App-wide dependency, run before every route's own work. It validates the token once for the request
-    (a header that doesn't validate is a 401), then holds an MCP-audience request to its tenant's MCP access,
-    refuses admin routes and rate limits it. Web-app requests pass untouched.
+    (a header that doesn't validate is a 401) and refuses a user without the access group (403 NO_ACCESS),
+    then holds an MCP-audience request to its tenant's MCP access, refuses admin routes and rate limits it.
     Async so the ContextVar it sets is visible to the endpoint; a threadpool dependency's set would be lost."""
     authorization = request.headers.get("authorization")
     _request_auth.set(None)
@@ -447,6 +454,8 @@ async def _mcp_gate(request: Request) -> None:
     _request_auth.set((authorization, user))
     if authorization and not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+    if user and not roles.has_access(user):
+        raise NoAccess()
     if not user or not user.get("_via_mcp"):
         return
     tenant = await _blocking(tenant_for, user)
@@ -520,6 +529,11 @@ async def _tenant_not_ready(request: Request, exc: TenantNotReady) -> JSONRespon
     return JSONResponse(status_code=403, content={"detail": NOT_READY})
 
 
+@app.exception_handler(NoAccess)
+async def _no_access(request: Request, exc: NoAccess) -> JSONResponse:
+    return JSONResponse(status_code=403, content={"detail": NO_ACCESS_MESSAGE, "code": NO_ACCESS})
+
+
 # CORS middleware
 origins = [o.strip() for o in ALLOWED_ORIGINS.split(",")]
 app.add_middleware(
@@ -555,7 +569,7 @@ async def get_me(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     tenant = tenant_for(user)
-    groups = set(user.get("cognito:groups") or [])
+    groups = roles.groups_of(user)
 
     user_roles = sorted([role for group, role in roles.GROUP_ROLES.items() if group in groups])
     if not user_roles:
@@ -2694,7 +2708,7 @@ ADMIN_GROUP = "illuminate-admins"
 def _require_admin(user: Optional[dict]) -> None:
     if (user or {}).get("_via_mcp"):
         raise HTTPException(status_code=403, detail=mcp_access.MCP_ADMIN_REFUSAL)
-    if ADMIN_GROUP not in (user or {}).get("cognito:groups", []):
+    if ADMIN_GROUP not in roles.groups_of(user or {}):
         raise HTTPException(status_code=403, detail=f"Requires membership of the {ADMIN_GROUP} group.")
 
 

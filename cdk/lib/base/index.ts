@@ -12,6 +12,7 @@ export interface BaseStackProps extends cdk.StackProps {
   initialUserPassword?: string;
   initialUserName?: string;
   initialTenantId?: string;
+  webAppOrigins?: string[];
 }
 
 export class BaseStack extends cdk.Stack {
@@ -28,6 +29,7 @@ export class BaseStack extends cdk.Stack {
       initialUserPassword: props.initialUserPassword,
       initialUserName: props.initialUserName,
       initialTenantId: props.initialTenantId,
+      webAppOrigins: props.webAppOrigins,
     });
     this.userPool = auth.userPool;
     this.userPoolClient = auth.userPoolClient;

@@ -35,13 +35,13 @@ A, B, C, C2 = "tenant-a", "tenant-b", "tenant-c", "tenant-c2"
 
 ADMIN = "illuminate-admins"
 USERS = {
-    "Bearer a": {"sub": "u1", "custom:tenant_id": A, "cognito:groups": [ADMIN]},
-    "Bearer b": {"sub": "u1", "custom:tenant_id": B, "cognito:groups": [ADMIN]},
-    "Bearer c": {"sub": "u1", "custom:tenant_id": C, "cognito:groups": [ADMIN]},
-    "Bearer c2": {"sub": "u1", "custom:tenant_id": C2, "cognito:groups": [ADMIN]},
-    "Bearer av": {"sub": "u2", "custom:tenant_id": A, "cognito:groups": []},
-    "Bearer bv": {"sub": "u2", "custom:tenant_id": B, "cognito:groups": []},
-    "Bearer ghost": {"sub": "u1", "custom:tenant_id": "ghost", "cognito:groups": [ADMIN]},
+    "Bearer a": {"sub": "u1", "custom:tenant_id": A, "cognito:groups": ["illuminate-users", ADMIN]},
+    "Bearer b": {"sub": "u1", "custom:tenant_id": B, "cognito:groups": ["illuminate-users", ADMIN]},
+    "Bearer c": {"sub": "u1", "custom:tenant_id": C, "cognito:groups": ["illuminate-users", ADMIN]},
+    "Bearer c2": {"sub": "u1", "custom:tenant_id": C2, "cognito:groups": ["illuminate-users", ADMIN]},
+    "Bearer av": {"sub": "u2", "custom:tenant_id": A, "cognito:groups": ["illuminate-users"]},
+    "Bearer bv": {"sub": "u2", "custom:tenant_id": B, "cognito:groups": ["illuminate-users"]},
+    "Bearer ghost": {"sub": "u1", "custom:tenant_id": "ghost", "cognito:groups": ["illuminate-users", ADMIN]},
 }
 AS_A, AS_B, AS_C, AS_GHOST = ({"Authorization": f"Bearer {t}"} for t in ("a", "b", "c", "ghost"))
 
@@ -780,7 +780,7 @@ def test_directory_never_crosses(world, monkeypatch):
     monkeypatch.setitem(USERS, "Bearer bv", {**USERS["Bearer bv"], "name": f"{MARK_B} Person", "email": "p@beta.edu"})
     monkeypatch.setitem(USERS, "Bearer a", {**USERS["Bearer a"], "name": "Admin Alpha", "email": "u1@alpha.edu"})
     monkeypatch.setitem(USERS, "Bearer b", {**USERS["Bearer b"], "name": "Admin Beta", "email": "u1@beta.edu"})
-    monkeypatch.setitem(USERS, "Bearer nt", {"sub": "u9", "name": "No Tenant", "email": "n@none.edu", "cognito:groups": []})
+    monkeypatch.setitem(USERS, "Bearer nt", {"sub": "u9", "name": "No Tenant", "email": "n@none.edu", "cognito:groups": ["illuminate-users"]})
     # u1 is the same sub in A and B.
     for token in ("a", "b", "av", "bv", "nt"):
         c.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})

@@ -48,7 +48,7 @@ class FakeSessions:
 
 
 def mcp_user(tenant_id="ta", *groups, sub="u1"):
-    return {"sub": sub, "custom:tenant_id": tenant_id, "cognito:groups": list(groups), "_via_mcp": True}
+    return {"sub": sub, "custom:tenant_id": tenant_id, "cognito:groups": ["illuminate-users", *groups], "_via_mcp": True}
 
 
 @pytest.fixture
@@ -165,7 +165,7 @@ def test_set_mcp_enabled_drops_a_fresh_cache_entry(world):
 def test_admin_turning_mcp_on_admits_the_next_mcp_request_at_once(world):
     world.as_user(mcp_user("ta"))
     assert world.client.get("/api/v1/me", headers=AUTH).status_code == 403
-    world.as_user({"sub": "admin", "custom:tenant_id": "ta", "cognito:groups": ["illuminate-admins"]})
+    world.as_user({"sub": "admin", "custom:tenant_id": "ta", "cognito:groups": ["illuminate-users", "illuminate-admins"]})
     assert world.client.put("/api/v1/admin/settings/mcp", headers=AUTH, json={"enabled": True}).json() == {"enabled": True}
     world.as_user(mcp_user("ta"))
     assert world.client.get("/api/v1/me", headers=AUTH).status_code == 200
@@ -184,7 +184,7 @@ def test_the_121st_call_in_a_minute_is_429_and_the_next_minute_is_allowed(world)
 
 
 def test_web_app_tokens_are_never_rate_limited(world):
-    world.as_user({"sub": "u1", "custom:tenant_id": "ta", "cognito:groups": []})
+    world.as_user({"sub": "u1", "custom:tenant_id": "ta", "cognito:groups": ["illuminate-users"]})
     for _ in range(mcp_access.RATE_LIMIT + 5):
         assert world.client.get("/api/v1/me", headers=AUTH).status_code == 200
     assert world.sessions.calls == []
@@ -293,7 +293,7 @@ def test_setup_route_survives_an_ssm_error(monkeypatch):
     monkeypatch.setattr(tenancy, "get_tenant", lambda t: Tenant(t, "A", "premium", False))
     monkeypatch.setattr(snowflake_client, "tenant_database", lambda tenant: "DB")
     monkeypatch.setattr(lambda_handler, "_get_user_from_token",
-                        lambda a: {"sub": "a", "custom:tenant_id": "ta", "cognito:groups": ["illuminate-admins"]})
+                        lambda a: {"sub": "a", "custom:tenant_id": "ta", "cognito:groups": ["illuminate-users", "illuminate-admins"]})
     r = TestClient(lambda_handler.app).get("/api/v1/admin/mcp/setup", headers=AUTH)
     assert r.status_code == 200 and r.json() == {"deployed": False}
 
@@ -333,7 +333,7 @@ def test_a_transient_lookup_failure_never_lets_an_mcp_token_skip_the_gate(real_t
         monkeypatch.setattr(mcp_access, "_mcp_discovery", _flaky((MCP_ID, "https://mcp.example.com/mcp")))
     else:
         monkeypatch.setattr(lambda_handler, "_get_jwks", _flaky({"keys": [{"kid": "k1"}]}))
-    w.use({"token_use": "id", "aud": MCP_ID, "sub": "u1", "custom:tenant_id": tenant})
+    w.use({"token_use": "id", "aud": MCP_ID, "sub": "u1", "custom:tenant_id": tenant, "cognito:groups": ["illuminate-users"]})
 
     first = w.client.get("/api/v1/me", headers=AUTH)
     assert (first.status_code, first.json()) == (401, {"detail": "Invalid or expired token"})
@@ -350,7 +350,7 @@ def test_a_transient_lookup_failure_never_lets_an_mcp_token_skip_the_gate(real_t
 
 def test_a_request_validates_its_token_once(real_tokens):
     w = real_tokens
-    w.use({"token_use": "id", "aud": WEB_ID, "sub": "u1", "custom:tenant_id": "ta"})
+    w.use({"token_use": "id", "aud": WEB_ID, "sub": "u1", "custom:tenant_id": "ta", "cognito:groups": ["illuminate-users"]})
     assert w.client.get("/api/v1/me", headers=AUTH).status_code == 200
     assert w.decodes == [1]
 

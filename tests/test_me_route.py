@@ -124,7 +124,7 @@ def test_me_without_token_is_401(monkeypatch):
 
 
 def test_me_not_ready_tenant_is_403(as_user):
-    user = {"sub": "u1", "custom:tenant_id": "not-registered"}
+    user = {"sub": "u1", "custom:tenant_id": "not-registered", "cognito:groups": ["illuminate-users"]}
     r = as_user(user).get("/api/v1/me", headers=AUTH)
     assert r.status_code == 403
     assert r.json() == {"detail": NOT_READY}

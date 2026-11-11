@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 OUT = Path(__file__).resolve().parent.parent / "cdk.out"
+WEB_ORIGINS = ["https://d3bydnqg0mo45h.cloudfront.net", "http://localhost:3000"]
 
 
 def resources(stack: str, kind: str) -> list[dict]:
@@ -52,6 +53,19 @@ def main() -> int:
         check("users cannot write custom:tenant_id", writable is not None and "custom:tenant_id" not in writable),
         check("required attributes are writable (Cognito rejects the client otherwise)",
               writable is not None and all(a["Name"] in writable for a in required)),
+        check("the client keeps SRP sign-in alongside hosted sign-in",
+              {"ALLOW_USER_SRP_AUTH", "ALLOW_USER_PASSWORD_AUTH"} <= set(client["Properties"]["ExplicitAuthFlows"])),
+        check("hosted sign-in is the code grant only, with openid, email and profile",
+              client["Properties"].get("AllowedOAuthFlows") == ["code"]
+              and sorted(client["Properties"].get("AllowedOAuthScopes", [])) == ["email", "openid", "profile"]
+              and client["Properties"].get("SupportedIdentityProviders") == ["COGNITO"]),
+        check("callback and sign-out URLs are the web app's /auth/callback and /login",
+              client["Properties"].get("CallbackURLs") == [f"{o}/auth/callback" for o in WEB_ORIGINS]
+              and client["Properties"].get("LogoutURLs") == [f"{o}/login" for o in WEB_ORIGINS]),
+        check("the base stack defines no pool domain (the platform repo owns it)",
+              not resources("IlluminateBase-dev", "AWS::Cognito::UserPoolDomain")),
+        check("the base stack does not define illuminate-users (the identity service created it)",
+              "illuminate-users" not in groups),
         check("illuminate-admins group exists", "illuminate-admins" in groups),
         check("author and developer role groups exist", {"illuminate-authors", "illuminate-developers"} <= set(groups)),
         check("initial user is added to the admin group", "adminAddUserToGroup" in base_text),

@@ -13,10 +13,10 @@ from tests.tenant_fakes import TENANT_A, TENANT_B
 
 T = TENANT_A.tenant_id
 ADMIN = "illuminate-admins"
-OWNER = {**person("owner", "Olive Owner", "o@a.edu"), "cognito:groups": [ADMIN]}
+OWNER = {**person("owner", "Olive Owner", "o@a.edu"), "cognito:groups": ["illuminate-users", ADMIN]}
 ANN = person("ann", "Ann Lee", "ann@a.edu")
 BOB = person("bob", "Bob Ames", "bob@a.edu")
-ADA = {**person("ada", "Ada Admin", "ada@a.edu"), "cognito:groups": [ADMIN]}
+ADA = {**person("ada", "Ada Admin", "ada@a.edu"), "cognito:groups": ["illuminate-users", ADMIN]}
 PII_CONTRACT = {"measures": ["dataset.course_student_activity.v1:students"], "dimensions": ["person_email"],
                 "filters": [{"dimension": "person_email", "op": "eq", "values": ["jane@example.edu"]}]}
 LITERAL_SQL = "SELECT COUNT(*) AS n FROM CDM_LMS.PERSON WHERE EMAIL = 'jane@example.edu'"

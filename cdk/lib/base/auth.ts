@@ -17,6 +17,11 @@ export interface AuthProps {
    * this is set.
    */
   initialTenantId?: string;
+  /**
+   * Web-app origins for hosted sign-in: each gets `<origin>/auth/callback` and a `<origin>/login` sign-out URL.
+   * Empty or unset leaves the client's OAuth settings at the CDK defaults.
+   */
+  webAppOrigins?: string[];
 }
 
 /** Members may edit their tenant's metric overlays; the API reads it from the cognito:groups claim. */
@@ -85,6 +90,18 @@ export class Auth extends Construct {
       // re-tenant themselves via UpdateUserAttributes. custom:tenant_id is admin-only. Cognito
       // requires required attributes to be writable; email is immutable, so users still can't change it.
       writeAttributes: new cognito.ClientAttributes().withStandardAttributes({ email: true, fullname: true }),
+      // Code grant with PKCE on the platform's pool domain; the domain itself is owned by the platform repo.
+      ...(props.webAppOrigins?.length
+        ? {
+            oAuth: {
+              flows: { authorizationCodeGrant: true },
+              scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.EMAIL, cognito.OAuthScope.PROFILE],
+              callbackUrls: props.webAppOrigins.map((origin) => `${origin}/auth/callback`),
+              logoutUrls: props.webAppOrigins.map((origin) => `${origin}/login`),
+            },
+            supportedIdentityProviders: [cognito.UserPoolClientIdentityProvider.COGNITO],
+          }
+        : {}),
     });
 
     // Seed admin user, stamped with its tenant at creation. Every call is onCreate only (an Update runs none) and the
