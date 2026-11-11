@@ -60,7 +60,7 @@ def test_terms_cache_is_per_tenant(as_user, monkeypatch):
 
 def test_preview_without_tenant_is_403(as_user, monkeypatch):
     monkeypatch.setattr(snowflake_client, "query_preview", lambda *a, **k: pytest.fail("reached Snowflake"))
-    user = {"sub": "u1", "cognito:groups": ["illuminate-admins"]}
+    user = {"sub": "u1", "cognito:groups": ["illuminate-users", "illuminate-admins"]}
     r = as_user(user).get("/api/v1/dictionary/preview?schema=CDM_LMS&table=COURSE", headers=AUTH)
     assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
 
@@ -90,7 +90,7 @@ def test_report_run_unknown_tenant_is_403_before_snowflake(as_user, monkeypatch)
     report = next(iter(lambda_handler._reports().values()))
     visual = next(v for p in report.pages for v in p.visuals if v.queries)
     body = {"visual": visual.id, "query": next(iter(visual.queries)), "values": {}}
-    ghost = {"sub": "u1", "custom:tenant_id": "ghost"}
+    ghost = {"sub": "u1", "custom:tenant_id": "ghost", "cognito:groups": ["illuminate-users"]}
     r = as_user(ghost).post(f"/api/v1/reports/{report.id}/run", headers=AUTH, json=body)
     assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
 
@@ -105,7 +105,7 @@ def test_admin_overlay_routes_use_registry_tenant(as_user, monkeypatch):
 
 def test_admin_overlay_route_unregistered_tenant_is_403(as_user, monkeypatch):
     monkeypatch.setattr(overlay_store, "list_overlays", lambda tenant_id: pytest.fail("read overlays"))
-    ghost = {"sub": "u1", "custom:tenant_id": "ghost", "cognito:groups": ["illuminate-admins"]}
+    ghost = {"sub": "u1", "custom:tenant_id": "ghost", "cognito:groups": ["illuminate-users", "illuminate-admins"]}
     r = as_user(ghost).get("/api/v1/admin/overlays", headers=AUTH)
     assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
 
@@ -151,7 +151,7 @@ def _not_ready_database(monkeypatch):
 
 @pytest.mark.parametrize("path", ["/api/chat", "/api/chat/stream"])
 def test_chat_unknown_tenant_403_before_bedrock(as_user, no_bedrock, path):
-    ghost = {"sub": "u1", "custom:tenant_id": "ghost"}
+    ghost = {"sub": "u1", "custom:tenant_id": "ghost", "cognito:groups": ["illuminate-users"]}
     r = as_user(ghost).post(path, headers=AUTH, json={"message": "q"})
     assert r.status_code == 403 and r.json() == {"detail": NOT_READY}
     assert "ghost" not in r.text

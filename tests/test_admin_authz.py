@@ -53,7 +53,7 @@ def test_admin_can_list_overlays(client, monkeypatch):
 
 
 def test_admin_without_tenant_is_still_rejected(client, monkeypatch):
-    _as(monkeypatch, {"sub": "a1", "cognito:groups": ["illuminate-admins"]})
+    _as(monkeypatch, {"sub": "a1", "cognito:groups": ["illuminate-users", "illuminate-admins"]})
     assert client.get("/api/v1/admin/overlays", headers=AUTH).status_code == 403
 
 

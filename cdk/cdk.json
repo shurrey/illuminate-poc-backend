@@ -16,6 +16,9 @@
     "environment": "dev",
     "initialTenantIds": {
       "dev": "c2da348c-96e8-4014-9e72-9ba6b4eaac14"
+    },
+    "webAppOrigins": {
+      "dev": ["https://d3bydnqg0mo45h.cloudfront.net", "http://localhost:3000"]
     }
   }
 }

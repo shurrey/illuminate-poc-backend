@@ -32,5 +32,5 @@ def install_tenants(monkeypatch, *tenants, with_databases=True, database=None):
 
 
 def user_of(tenant, *groups, sub="u1"):
-    """A decoded-token user belonging to the tenant, in the given Cognito groups."""
-    return {"sub": sub, "custom:tenant_id": tenant.tenant_id, "cognito:groups": list(groups)}
+    """A decoded-token user belonging to the tenant, with Illuminate access and the given Cognito groups."""
+    return {"sub": sub, "custom:tenant_id": tenant.tenant_id, "cognito:groups": ["illuminate-users", *groups]}
