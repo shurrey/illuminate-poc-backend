@@ -29,7 +29,7 @@ cp .env.example .env
 | `.env` | Context key | Used for |
 |--------|-------------|----------|
 | `COGNITO_USER_EMAIL` | `initialUserEmail` | Initial Cognito user (default `admin@example.com`) |
-| `COGNITO_USER_PASSWORD` | `initialUserPassword` | Initial user's password. The initial user is created with `custom:tenant_id` and this password and added to `illuminate-admins` only when this is set and a tenant id is set (see below). |
+| `COGNITO_USER_PASSWORD` | `initialUserPassword` | Initial user's password. The initial user is created with `custom:tenant_id` and this password and added to `illuminate-admins` and `illuminate-users` only when this is set and a tenant id is set (see below). `illuminate-users` is created by the platform identity stack; if the pool doesn't have it yet, the seed user isn't added to it and needs adding by hand once it exists. |
 | `COGNITO_USER_NAME` | `initialUserName` | Initial user's display name |
 
 The seed user's tenant comes from `initialTenantIds` in `cdk/cdk.json` context, a map keyed by environment
@@ -51,7 +51,7 @@ is part of every resource name.
 
 | Stack | Resources |
 |-------|-----------|
-| `IlluminateBase-<env>` | Cognito user pool `illuminate-users-<env>` (LITE tier, email sign-in, `custom:tenant_id` attribute), app client `illuminate-api-<env>` (users cannot write `custom:tenant_id`), group `illuminate-admins`, the initial user; S3 bucket `illuminate-artifacts-<env>-<account>` (retained on delete); SSM parameters |
+| `IlluminateBase-<env>` | Cognito user pool `illuminate-users-<env>` (LITE tier, email sign-in, `custom:tenant_id` attribute), app client `illuminate-api-<env>` (users cannot write `custom:tenant_id`; SRP sign-in, plus hosted sign-in with the code grant when `webAppOrigins` in `cdk.json` lists origins for the environment, each with `<origin>/auth/callback` and sign-out URL `<origin>/login`; the hosted-UI domain and the `illuminate-users` group are created by the platform identity stack, not here), group `illuminate-admins`, the initial user; S3 bucket `illuminate-artifacts-<env>-<account>` (retained on delete); SSM parameters |
 | `IlluminateApi-<env>` | Lambda `illuminate-api-<env>` (Python 3.11, x86_64, 1024 MB, 900 s timeout, Lambda Web Adapter layer) with a Function URL (auth `NONE`, `RESPONSE_STREAM`); DynamoDB tables `illuminate-conversations-<env>`, `illuminate-overlays-<env>` and `illuminate-tenants-<env>` (tenant registry); IAM role `illuminate-lambda-<env>`; log group (one week, one month in `prod`); SSM parameter `api-url` |
 
 `IlluminateApi-<env>` depends on `IlluminateBase-<env>`. The DynamoDB tables have
@@ -184,7 +184,8 @@ user pool; and basic Lambda logging.
 
 ## Administrators and tenants
 
-Admin routes require membership of `illuminate-admins` and a `custom:tenant_id` on the user:
+Every user needs `illuminate-users` (otherwise the API answers `403 NO_ACCESS`). Admin routes also
+require membership of `illuminate-admins` (or `platform-system-admins`) and a `custom:tenant_id` on the user:
 
 ```bash
 aws cognito-idp admin-update-user-attributes --user-pool-id <pool-id> --username <email> \
@@ -219,6 +220,7 @@ docstring has the synth command.
 | Symptom | Check |
 |---------|-------|
 | `401` on every route | The client must send the **ID token** for app client `USER_POOL_CLIENT_ID`; access tokens are rejected |
+| `403` with `"code": "NO_ACCESS"` | User is not in `illuminate-users`; sign in again after adding them |
 | `403` on admin routes | User is in `illuminate-admins` and has `custom:tenant_id`; sign in again after changes |
 | Browser CORS errors after an API deploy | `ALLOWED_ORIGINS` lost the frontend origin; see above |
 | Chat returns `502` or `error` events | Bedrock model access in the region; Lambda logs at `/aws/lambda/illuminate-api-<env>` |

@@ -23,7 +23,14 @@ Claims the API reads:
 |-------|-----|
 | `sub` | Owner of conversations and in-progress chat requests |
 | `custom:tenant_id` | Selects the tenant's overlays. Without it, the caller gets the canonical catalog. |
-| `cognito:groups` | Must contain `illuminate-admins` for admin routes and table preview |
+| `cognito:groups` | Must contain `illuminate-users` for every route that takes a token, and `illuminate-admins` for admin routes and table preview. `platform-system-admins` counts as `illuminate-admins` and `platform-program-admins` as `illuminate-authors`. |
+
+### Access
+
+A valid token whose `cognito:groups` lacks `illuminate-users` returns
+`403 {"detail": "You don't have access to Illuminate", "code": "NO_ACCESS"}` on every route except
+`/health`, for web-app and MCP tokens alike, before any other check. In the group but in no role
+group, the caller is a Viewer.
 
 ### Admin routes
 
