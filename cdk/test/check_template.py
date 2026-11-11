@@ -80,7 +80,10 @@ def main() -> int:
         check("the seed create fails on an existing user instead of adopting it",
               len(create_ids) == 1 and "UsernameExistsException" not in json.dumps(base[create_ids[0]])),
         check("the seed password and group calls act only on the user the create returned",
-              len(acting) == 2 and all(_username(r) == {"Ref": create_ids[0]} for r in acting)),
+              len(acting) == 3 and all(_username(r) == {"Ref": create_ids[0]} for r in acting)),
+        check("the initial user is added to illuminate-users, and a pool without that group does not fail the deploy",
+              any('"GroupName":"illuminate-users"' in json.dumps(r["Properties"]["Create"]).replace('\\"', '"')
+                  and "ResourceNotFoundException" in json.dumps(r["Properties"]["Create"]) for r in seed)),
         check("no VPC or NAT gateway (nothing runs in it)",
               not resources("IlluminateBase-dev", "AWS::EC2::VPC") and not resources("IlluminateBase-dev", "AWS::EC2::NatGateway")),
         check("no unattached WAF web ACL", not resources("IlluminateBase-dev", "AWS::WAFv2::WebACL")),

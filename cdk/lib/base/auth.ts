@@ -26,6 +26,8 @@ export interface AuthProps {
 
 /** Members may edit their tenant's metric overlays; the API reads it from the cognito:groups claim. */
 export const ADMIN_GROUP_NAME = 'illuminate-admins';
+/** Grants use of Illuminate at all; the API refuses tokens without it. */
+export const ACCESS_GROUP_NAME = 'illuminate-users';
 
 export class Auth extends Construct {
   public readonly userPool: cognito.UserPool;
@@ -181,6 +183,27 @@ export class Auth extends Construct {
         ]),
       });
       addToAdmins.node.addDependency(adminGroup);
+
+      // illuminate-users is created by the platform identity stack, not here; in a pool without it this is a no-op.
+      new cr.AwsCustomResource(this, 'InitialUserAccessGroup', {
+        onCreate: {
+          service: 'CognitoIdentityServiceProvider',
+          action: 'adminAddUserToGroup',
+          parameters: {
+            UserPoolId: this.userPool.userPoolId,
+            Username: createdUsername,
+            GroupName: ACCESS_GROUP_NAME,
+          },
+          physicalResourceId: cr.PhysicalResourceId.of(`initial-user-access-${props.initialUserEmail}`),
+          ignoreErrorCodesMatching: 'UserNotFoundException|ResourceNotFoundException',
+        },
+        policy: cr.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            actions: ['cognito-idp:AdminAddUserToGroup'],
+            resources: [this.userPool.userPoolArn],
+          }),
+        ]),
+      });
     }
   }
 }
