@@ -124,7 +124,7 @@ export class LambdaProxy extends Construct {
     // origin on its own deploys, so redeploy it after this stack.
     const allowedOrigins = isProd
       ? 'https://illuminate.anthology.com'
-      : 'http://localhost:3000,http://localhost:5173,https://dm5zbussw00dg.cloudfront.net';
+      : 'http://localhost:3000,http://localhost:5173,https://dm5zbussw00dg.cloudfront.net,https://illuminate.hurrey.dev';
 
     // Lambda Web Adapter layer
     const lwaLayer = lambda.LayerVersion.fromLayerVersionArn(this, 'LWA',
