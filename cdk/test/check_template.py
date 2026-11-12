@@ -57,8 +57,8 @@ def main() -> int:
         check("users cannot write custom:tenant_id", writable is not None and "custom:tenant_id" not in writable),
         check("required attributes are writable (Cognito rejects the client otherwise)",
               writable is not None and all(a["Name"] in writable for a in required)),
-        check("the client keeps SRP sign-in alongside hosted sign-in",
-              {"ALLOW_USER_SRP_AUTH", "ALLOW_USER_PASSWORD_AUTH"} <= set(client["Properties"]["ExplicitAuthFlows"])),
+        check("with hosted sign-in the client allows refresh tokens only",
+              client["Properties"]["ExplicitAuthFlows"] == ["ALLOW_REFRESH_TOKEN_AUTH"]),
         check("hosted sign-in is the code grant only, with openid, email and profile",
               client["Properties"].get("AllowedOAuthFlows") == ["code"]
               and sorted(client["Properties"].get("AllowedOAuthScopes", [])) == ["email", "openid", "profile"]
