@@ -84,10 +84,9 @@ export class Auth extends Construct {
       userPool: this.userPool,
       userPoolClientName: `illuminate-api-${props.environment}`,
       generateSecret: false,
-      authFlows: {
-        userPassword: true,
-        userSrp: true,
-      },
+      // With hosted sign-in the client takes refresh tokens only; a non-empty authFlows stops CDK leaving
+      // Cognito's defaults, which include SRP. Without it, the web app's email and password form needs both.
+      authFlows: props.webAppOrigins?.length ? { userSrp: false } : { userPassword: true, userSrp: true },
       // Without an explicit list every attribute is user-writable, which would let a user
       // re-tenant themselves via UpdateUserAttributes. custom:tenant_id is admin-only. Cognito
       // requires required attributes to be writable; email is immutable, so users still can't change it.
